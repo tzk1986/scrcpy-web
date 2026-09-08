@@ -222,23 +222,23 @@ class TestDeviceServiceRealDevice:
         repo = InMemoryDeviceRepository()
         service = DeviceService(adb=driver, repo=repo)
 
-        # 设置很短的刷新间隔
-        service._refresh_interval = 0.1
+        # 设置很短的刷新间隔（0.2秒）
+        service._refresh_interval = 0.2
 
         # 启动后台刷新
         await service.start()
 
         try:
-            # 等待足够时间让刷新执行
-            await asyncio.sleep(0.3)
+            # 等待足够时间让刷新执行至少一次（刷新间隔 + 执行时间 + 缓冲）
+            await asyncio.sleep(1.0)
 
             # 检查设备是否被检测到
             all_devices = await repo.list_all()
-            assert len(all_devices) >= 1
+            assert len(all_devices) >= 1, "后台刷新未能检测到设备"
 
             # 检查真实设备是否在列表中
             device_ids = [d.id for d in all_devices]
-            assert REAL_DEVICE_ID in device_ids
+            assert REAL_DEVICE_ID in device_ids, f"真实设备 {REAL_DEVICE_ID} 未在列表中"
         finally:
             # 停止后台刷新
             await service.stop()
@@ -265,18 +265,18 @@ class TestDeviceServiceRealDevice:
         # 清空之前的设备记录，模拟新连接
         service._previous_devices = set()
 
-        # 设置很短的刷新间隔
-        service._refresh_interval = 0.1
+        # 设置较短的刷新间隔（0.2秒）
+        service._refresh_interval = 0.2
 
         await service.start()
 
         try:
-            # 等待刷新检测
-            await asyncio.sleep(0.3)
+            # 等待刷新检测（刷新间隔 + 执行时间 + 缓冲）
+            await asyncio.sleep(1.0)
 
             # 应该触发连接回调
-            assert len(connected_devices) >= 1
-            assert REAL_DEVICE_ID in connected_devices
+            assert len(connected_devices) >= 1, "未触发设备连接回调"
+            assert REAL_DEVICE_ID in connected_devices, f"设备 {REAL_DEVICE_ID} 未触发连接回调"
         finally:
             await service.stop()
 
