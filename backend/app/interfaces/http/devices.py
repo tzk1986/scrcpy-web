@@ -11,15 +11,22 @@
     POST   /api/devices/{device_id}/install — 安装 APK
     POST   /api/devices/batch/install       — 批量安装 APK
     GET    /api/devices/{device_id}/screenshot — 截图
+    POST   /api/devices/connect             — 通过 TCP/IP 连接设备
+    POST   /api/devices/{device_id}/disconnect — 断开 TCP/IP 连接
+    GET    /api/devices/events              — 设备变化事件流（SSE）
 
 所有端点通过 Depends(get_device_service) 注入 DeviceService 实例。
 """
 
+import asyncio
+import json
+
 from fastapi import APIRouter, Depends
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from app.application.device_service import DeviceService
 from app.deps import get_device_service
+from app.domain.device import DeviceInfo
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -105,3 +112,111 @@ async def screenshot(device_id: str, service: DeviceService = Depends(get_device
     """
     png_bytes = await service.screenshot(device_id)
     return Response(content=png_bytes, media_type="image/png")
+
+
+@router.post("/connect")
+async def connect_device(
+    ip: str,
+    port: int = 5555,
+    service: DeviceService = Depends(get_device_service),
+):
+    """
+    通过 TCP/IP 连接到设备。
+
+    用于无线调试或 USB 连接不稳定时的备用方案。
+
+    参数：
+        ip: 设备 IP 地址（查询参数）。
+        port: ADB 端口（查询参数，默认 5555）。
+
+    返回：
+        {"success": True, "device_id": "ip:port"}。
+    """
+    device_id = await service.connect_tcp(ip, port)
+    return {"success": True, "device_id": device_id}
+
+
+@router.post("/{device_id}/disconnect")
+async def disconnect_device(
+    device_id: str,
+    service: DeviceService = Depends(get_device_service),
+):
+    """
+    断开设备的 TCP/IP 连接。
+
+    参数：
+        device_id: 设备 ID（格式为 "ip:port"，路径参数）。
+
+    返回：
+        {"success": True}。
+    """
+    # 从 device_id 解析 ip 和 port
+    if ":" in device_id:
+        parts = device_id.split(":")
+        ip = parts[0]
+        port = int(parts[1]) if len(parts) > 1 else 5555
+        await service.disconnect_tcp(ip, port)
+    return {"success": True}
+
+
+@router.get("/events")
+async def device_events(service: DeviceService = Depends(get_device_service)):
+    """
+    设备变化事件流（Server-Sent Events）。
+
+    实时推送设备连接和断开事件。
+
+    事件格式：
+        data: {"type": "connected", "device": {...}}
+        data: {"type": "disconnected", "device_id": "..."}
+
+    返回：
+        SSE 流（Content-Type: text/event-stream）。
+    """
+    queue = asyncio.Queue()
+
+    async def on_connected(device: DeviceInfo):
+        """设备连接回调"""
+        await queue.put({
+            "type": "connected",
+            "device": {
+                "id": device.id,
+                "model": device.model,
+                "os_version": device.os_version,
+                "resolution": list(device.resolution),
+                "battery": device.battery,
+                "status": device.status,
+            }
+        })
+
+    async def on_disconnected(device_id: str):
+        """设备断开回调"""
+        await queue.put({"type": "disconnected", "device_id": device_id})
+
+    # 注册回调
+    service.on_device_connected(on_connected)
+    service.on_device_disconnected(on_disconnected)
+
+    async def event_stream():
+        """生成 SSE 事件流"""
+        try:
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event)}\n\n"
+        except asyncio.CancelledError:
+            # 客户端断开连接时清理回调
+            if on_connected in service._on_device_connected:
+                service._on_device_connected.remove(on_connected)
+            if on_disconnected in service._on_device_disconnected:
+                service._on_device_disconnected.remove(on_disconnected)
+            raise
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+        }
+    )

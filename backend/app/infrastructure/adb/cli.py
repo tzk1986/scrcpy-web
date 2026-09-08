@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from app.core.config import settings
+from app.core.exceptions import AdbError
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
 
@@ -59,22 +60,38 @@ class AdbCliDriver:
             去除首尾空白的 stdout 字符串。
 
         异常：
-            RuntimeError: 命令以非零返回码退出时。
-            asyncio.TimeoutError: 命令超过超时时。
+            AdbError: 命令以非零返回码退出时。
+            AdbError: ADB 未安装时。
+            AdbError: 命令超过超时时。
         """
         timeout = timeout or settings().adb.timeout
         cmd = [self.adb_path, *args]
         logger.debug("adb_command", cmd=cmd)
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            logger.error("adb_not_found", path=self.adb_path)
+            raise AdbError(
+                f"ADB not found at '{self.adb_path}'. "
+                "Please install Android SDK Platform Tools and ensure it's in PATH."
+            )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.error("adb_command_timeout", cmd=cmd, timeout=timeout)
+            raise AdbError(f"ADB command timed out after {timeout}s: {' '.join(cmd)}")
 
         if proc.returncode != 0:
-            raise RuntimeError(f"ADB command failed: {stderr.decode()}")
+            error_msg = stderr.decode().strip()
+            logger.error("adb_command_failed", cmd=cmd, returncode=proc.returncode, error=error_msg)
+            raise AdbError(f"ADB command failed: {error_msg}")
 
         return stdout.decode().strip()
 
@@ -191,6 +208,73 @@ class AdbCliDriver:
             命令 stdout 字符串。
         """
         return await self._run_serial(device_id, "shell", cmd)
+
+    async def check_connection(self, device_id: str) -> bool:
+        """
+        检查设备是否仍然连接。
+
+        通过执行一个简单的 shell 命令来检测设备是否在线。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            True 表示设备在线，False 表示设备离线。
+        """
+        try:
+            await self._run_serial(device_id, "shell", "echo", "ping")
+            return True
+        except AdbError:
+            logger.debug("device_not_connected", device=device_id)
+            return False
+
+    async def connect_tcp(self, ip: str, port: int = 5555) -> str:
+        """
+        通过 TCP/IP 连接到设备。
+
+        用于无线调试或 USB 连接不稳定时的备用方案。
+
+        参数：
+            ip: 设备的 IP 地址。
+            port: ADB 端口（默认 5555）。
+
+        返回：
+            设备 ID（格式为 "ip:port"）。
+
+        异常：
+            AdbError: 连接失败时。
+        """
+        device_id = f"{ip}:{port}"
+        logger.info("connecting_tcp", ip=ip, port=port)
+
+        try:
+            output = await self._run("connect", device_id)
+            if "connected" in output.lower():
+                logger.info("tcp_connected", device=device_id)
+                return device_id
+            else:
+                raise AdbError(f"Failed to connect to {device_id}: {output}")
+        except AdbError as e:
+            logger.error("tcp_connect_failed", ip=ip, port=port, error=str(e))
+            raise
+
+    async def disconnect_tcp(self, ip: str, port: int = 5555):
+        """
+        断开 TCP/IP 连接。
+
+        参数：
+            ip: 设备的 IP 地址。
+            port: ADB 端口（默认 5555）。
+        """
+        device_id = f"{ip}:{port}"
+        logger.info("disconnecting_tcp", ip=ip, port=port)
+
+        try:
+            await self._run("disconnect", device_id)
+            logger.info("tcp_disconnected", device=device_id)
+        except AdbError as e:
+            logger.warning("tcp_disconnect_failed", device=device_id, error=str(e))
+            # 断开失败不是严重错误，只记录警告
 
     async def stream_logcat(self, device_id: str) -> AsyncIterator[str]:
         """
