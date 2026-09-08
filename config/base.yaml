@@ -1,0 +1,37 @@
+# Base Configuration (defaults)
+app:
+  name: OpenScrcpy
+  version: 0.1.0
+  debug: false
+  log_level: INFO
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  workers: 4
+
+database:
+  path: ./data/debug.sqlite
+  echo: false
+
+adb:
+  path: adb
+  timeout: 30
+  reconnect_interval: 5
+
+stream:
+  max_size: 1080
+  bit_rate: 4M
+  codec: h264
+  fps: 30
+
+debug:
+  log_buffer_size: 50000
+  session_ttl_days: 7
+  shell_history_days: 30
+
+security:
+  jwt_algorithm: HS256
+  jwt_expire_minutes: 1440
+  cors_origins:
+    - http://localhost:5173

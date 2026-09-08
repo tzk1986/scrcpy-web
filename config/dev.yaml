@@ -1,0 +1,15 @@
+# Development Configuration
+app:
+  debug: true
+  log_level: DEBUG
+
+server:
+  workers: 1
+
+database:
+  echo: true
+
+security:
+  cors_origins:
+    - http://localhost:5173
+    - http://localhost:3000

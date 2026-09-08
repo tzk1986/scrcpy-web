@@ -1,0 +1,10 @@
+# Production Configuration
+app:
+  debug: false
+  log_level: WARNING
+
+server:
+  workers: 4
+
+database:
+  echo: false
