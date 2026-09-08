@@ -7,22 +7,24 @@ scrcpy-server 视频编码器
 工作流程：
     1. 检查并部署 scrcpy-server.jar 到设备
     2. 通过 ADB shell 启动 scrcpy-server 子进程
-    3. 从子进程的 stdout 管道读取原始 H264 数据
-    4. 使用 H264Parser 解析为完整的 NALU
-    5. 异步 yield 给上层（StreamService → WebSocket）
-    6. 收到停止信号时，kill 子进程并清理资源
+    3. 建立 adb forward 端口转发
+    4. 通过 socket 连接到 scrcpy-server
+    5. 从 socket 读取原始 H264 数据
+    6. 使用 H264Parser 解析为完整的 NALU
+    7. 异步 yield 给上层（StreamService → WebSocket）
+    8. 收到停止信号时，kill 子进程并清理资源
 
 scrcpy-server 启动命令：
     adb shell CLASSPATH=/data/local/tmp/scrcpy-server.jar \
-        com.genymobile.scrcpy.Server 2.4 \
+        app_process / com.genymobile.scrcpy.Server 2.4 \
         max_size=1080 max_fps=30 video_codec=h264 \
-        bit_rate=4M send_frame_meta=false raw_stream=true
+        video_bit_rate=4000000 send_frame_meta=false raw_stream=true
 
 参数说明：
     - max_size: 最大帧尺寸（宽或高，取较大值）
     - max_fps: 最大帧率
     - video_codec: 视频编码格式（h264）
-    - bit_rate: 目标码率
+    - video_bit_rate: 目标码率（单位：bps）
     - send_frame_meta=false: 不发送帧元数据
     - raw_stream=true: 输出原始 H264 流
 
@@ -87,6 +89,9 @@ class ScrcpyEncoder:
         self._device_id: str | None = None
         self._parser = H264Parser()
         self._server_manager = ServerManager()
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._local_port = 27183  # scrcpy 默认端口
 
     async def start(
         self,
@@ -107,10 +112,12 @@ class ScrcpyEncoder:
             1. 检查并部署 scrcpy-server.jar
             2. 构建启动命令
             3. 启动子进程
-            4. 循环读取 stdout 数据
-            5. 使用 H264Parser 解析为完整 NALU
-            6. yield 每个 NALU
-            7. 在 finally 块中调用 stop() 清理资源
+            4. 建立 adb forward 端口转发
+            5. 通过 socket 连接到 scrcpy-server
+            6. 循环读取 socket 数据
+            7. 使用 H264Parser 解析为完整 NALU
+            8. yield 每个 NALU
+            9. 在 finally 块中调用 stop() 清理资源
 
         异常：
             RuntimeError: 如果 scrcpy-server 启动失败。
@@ -129,22 +136,28 @@ class ScrcpyEncoder:
         if not await self._server_manager.ensure_server(device_id):
             raise RuntimeError("Failed to deploy scrcpy-server.jar")
 
+        # 转换 bit_rate 格式："4M" -> 4000000
+        bit_rate_value = opts.bit_rate
+        if isinstance(bit_rate_value, str):
+            if bit_rate_value.endswith("M"):
+                bit_rate_value = int(float(bit_rate_value[:-1]) * 1000000)
+            elif bit_rate_value.endswith("K"):
+                bit_rate_value = int(float(bit_rate_value[:-1]) * 1000)
+            else:
+                bit_rate_value = int(bit_rate_value)
+
         # 构建启动命令
-        # adb shell CLASSPATH=/data/local/tmp/scrcpy-server.jar \
-        #     com.genymobile.scrcpy.Server 2.4 \
-        #     max_size=1080 max_fps=30 video_codec=h264 \
-        #     bit_rate=4M send_frame_meta=false raw_stream=true
         cmd = [
             "adb", "-s", device_id, "shell",
             f"CLASSPATH={SCRCPY_SERVER_REMOTE_PATH}",
-            SCRCPY_SERVER_CLASS,
+            "app_process", "/", SCRCPY_SERVER_CLASS,
             SCRCPY_SERVER_VERSION,
             f"max_size={opts.max_size}",
             f"max_fps={opts.fps}",
             f"video_codec={opts.codec}",
-            f"bit_rate={opts.bit_rate}",
+            f"video_bit_rate={bit_rate_value}",
             "send_frame_meta=false",
-            "raw_stream=true",
+            f"tunnel_forward=true",  # 使用端口转发模式
         ]
 
         try:
@@ -162,9 +175,10 @@ class ScrcpyEncoder:
                 pid=self.process.pid,
             )
 
-            # 检查是否启动成功
-            # 等待一小段时间检查 stderr
+            # 等待服务器启动并读取 stderr
             await asyncio.sleep(0.5)
+
+            # 检查是否启动成功
             if self.process.returncode is not None:
                 # 进程已退出，说明启动失败
                 stderr_data = await self.process.stderr.read()
@@ -176,15 +190,77 @@ class ScrcpyEncoder:
                 )
                 raise RuntimeError(f"scrcpy-server failed to start: {error_msg}")
 
+            # 读取启动信息
+            logger.info("reading_server_stderr", device=device_id)
+            try:
+                for i in range(10):
+                    if self.process.returncode is not None:
+                        break
+                    stderr_line = await asyncio.wait_for(
+                        self.process.stderr.readline(),
+                        timeout=0.2
+                    )
+                    if stderr_line:
+                        line = stderr_line.decode().strip()
+                        if line:
+                            logger.info("scrcpy_server_log", device=device_id, log=line)
+                    else:
+                        break
+            except asyncio.TimeoutError:
+                logger.info("stderr_read_timeout", device=device_id)
+
+            logger.info("server_startup_complete", device=device_id)
+
+            # 设置端口转发
+            logger.info("setting_up_port_forward", device=device_id)
+            forward_proc = await asyncio.create_subprocess_exec(
+                "adb", "-s", device_id, "forward",
+                f"tcp:{self._local_port}",
+                "localabstract:scrcpy",
+            )
+            await forward_proc.wait()
+            if forward_proc.returncode != 0:
+                raise RuntimeError("Failed to setup port forward")
+
+            # 连接到 scrcpy-server
+            logger.info("connecting_to_server", device=device_id, port=self._local_port)
+            self._reader, self._writer = await asyncio.open_connection(
+                "127.0.0.1", self._local_port
+            )
+            logger.info("connected_to_server", device=device_id)
+
+            # 尝试读取设备信息（scrcpy 协议）
+            # 注意：当 raw_stream=true 时，可能没有设备信息
+            try:
+                # 首先是设备名称（64 字节）
+                device_name_data = await asyncio.wait_for(
+                    self._reader.readexactly(64),
+                    timeout=1.0
+                )
+                device_name = device_name_data.decode("utf-8").rstrip("\x00")
+                logger.info("scrcpy_device_name", device=device_id, name=device_name)
+
+                # 然后是设备 ID（32 字节，对于 scrcpy 2.x）
+                device_id_data = await asyncio.wait_for(
+                    self._reader.readexactly(32),
+                    timeout=1.0
+                )
+                scrcpy_device_id = device_id_data.hex()
+                logger.info("scrcpy_device_id", device=device_id, id=scrcpy_device_id[:16] + "...")
+            except asyncio.TimeoutError:
+                logger.info("no_device_info_raw_stream", device=device_id)
+            except Exception as e:
+                logger.warning("device_info_read_error", device=device_id, error=str(e))
+
             # 循环读取 H264 数据
             while self._running:
-                if not self.process.stdout:
+                if not self._reader:
                     break
 
                 # 读取数据块
-                chunk = await self.process.stdout.read(VIDEO_STREAM_FRAME_SIZE)
+                chunk = await self._reader.read(VIDEO_STREAM_FRAME_SIZE)
                 if not chunk:
-                    # EOF，进程结束
+                    # EOF，连接关闭
                     break
 
                 # 使用 H264Parser 解析为完整 NALU
@@ -208,10 +284,20 @@ class ScrcpyEncoder:
         """
         停止编码并释放资源。
 
-        将运行标志设为 False，kill 子进程并等待退出。
+        将运行标志设为 False，关闭 socket 连接，kill 子进程并等待退出。
         重置 H264Parser 状态。
         """
         self._running = False
+
+        # 关闭 socket 连接
+        if self._writer:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception as e:
+                logger.warning("socket_close_error", error=str(e))
+            self._writer = None
+            self._reader = None
 
         if self.process:
             logger.info("stopping_scrcpy_encoder", device=self._device_id)
@@ -243,6 +329,16 @@ class ScrcpyEncoder:
                 )
 
             self.process = None
+
+            # 清理端口转发
+            if self._device_id:
+                try:
+                    await asyncio.create_subprocess_exec(
+                        "adb", "-s", self._device_id, "forward", "--remove",
+                        f"tcp:{self._local_port}",
+                    )
+                except Exception as e:
+                    logger.warning("port_forward_cleanup_error", error=str(e))
 
         # 重置解析器
         self._parser.reset()

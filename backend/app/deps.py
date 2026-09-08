@@ -64,12 +64,6 @@ def get_debug_repository() -> DebugRepository:
     return SqliteDebugRepository()
 
 
-@lru_cache()
-def get_video_encoder() -> VideoEncoder:
-    """返回进程级视频编码器单例。"""
-    return ScrcpyEncoder()
-
-
 # ---------------------------------------------------------------------------
 # 瞬态应用服务工厂
 # ---------------------------------------------------------------------------
@@ -93,8 +87,8 @@ def get_debug_service() -> DebugService:
 
 
 def get_stream_service() -> StreamService:
-    """构建一个连接到视频编码器的 StreamService。"""
-    return StreamService(encoder=get_video_encoder())
+    """构建 StreamService 实例。"""
+    return StreamService()
 
 
 def get_session_service() -> SessionService:

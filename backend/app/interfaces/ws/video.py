@@ -30,15 +30,21 @@
 
 import asyncio
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 
-from app.application.stream_service import StreamService
+from app.application.stream.service import StreamService
+from app.deps import get_stream_service
 from app.infrastructure.transport.websocket import WebSocketTransport
 
 router = APIRouter(tags=["video"])
 
 
-async def video_stream(websocket: WebSocket, device_id: str, stream_service: StreamService):
+@router.websocket("/ws/video/{device_id}")
+async def video_stream(
+    websocket: WebSocket,
+    device_id: str,
+    stream_service: StreamService = Depends(get_stream_service),
+):
     """
     视频流 WebSocket 处理函数。
 
