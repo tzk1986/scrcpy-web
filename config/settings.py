@@ -34,9 +34,49 @@ class DatabaseConfig(BaseSettings):
 
 
 class AdbConfig(BaseSettings):
-    path: str = "adb"
+    adb_path: str = Field(default="", alias="ADB_PATH")  # 使用不同名字避免与 PATH 冲突
     timeout: int = 30
     reconnect_interval: int = 5
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    @property
+    def path(self) -> str:
+        """获取 ADB 可执行文件路径（自动检测）"""
+        if self.adb_path:
+            return self.adb_path
+        return self._detect_adb_path()
+
+    def _detect_adb_path(self) -> str:
+        """
+        自动检测 ADB 可执行文件路径。
+
+        优先级：
+        1. 项目 tools 目录下的 adb.exe（Windows）或 adb（Unix）
+        2. 系统 PATH 中的 adb
+        """
+        import sys
+
+        # 获取项目根目录
+        project_root = Path(__file__).parent.parent
+
+        # 检查项目 tools 目录
+        if sys.platform == "win32":
+            local_adb = project_root / "tools" / "adb.exe"
+        else:
+            local_adb = project_root / "tools" / "adb"
+
+        if local_adb.exists():
+            return str(local_adb)
+
+        # 回退到系统 PATH
+        return "adb"
 
 
 class StreamConfig(BaseSettings):
