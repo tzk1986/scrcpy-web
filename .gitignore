@@ -46,3 +46,8 @@ logs/
 # Coverage
 .coverage
 htmlcov/
+
+# Binary files
+*.jar
+*.exe
+*.dll
