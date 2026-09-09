@@ -4,28 +4,37 @@
 
   展示单个设备的实时视频流和调试面板。
 
-  布局：
+  布局（右侧面板）：
     ┌──────────────────────────────────────────┐
     │ 设备: xxx          [断开]                 │  ← 设备信息栏
-    ├─────────────────────────┬────────────────┤
-    │                         │                │
-    │    视频画布              │  调试面板       │
-    │    (canvas)             │  (DebugPanel)  │
-    │                         │                │
-    └─────────────────────────┴────────────────┘
+    ├──────────────────────────┬───────────────┤
+    │                          │               │
+    │    VideoPlayer           │  调试面板      │
+    │  (截屏视频 + 输入控制)     │  (可拖拽)     │
+    │                          │               │
+    └──────────────────────────┴───────────────┘
+
+  布局（底部面板）：
+    ┌──────────────────────────────────────────┐
+    │ 设备: xxx          [断开]                 │
+    ├──────────────────────────────────────────┤
+    │                                          │
+    │    VideoPlayer                           │
+    │                                          │
+    ├──────────────────────────────────────────┤
+    │    调试面板（可拖拽）                      │
+    └──────────────────────────────────────────┘
 
   功能：
-    - 通过 WebSocket 接收 H.264 视频帧并渲染到 canvas
+    - 通过 VideoPlayer 组件显示设备视频流（周期性截屏）
+    - 支持触摸/鼠标输入（点击、滑动、长按）
+    - 调试面板可停靠（底部/右侧）、可拖拽调整大小
     - 创建调试会话（自动）
     - 断开按钮：关闭 WebSocket 和调试会话，返回列表页
 
-  生命周期：
-    onMounted: 创建调试会话 + 建立视频 WebSocket
-    onUnmounted: 关闭 WebSocket + 关闭调试会话
-
   子组件关系：
-    DeviceDetail.vue → DebugPanel.vue
-                     → services/websocket.ts
+    DeviceDetail.vue → VideoPlayer.vue
+                     → DebugPanel.vue
                      → stores/debug.ts
 -->
 <template>
@@ -35,78 +44,61 @@
       <el-button @click="disconnect">断开</el-button>
     </div>
 
-    <div class="content">
-      <div class="video-container">
-        <canvas ref="canvas" width="1080" height="1920"></canvas>
-      </div>
+    <div class="content" :class="{ 'column-layout': panelPosition === 'bottom' }">
+      <VideoPlayer
+        :device-id="deviceId"
+        :device-width="deviceResolution[0]"
+        :device-height="deviceResolution[1]"
+      />
 
-      <DebugPanel :device-id="deviceId" />
+      <DebugPanel
+        :device-id="deviceId"
+        @position-change="panelPosition = $event"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { WebSocketService } from '@/services/websocket'
+import { api } from '@/services/api'
 import DebugPanel from '@/components/debug/DebugPanel.vue'
+import VideoPlayer from '@/components/stream/VideoPlayer.vue'
 import { useDebugStore } from '@/stores/debug'
 
 const props = defineProps<{ id: string }>()
 const deviceId = props.id
 
-const canvas = ref<HTMLCanvasElement>()
 const debugStore = useDebugStore()
-let videoWs: WebSocketService | null = null
+const deviceResolution = ref<[number, number]>([1080, 1920])
+/** 调试面板停靠位置，用于切换布局方向。 */
+const panelPosition = ref<'bottom' | 'right'>('right')
 
 /**
  * 组件挂载时初始化：
- *   1. 创建调试会话（用于 logcat 和 shell）
- *   2. 建立视频 WebSocket 连接
- *   3. 注册消息处理器：接收 Blob 数据并渲染到 canvas
+ *   1. 获取设备信息（分辨率）
+ *   2. 创建调试会话（用于 logcat 和 shell）
  */
 onMounted(async () => {
-  await debugStore.createSession(deviceId, 'user-1')
-
-  videoWs = new WebSocketService(`ws://localhost:8000/ws/video/${deviceId}`)
-  videoWs.setMessageHandler((data) => {
-    if (data instanceof Blob) {
-      renderFrame(data)
+  try {
+    const device = await api.getDevice(deviceId)
+    if (device?.resolution) {
+      deviceResolution.value = device.resolution
     }
-  })
-  videoWs.connect()
+  } catch {
+    // 使用默认分辨率
+  }
+
+  await debugStore.createSession(deviceId, 'user-1')
 })
 
-/**
- * 组件卸载时清理：
- *   关闭 WebSocket 连接和调试会话。
- */
+/** 组件卸载时清理：关闭调试会话。 */
 onUnmounted(() => {
-  videoWs?.close()
   debugStore.closeSession()
 })
 
-/**
- * 将接收到的视频帧渲染到 canvas。
- * 流程：Blob → ObjectURL → Image → drawImage
- */
-function renderFrame(blob: Blob) {
-  const ctx = canvas.value?.getContext('2d')
-  if (!ctx) return
-
-  const img = new Image()
-  img.onload = () => {
-    ctx.drawImage(img, 0, 0)
-    URL.revokeObjectURL(img.src)  // 释放 ObjectURL 内存
-  }
-  img.src = URL.createObjectURL(blob)
-}
-
-/**
- * 断开设备连接。
- * 关闭所有连接后返回列表页。
- */
+/** 断开设备连接，返回列表页。 */
 function disconnect() {
-  videoWs?.close()
   debugStore.closeSession()
   window.history.back()
 }
@@ -127,22 +119,15 @@ function disconnect() {
   border-bottom: 1px solid #eee;
 }
 
+/* 默认行布局（面板在右侧） */
 .content {
   display: flex;
   flex: 1;
   overflow: hidden;
 }
 
-.video-container {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #000;
-}
-
-canvas {
-  max-width: 100%;
-  max-height: 100%;
+/* 列布局（面板在底部） */
+.content.column-layout {
+  flex-direction: column;
 }
 </style>

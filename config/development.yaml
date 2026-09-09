@@ -1,0 +1,12 @@
+# Development Configuration
+# Use: APP_ENV=development uvicorn app.main:app
+
+app:
+  debug: true
+  log_level: DEBUG
+
+debug:
+  min_log_level: V  # Keep all logs in development
+  log_rate_limit: 1000  # Higher rate limit for dev
+  log_retention_days: 1  # But only keep 1 day
+  max_db_size_mb: 200  # Limit database size

@@ -9,6 +9,7 @@
     POST   /api/debug/sessions                  — 创建调试会话
     GET    /api/debug/sessions/{session_id}     — 获取会话信息
     GET    /api/debug/sessions/{session_id}/logs — 查询日志
+    GET    /api/debug/sessions/{session_id}/logs/export — 导出日志
     POST   /api/debug/sessions/{session_id}/shell — 执行 shell 命令
     DELETE /api/debug/sessions/{session_id}     — 关闭会话
 
@@ -16,7 +17,12 @@
 持续收集 logcat 日志，并支持实时查询和 shell 命令执行。
 """
 
+import csv
+import io
+import json
+
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
 from app.application.debug_service import DebugService
 from app.deps import get_debug_service
@@ -98,6 +104,58 @@ async def get_logs(
     return {"logs": logs}
 
 
+@router.get("/sessions/{session_id}/logs/export")
+async def export_logs(
+    session_id: str,
+    level: str | None = None,
+    tag: str | None = None,
+    format: str = "json",
+    limit: int = 50000,
+    service: DebugService = Depends(get_debug_service),
+):
+    """
+    导出调试日志为文件。
+
+    参数：
+        session_id: 会话 ID（路径参数）。
+        level: 日志级别过滤，可选。
+        tag: 日志标签过滤，可选。
+        format: 导出格式，json 或 csv，默认 json。
+        limit: 最大导出条数，默认 50000。
+
+    返回：
+        文件下载响应（Content-Disposition: attachment）。
+    """
+    logs = await service.get_logs(session_id, level=level, tag=tag, limit=limit)
+
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["timestamp", "level", "pid", "tid", "tag", "message"])
+        for log in logs:
+            writer.writerow([
+                log.get("ts", ""),
+                log.get("level", ""),
+                log.get("pid", ""),
+                log.get("tid", ""),
+                log.get("tag", ""),
+                log.get("message", ""),
+            ])
+        content = output.getvalue()
+        media_type = "text/csv"
+        filename = f"logs_{session_id}.csv"
+    else:
+        content = json.dumps(logs, indent=2, ensure_ascii=False)
+        media_type = "application/json"
+        filename = f"logs_{session_id}.json"
+
+    return StreamingResponse(
+        io.BytesIO(content.encode("utf-8")),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/sessions/{session_id}/shell")
 async def exec_shell(
     session_id: str,
@@ -141,3 +199,53 @@ async def close_session(
     """
     await service.close_session(session_id)
     return {"success": True}
+
+
+@router.post("/cleanup")
+async def run_cleanup(
+    service: DebugService = Depends(get_debug_service),
+):
+    """
+    手动触发日志清理。
+
+    执行以下清理操作：
+      1. 删除超过保留期（默认 7 天）的日志
+      2. 删除超过保留期（默认 30 天）的 shell 历史
+      3. 如果数据库超过大小限制（默认 1GB），删除最旧日志
+
+    返回：
+        清理统计信息（删除数量、数据库大小等）。
+    """
+    result = await service.run_cleanup()
+    return result
+
+
+@router.delete("/sessions/{session_id}/logs")
+async def cleanup_session_logs(
+    session_id: str,
+    service: DebugService = Depends(get_debug_service),
+):
+    """
+    清理指定会话的所有日志。
+
+    参数：
+        session_id: 要清理的会话 ID（路径参数）。
+
+    返回：
+        {"deleted": 删除的日志条数}。
+    """
+    deleted = await service.cleanup_session(session_id)
+    return {"deleted": deleted}
+
+
+@router.get("/stats")
+async def get_stats(
+    service: DebugService = Depends(get_debug_service),
+):
+    """
+    获取调试系统统计信息。
+
+    返回：
+        数据库大小、活跃会话数、订阅者数等。
+    """
+    return await service.get_db_stats()

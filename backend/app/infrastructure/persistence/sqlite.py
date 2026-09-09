@@ -57,17 +57,17 @@ class SqliteDebugRepository(DebugRepository):
         """
         self.db_path = db_path or settings().database.path
 
-    async def _get_conn(self) -> aiosqlite.Connection:
+    def _get_conn(self) -> aiosqlite.Connection:
         """
         打开新的 aiosqlite 连接。
 
         如果父目录不存在则创建。
 
         返回：
-            打开的 aiosqlite 连接（调用方负责关闭）。
+            aiosqlite 连接协程（调用方负责 await 和关闭）。
         """
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        return await aiosqlite.connect(self.db_path)
+        return aiosqlite.connect(self.db_path)
 
     async def init_db(self):
         """
@@ -76,7 +76,7 @@ class SqliteDebugRepository(DebugRepository):
         在应用启动时调用一次（lifespan.py → init_db()）。
         使用 CREATE TABLE IF NOT EXISTS 所以是幂等的。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             await conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS debug_sessions (
@@ -118,7 +118,7 @@ class SqliteDebugRepository(DebugRepository):
         参数：
             session: 要持久化的 DebugSession。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO debug_sessions VALUES (?,?,?,?,?,?)",
                 (
@@ -142,7 +142,7 @@ class SqliteDebugRepository(DebugRepository):
         返回：
             找到则返回 DebugSession，否则返回 None。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM debug_sessions WHERE id=?", (session_id,)
             )
@@ -166,7 +166,7 @@ class SqliteDebugRepository(DebugRepository):
             session_id: 此日志所属的会话。
             entry: 要持久化的解析后日志条目。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             await conn.execute(
                 "INSERT INTO debug_logs VALUES (?,?,?,?,?,?,?,?)",
                 (
@@ -213,7 +213,7 @@ class SqliteDebugRepository(DebugRepository):
         sql += " ORDER BY ts DESC LIMIT ?"
         params.append(filter.limit)
 
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             cursor = await conn.execute(sql, params)
             rows = await cursor.fetchall()
 
@@ -240,7 +240,7 @@ class SqliteDebugRepository(DebugRepository):
             command: shell 命令字符串。
             output: 命令的 stdout/stderr 输出。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             await conn.execute(
                 "INSERT INTO shell_history VALUES (?,?,?,?)",
                 (session_id, time.time(), command, output),
@@ -260,13 +260,148 @@ class SqliteDebugRepository(DebugRepository):
         返回：
             (命令, 输出) 元组列表，最旧在前。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             cursor = await conn.execute(
                 "SELECT command, output FROM shell_history WHERE session_id=? ORDER BY ts DESC LIMIT ?",
                 (session_id, limit),
             )
             rows = await cursor.fetchall()
         return [(row[0], row[1]) for row in reversed(rows)]
+
+    async def delete_old_logs(self, retention_seconds: float) -> int:
+        """
+        删除超过保留期的日志。
+
+        参数：
+            retention_seconds: 保留时间（秒）。早于此时间的日志将被删除。
+
+        返回：
+            删除的日志条数。
+        """
+        cutoff_time = time.time() - retention_seconds
+        async with self._get_conn() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM debug_logs WHERE ts < ?", (cutoff_time,)
+            )
+            await conn.commit()
+            deleted = cursor.rowcount
+        if deleted > 0:
+            logger.info("old_logs_deleted", count=deleted, cutoff_time=cutoff_time)
+        return deleted
+
+    async def delete_old_shell_history(self, retention_seconds: float) -> int:
+        """
+        删除超过保留期的 shell 历史。
+
+        参数：
+            retention_seconds: 保留时间（秒）。
+
+        返回：
+            删除的记录数。
+        """
+        cutoff_time = time.time() - retention_seconds
+        async with self._get_conn() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM shell_history WHERE ts < ?", (cutoff_time,)
+            )
+            await conn.commit()
+            deleted = cursor.rowcount
+        if deleted > 0:
+            logger.info("old_shell_history_deleted", count=deleted)
+        return deleted
+
+    async def delete_session_logs(self, session_id: str) -> int:
+        """
+        删除指定会话的所有日志。
+
+        参数：
+            session_id: 要清理的会话 ID。
+
+        返回：
+            删除的日志条数。
+        """
+        async with self._get_conn() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM debug_logs WHERE session_id=?", (session_id,)
+            )
+            await conn.execute(
+                "DELETE FROM shell_history WHERE session_id=?", (session_id,)
+            )
+            await conn.commit()
+            deleted = cursor.rowcount
+        if deleted > 0:
+            logger.info("session_logs_deleted", session=session_id, count=deleted)
+        return deleted
+
+    async def get_db_size_bytes(self) -> int:
+        """
+        获取数据库文件大小（字节）。
+
+        返回：
+            文件大小（字节）。
+        """
+        try:
+            return Path(self.db_path).stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    async def trim_logs_to_db_size(self, max_size_bytes: int) -> int:
+        """
+        当数据库超过指定大小时，删除最旧的日志直到低于限制。
+
+        参数：
+            max_size_bytes: 最大数据库大小（字节）。
+
+        返回：
+            删除的日志条数。
+        """
+        current_size = await self.get_db_size_bytes()
+        if current_size <= max_size_bytes:
+            return 0
+
+        total_deleted = 0
+        # 批量删除，每次删除 1000 条
+        batch_size = 1000
+        async with self._get_conn() as conn:
+            while True:
+                current_size = await self.get_db_size_bytes()
+                if current_size <= max_size_bytes:
+                    break
+
+                # 获取最旧的 1000 条日志的时间戳
+                cursor = await conn.execute(
+                    "SELECT ts FROM debug_logs ORDER BY ts ASC LIMIT ?", (batch_size,)
+                )
+                rows = await cursor.fetchall()
+                if not rows:
+                    break
+
+                # 删除这些日志
+                max_ts = rows[-1][0]
+                cursor = await conn.execute(
+                    "DELETE FROM debug_logs WHERE ts <= ?", (max_ts,)
+                )
+                await conn.commit()
+                total_deleted += cursor.rowcount
+
+        if total_deleted > 0:
+            logger.info(
+                "logs_trimmed_to_size",
+                deleted=total_deleted,
+                max_size_mb=max_size_bytes / (1024 * 1024),
+            )
+        return total_deleted
+
+    async def vacuum(self):
+        """
+        执行 SQLite VACUUM 命令回收未使用的空间。
+
+        注意：这会重写整个数据库文件，可能需要较长时间。
+        """
+        async with self._get_conn() as conn:
+            await conn.execute("VACUUM")
+            await conn.commit()
+        logger.info("database_vacuumed")
 
 
 class SqliteDeviceRepository(DeviceRepository):
@@ -283,14 +418,14 @@ class SqliteDeviceRepository(DeviceRepository):
         """
         self.db_path = db_path or settings().database.path
 
-    async def _get_conn(self) -> aiosqlite.Connection:
+    def _get_conn(self) -> aiosqlite.Connection:
         """打开新的 aiosqlite 连接（创建父目录）。"""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        return await aiosqlite.connect(self.db_path)
+        return aiosqlite.connect(self.db_path)
 
     async def init_db(self):
         """创建 devices 表（如果不存在）。"""
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             await conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS devices (
@@ -317,7 +452,7 @@ class SqliteDeviceRepository(DeviceRepository):
         参数：
             device: 要持久化的 DeviceInfo。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?,?,?,?,?)",
                 (
@@ -344,7 +479,7 @@ class SqliteDeviceRepository(DeviceRepository):
         返回：
             找到则返回 DeviceInfo，否则返回 None。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             cursor = await conn.execute("SELECT * FROM devices WHERE id=?", (device_id,))
             row = await cursor.fetchone()
             if not row:
@@ -367,7 +502,7 @@ class SqliteDeviceRepository(DeviceRepository):
         返回：
             数据库中所有 DeviceInfo 对象的列表。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             cursor = await conn.execute("SELECT * FROM devices")
             rows = await cursor.fetchall()
         return [
@@ -391,7 +526,7 @@ class SqliteDeviceRepository(DeviceRepository):
         参数：
             device_id: 要删除的设备的 ADB 序列号。
         """
-        async with await self._get_conn() as conn:
+        async with self._get_conn() as conn:
             await conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
             await conn.commit()
 

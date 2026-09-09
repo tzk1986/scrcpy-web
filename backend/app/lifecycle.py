@@ -10,9 +10,10 @@
 启动顺序：
     1. setup_logging()  — 配置 structlog（生产环境 JSON，开发环境控制台）
     2. init_db()        — 如果不存在则创建 SQLite 表
+    3. start_cleanup_task() — 启动定期日志清理后台任务
 
 关闭顺序：
-    （当前无需清理；aiosqlite 连接是每次操作独立的。）
+    1. stop_cleanup_task() — 停止日志清理任务
 
 添加新的启动工作时（如连接池、后台任务），放在 `yield` 之前。
 添加关闭工作时，放在 `yield` 之后。
@@ -42,9 +43,19 @@ async def lifespan(app: FastAPI):
     logger.info("application_starting")
     setup_logging()
     await init_db()
+
+    # 启动日志清理任务
+    from app.deps import get_debug_service
+    debug_service = get_debug_service()
+    await debug_service.start_cleanup_task()
+
     logger.info("application_started")
 
     yield
 
     logger.info("application_shutting_down")
+
+    # 停止日志清理任务
+    await debug_service.stop_cleanup_task()
+
     logger.info("application_stopped")

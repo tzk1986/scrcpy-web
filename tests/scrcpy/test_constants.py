@@ -180,7 +180,7 @@ class TestScrcpyServerConfig:
 
     def test_server_version(self):
         """测试 server 版本号"""
-        assert SCRCPY_SERVER_VERSION == "2.4"
+        assert SCRCPY_SERVER_VERSION == "4.1"
 
     def test_server_jar_name(self):
         """测试 server JAR 文件名"""

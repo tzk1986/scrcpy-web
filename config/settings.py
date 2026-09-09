@@ -84,12 +84,18 @@ class StreamConfig(BaseSettings):
     bit_rate: str = "4M"
     codec: str = "h264"
     fps: int = 30
+    scrcpy_path: str = Field(default="D:/scrcpy-win64-v4.1/scrcpy.exe", alias="SCRCPY_PATH")
 
 
 class DebugConfig(BaseSettings):
     log_buffer_size: int = 50000
     session_ttl_days: int = 7
+    log_retention_days: int = 7
     shell_history_days: int = 30
+    max_db_size_mb: int = 1000  # 最大数据库大小（MB），超过时自动清理旧日志
+    cleanup_interval_hours: int = 1  # 自动清理间隔（小时）
+    min_log_level: str = "I"  # 最低日志级别：V/D/I/W/E/F（生产环境建议 W）
+    log_rate_limit: int = 100  # 每秒最大日志数，超过时自动丢弃低级别日志
 
 
 class SecurityConfig(BaseSettings):
@@ -124,7 +130,7 @@ def load_yaml_config(env: str = "base") -> dict[str, Any]:
     if not config_file.exists():
         return {}
 
-    with open(config_file) as f:
+    with open(config_file, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 

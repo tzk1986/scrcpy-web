@@ -140,12 +140,17 @@ HIGH_QUALITY_ENCODER_OPTS = EncoderOpts(
 # scrcpy-server 配置
 # ---------------------------------------------------------------------------
 
-SCRCPY_SERVER_VERSION = "2.4"                           # scrcpy-server 版本
+SCRCPY_SERVER_VERSION = "2.4"                           # scrcpy-server 版本（使用 v2.4 协议）
 SCRCPY_SERVER_JAR_NAME = "scrcpy-server.jar"            # server JAR 文件名
 SCRCPY_SERVER_REMOTE_PATH = "/data/local/tmp/scrcpy-server.jar"  # 设备上的路径
 
 # scrcpy-server 启动参数（固定值）
 SCRCPY_SERVER_CLASS = "com.genymobile.scrcpy.Server"    # server 主类
+
+# scrcpy-server socket 名称（v4.1 使用 scid 格式化）
+# scid 为 31 位随机数，格式化为 8 位十六进制零填充（%08x）
+# 参考 scrcpy 源码：app/src/server.c 中的 "scrcpy_%08x"
+SCRCPY_SOCKET_NAME_TEMPLATE = "scrcpy_{:08x}"           # socket 名称模板（十六进制）
 
 # ---------------------------------------------------------------------------
 # ADB 配置

@@ -1,0 +1,13 @@
+# Production Configuration
+# Use: APP_ENV=production uvicorn app.main:app
+
+app:
+  debug: false
+  log_level: WARNING
+
+debug:
+  min_log_level: W  # Warning+ only (~50 logs/sec)
+  log_rate_limit: 50  # Limit logs per second
+  log_retention_days: 30  # Keep 30 days for troubleshooting
+  max_db_size_mb: 2048  # 2GB capacity (~2-3 days of Warning logs)
+  cleanup_interval_hours: 6  # Cleanup every 6 hours

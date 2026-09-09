@@ -7,6 +7,7 @@
  *   - logs: 日志条目列表（内存缓冲区，最多 50000 条）
  *   - filter: 日志过滤条件（level, tag）
  *   - connected: 是否已连接到调试会话
+ *   - wsConnected: WebSocket 是否已连接并订阅日志
  *
  * 提供的方法：
  *   - createSession(): 创建新的调试会话
@@ -14,16 +15,20 @@
  *   - execShell(): 执行 shell 命令
  *   - closeSession(): 关闭调试会话
  *   - appendLog(): 向日志缓冲区追加一条记录
+ *   - connectWebSocket(): 建立 WebSocket 连接并订阅日志
+ *   - disconnectWebSocket(): 断开 WebSocket 连接
  *
  * 使用方式（在 Vue 组件中）：
  *   import { useDebugStore } from '@/stores/debug'
  *   const debugStore = useDebugStore()
  *   await debugStore.createSession(deviceId, userId)
+ *   await debugStore.connectWebSocket()
  */
 
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/services/api'
+import { WebSocketService } from '@/services/websocket'
 
 /**
  * 日志条目接口。
@@ -36,6 +41,7 @@ export interface LogEntry {
   tid: number     // 线程 ID
   tag: string     // 日志标签
   message: string // 日志消息
+  raw?: string    // 原始日志行
 }
 
 /**
@@ -50,6 +56,20 @@ export const useDebugStore = defineStore('debug', () => {
     tag: null as string | null,
   })
   const connected = ref(false)
+  const wsConnected = ref(false)
+
+  let debugWs: WebSocketService | null = null
+
+  /**
+   * Shell 命令的 pending promise 解析器。
+   * 由于 shell 命令是串行的（用户输入一条，等待输出，再输入下一条），
+   * 只需一个 resolver 即可。当收到 shell_output 消息时，调用此 resolver。
+   *
+   * 流式输出：shell_stream 消息通过 onStreamLine 回调传递给调用方。
+   */
+  let shellResolve: ((result: { output: string; success: boolean }) => void) | null = null
+  /** 流式输出回调：每收到一行 shell_stream 消息时调用。 */
+  let onStreamLine: ((line: string) => void) | null = null
 
   /**
    * 创建调试会话。
@@ -90,6 +110,9 @@ export const useDebugStore = defineStore('debug', () => {
    * 清理状态（sessionId, logs, connected）。
    */
   async function closeSession() {
+    // 先断开 WebSocket
+    await disconnectWebSocket()
+
     if (!sessionId.value) return
     await api.closeDebugSession(sessionId.value)
     sessionId.value = null
@@ -108,15 +131,171 @@ export const useDebugStore = defineStore('debug', () => {
     }
   }
 
+  /**
+   * 建立 WebSocket 连接并订阅实时日志推送。
+   */
+  async function connectWebSocket() {
+    if (!sessionId.value) return
+    if (debugWs) return  // 已连接
+
+    // 使用 window.location.host 支持开发和生产环境
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    debugWs = new WebSocketService(`${wsProtocol}//${window.location.host}/ws/debug/${sessionId.value}`)
+
+    debugWs.setMessageHandler((data) => {
+      if (typeof data === 'string') {
+        try {
+          const msg = JSON.parse(data)
+          handleMessage(msg)
+        } catch (e) {
+          console.error('Failed to parse WebSocket message:', e)
+        }
+      }
+    })
+
+    debugWs.setCloseHandler(() => {
+      wsConnected.value = false
+      debugWs = null
+    })
+
+    debugWs.connect()
+
+    // 等待连接建立后发送订阅请求
+    // 由于 WebSocket 连接是异步的，我们需要等待 onopen 事件
+    await new Promise<void>((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (debugWs && (debugWs as any).ws?.readyState === WebSocket.OPEN) {
+          clearInterval(checkInterval)
+          resolve()
+        }
+      }, 100)
+
+      // 超时保护
+      setTimeout(() => {
+        clearInterval(checkInterval)
+        resolve()
+      }, 5000)
+    })
+
+    // 发送订阅请求
+    debugWs?.send({ op: 'subscribe' })
+    wsConnected.value = true
+  }
+
+  /**
+   * 断开 WebSocket 连接。
+   */
+  async function disconnectWebSocket() {
+    if (debugWs) {
+      debugWs.close()
+      debugWs = null
+    }
+    wsConnected.value = false
+  }
+
+  /**
+   * 设置服务端日志过滤条件。
+   * 通过 WebSocket 发送 filter 操作，只有匹配的日志才会推送。
+   * 这减少了网络流量和客户端处理开销。
+   */
+  function setFilter(level: string | null, tag: string | null) {
+    filter.value.level = level
+    filter.value.tag = tag
+    if (debugWs && wsConnected.value) {
+      debugWs.send({ op: 'filter', level, tag })
+    }
+  }
+
+  /**
+   * 通过 WebSocket 流式执行 shell 命令。
+   *
+   * 发送 exec 操作并通过 streamCallback 实时接收输出行。
+   * 返回一个 Promise，在命令完成（收到 shell_output）时解析。
+   * 如果 WebSocket 未连接，降级到 HTTP API。
+   *
+   * 参数：
+   *   cmd: 要执行的 shell 命令。
+   *   streamCallback: 每收到一行输出时调用的回调函数。
+   */
+  async function execShellWs(
+    cmd: string,
+    streamCallback?: (line: string) => void
+  ): Promise<{ output: string; success: boolean }> {
+    if (!debugWs || !wsConnected.value) {
+      // 降级到 HTTP API
+      const result = await execShell(cmd)
+      if (result) {
+        return { output: result.output, success: true }
+      }
+      return { output: 'Command failed', success: false }
+    }
+
+    return new Promise((resolve) => {
+      shellResolve = resolve
+      onStreamLine = streamCallback || null
+      debugWs!.send({ op: 'exec', command: cmd })
+    })
+  }
+
+  /**
+   * 处理 WebSocket 消息。
+   * 根据消息类型分发到不同的处理器：
+   *   - log: 追加到日志缓冲区
+   *   - shell_stream: 流式 shell 输出一行（调用 onStreamLine 回调）
+   *   - shell_output: shell 命令完成（解析 pending Promise）
+   *   - session_closed: 更新连接状态
+   */
+  function handleMessage(msg: any) {
+    switch (msg.type) {
+      case 'log':
+        appendLog(msg.entry)
+        break
+      case 'shell_stream':
+        // 流式输出：每行立即传递给回调
+        if (onStreamLine && msg.line) {
+          onStreamLine(msg.line)
+        }
+        break
+      case 'shell_output':
+        // 命令完成：清理回调，解析 Promise
+        onStreamLine = null
+        if (shellResolve) {
+          shellResolve({ output: msg.output || '', success: msg.success !== false })
+          shellResolve = null
+        }
+        break
+      case 'session_closed':
+        connected.value = false
+        wsConnected.value = false
+        onStreamLine = null
+        // 如果有 pending 的 shell 命令，拒绝它
+        if (shellResolve) {
+          shellResolve({ output: 'Session closed', success: false })
+          shellResolve = null
+        }
+        break
+      case 'subscribed':
+        console.log('Subscribed to session:', msg.session_id)
+        break
+      default:
+        console.log('Unknown message type:', msg.type)
+    }
+  }
+
   return {
     sessionId,
     logs,
     filter,
     connected,
+    wsConnected,
     createSession,
     fetchLogs,
     execShell,
     closeSession,
     appendLog,
+    connectWebSocket,
+    disconnectWebSocket,
+    execShellWs,
+    setFilter,
   }
 })

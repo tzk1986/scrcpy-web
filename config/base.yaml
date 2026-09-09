@@ -29,6 +29,11 @@ debug:
   log_buffer_size: 50000
   session_ttl_days: 7
   shell_history_days: 30
+  log_retention_days: 7
+  max_db_size_mb: 2048  # 2GB, ~2-3 days of Warning level logs
+  cleanup_interval_hours: 1
+  min_log_level: W  # Default: Warning+ only (greatly reduces log volume)
+  log_rate_limit: 50  # Max 50 logs per second
 
 security:
   jwt_algorithm: HS256

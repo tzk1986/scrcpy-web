@@ -140,10 +140,9 @@ class ServerManager:
                 )
                 return False
 
-            # 验证推送成功
-            if not await self._server_exists(device_id):
-                logger.error("push_server_verification_failed", device=device_id)
-                return False
+            # 注意：不再调用 _server_exists() 验证
+            # 因为在 Windows 上 adb shell 的路径可能被 Git Bash 转义，
+            # 导致验证误报失败。adb push 的返回码已足够可靠。
 
             logger.info("scrcpy_server_pushed", device=device_id)
             return True

@@ -70,16 +70,25 @@ def get_debug_repository() -> DebugRepository:
 # 这些由 FastAPI 的 Depends() 在每个请求时调用。
 # 它们将单例基础设施注入到应用层用例服务中。
 
+# ---------------------------------------------------------------------------
+# 单例应用服务（需要跨请求共享状态）
+# ---------------------------------------------------------------------------
+# DeviceService 和 DebugService 需要是单例，因为：
+#   - DeviceService 维护设备刷新任务和事件回调
+#   - DebugService 维护活跃会话、logcat 任务和 WebSocket 订阅者
+
+@lru_cache()
 def get_device_service() -> DeviceService:
-    """构建一个连接到 ADB 和设备仓库的 DeviceService。"""
+    """返回进程级 DeviceService 单例。"""
     return DeviceService(
         adb=get_adb_driver(),
         repo=get_device_repository(),
     )
 
 
+@lru_cache()
 def get_debug_service() -> DebugService:
-    """构建一个连接到 ADB 和调试仓库的 DebugService。"""
+    """返回进程级 DebugService 单例。"""
     return DebugService(
         adb=get_adb_driver(),
         repo=get_debug_repository(),

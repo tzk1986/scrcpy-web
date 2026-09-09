@@ -30,6 +30,8 @@ import asyncio
 import time
 from typing import Optional
 
+from fastapi import WebSocket
+
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver, DebugRepository, LogEntry, LogFilter
 from app.domain.session import DebugSession
@@ -56,6 +58,11 @@ class DebugService:
         self.sessions: dict[str, DebugSession] = {}
         # 后台 logcat 收集任务，按 session_id 索引。
         self.logcat_tasks: dict[str, asyncio.Task] = {}
+        # WebSocket 订阅者，按 session_id 索引。
+        # 每个订阅者有自己的过滤条件：{session_id: {ws: {"level": ..., "tag": ...}}}
+        self.subscribers: dict[str, dict[WebSocket, dict]] = {}
+        # 定期清理任务
+        self.cleanup_task: asyncio.Task | None = None
 
     async def create_session(self, device_id: str, user_id: str) -> DebugSession:
         """
@@ -117,6 +124,15 @@ class DebugService:
         if task := self.logcat_tasks.pop(session_id, None):
             task.cancel()
         self.sessions.pop(session_id, None)
+        # 清理订阅者
+        if session_id in self.subscribers:
+            # 通知订阅者会话已关闭
+            for ws in list(self.subscribers[session_id].keys()):
+                try:
+                    await ws.send_json({"type": "session_closed"})
+                except Exception:
+                    pass
+            del self.subscribers[session_id]
 
     async def _collect_logcat(self, session: DebugSession):
         """
@@ -124,26 +140,159 @@ class DebugService:
 
         运行直到被取消（当会话关闭时）。每行日志被：
             1. 解析为 LogEntry
-            2. 追加到内存环形缓冲区（最多 50K 条）
-            3. 持久化到数据库用于历史查询
-            4. 更新会话的 last_active 时间戳
+            2. 根据配置过滤（最低级别、速率限制）
+            3. 追加到内存环形缓冲区（最多 50K 条）
+            4. 持久化到数据库用于历史查询
+            5. 更新会话的 last_active 时间戳
+            6. 推送给所有 WebSocket 订阅者
+
+        智能过滤策略：
+            - 只保留 >= min_log_level 的日志
+            - 当日志速率超过 rate_limit 时，优先丢弃 V/D 级别
+            - W/E/F 级别始终保留
 
         参数：
             session: 要收集日志的调试会话。
         """
+        from app.core.config import settings as get_settings
+        settings = get_settings()
+
+        # 日志级别优先级（数字越大越重要）
+        level_priority = {"V": 0, "D": 1, "I": 2, "W": 3, "E": 4, "F": 5}
+        min_level = settings.debug.min_log_level
+        min_priority = level_priority.get(min_level, 2)  # 默认 I
+
+        # 速率限制
+        rate_limit = settings.debug.log_rate_limit
+        log_window_start = time.time()
+        log_count_in_window = 0
+
         try:
             async for line in self.adb.stream_logcat(session.device_id):
                 entry = self._parse_logcat_line(line)
+                entry_priority = level_priority.get(entry.level, 2)
+
+                # 策略 1: 过滤掉低于最低级别的日志
+                if entry_priority < min_priority:
+                    continue
+
+                # 策略 2: 速率限制 - 超过阈值时丢弃低级别日志
+                current_time = time.time()
+                if current_time - log_window_start >= 1.0:
+                    # 重置窗口
+                    log_window_start = current_time
+                    log_count_in_window = 0
+                else:
+                    log_count_in_window += 1
+                    if log_count_in_window > rate_limit:
+                        # 超过速率限制，只保留 W/E/F
+                        if entry_priority < 3:  # W=3
+                            continue
+
+                # 通过过滤，存储和推送
                 session.log_buffer.append(entry.__dict__)
                 # 环形缓冲区淘汰：超过容量时移除最旧的
                 if len(session.log_buffer) > self.MAX_LOG_BUFFER:
                     session.log_buffer.pop(0)
                 session.touch()
                 await self.repo.save_log(session.id, entry)
+
+                # 推送给 WebSocket 订阅者
+                await self._notify_subscribers(session.id, entry.__dict__)
         except asyncio.CancelledError:
             logger.info("logcat_collection_cancelled", session=session.id)
         except Exception as e:
             logger.error("logcat_collection_error", session=session.id, error=str(e))
+
+    async def subscribe(self, session_id: str, websocket: WebSocket):
+        """
+        订阅会话的实时日志推送。
+
+        参数：
+            session_id: 要订阅的调试会话 ID。
+            websocket: 客户端 WebSocket 连接。
+        """
+        if session_id not in self.subscribers:
+            self.subscribers[session_id] = {}
+        # 新订阅者默认无过滤（接收所有日志）
+        self.subscribers[session_id][websocket] = {}
+        logger.info("log_subscriber_added", session=session_id, count=len(self.subscribers[session_id]))
+
+    async def unsubscribe(self, session_id: str, websocket: WebSocket):
+        """
+        取消订阅会话的实时日志推送。
+
+        参数：
+            session_id: 要取消订阅的调试会话 ID。
+            websocket: 客户端 WebSocket 连接。
+        """
+        if session_id in self.subscribers:
+            self.subscribers[session_id].pop(websocket, None)
+            if not self.subscribers[session_id]:
+                del self.subscribers[session_id]
+            logger.info("log_subscriber_removed", session=session_id, count=len(self.subscribers.get(session_id, {})))
+
+    async def set_subscriber_filter(
+        self,
+        session_id: str,
+        websocket: WebSocket,
+        level: Optional[str] = None,
+        tag: Optional[str] = None,
+    ):
+        """
+        设置订阅者的日志过滤条件。
+
+        只有满足过滤条件的日志才会推送给该订阅者。
+        这减少了网络流量和客户端处理开销。
+
+        参数：
+            session_id: 调试会话 ID。
+            websocket: 客户端 WebSocket 连接。
+            level: 按日志级别过滤（V/D/I/W/E/F）。None = 所有级别。
+            tag: 按标签子串过滤。None = 所有标签。
+        """
+        if session_id in self.subscribers and websocket in self.subscribers[session_id]:
+            self.subscribers[session_id][websocket] = {"level": level, "tag": tag}
+            logger.info(
+                "subscriber_filter_set",
+                session=session_id,
+                level=level,
+                tag=tag,
+            )
+
+    async def _notify_subscribers(self, session_id: str, entry: dict):
+        """
+        向所有订阅者推送新日志条目（根据各自的过滤条件）。
+
+        参数：
+            session_id: 调试会话 ID。
+            entry: 日志条目字典。
+        """
+        if session_id not in self.subscribers:
+            return
+
+        dead_connections = set()
+        for ws, filter_opts in self.subscribers[session_id].items():
+            # 检查过滤条件
+            filter_level = filter_opts.get("level")
+            filter_tag = filter_opts.get("tag")
+
+            if filter_level and entry.get("level") != filter_level:
+                continue
+            if filter_tag and filter_tag not in entry.get("tag", ""):
+                continue
+
+            try:
+                await ws.send_json({"type": "log", "entry": entry})
+            except Exception as e:
+                logger.warning("failed_to_send_log", error=str(e))
+                dead_connections.add(ws)
+
+        # 清理断开的连接
+        for ws in dead_connections:
+            self.subscribers[session_id].pop(ws, None)
+        if not self.subscribers[session_id]:
+            del self.subscribers[session_id]
 
     def _parse_logcat_line(self, line: str) -> LogEntry:
         """
@@ -240,3 +389,155 @@ class DebugService:
         session.shell_history.append(cmd)
         session.touch()
         return output
+
+    async def exec_shell_stream(self, session_id: str, cmd: str):
+        """
+        流式执行 shell 命令，逐行产出输出。
+
+        与 exec_shell 类似，但输出是流式的——每行到达时立即产出，
+        而不是等待整个命令完成。适用于长时间运行的命令。
+
+        参数：
+            session_id: 活跃的调试会话。
+            cmd: 要执行的 shell 命令。
+
+        产出：
+            每行输出（字符串）。
+
+        异常：
+            ValueError: 如果找不到 session_id。
+            AdbError: 如果 ADB 命令失败。
+        """
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        collected_output = []
+        try:
+            async for line in self.adb.shell_stream(session.device_id, cmd):
+                collected_output.append(line)
+                yield line
+        finally:
+            # 命令完成后，记录到历史
+            full_output = "".join(collected_output)
+            await self.repo.save_shell_history(session_id, cmd, full_output)
+            session.shell_history.append(cmd)
+            session.touch()
+
+    # -------------------------------------------------------------------
+    # 日志清理
+    # -------------------------------------------------------------------
+
+    async def start_cleanup_task(self):
+        """
+        启动定期日志清理任务。
+
+        从配置中读取清理间隔（默认 1 小时），启动后台 asyncio 任务。
+        """
+        from app.core.config import settings as get_settings
+        settings = get_settings()
+        interval_seconds = settings.debug.cleanup_interval_hours * 3600
+
+        if self.cleanup_task and not self.cleanup_task.done():
+            logger.warning("cleanup_task_already_running")
+            return
+
+        self.cleanup_task = asyncio.create_task(self._cleanup_loop(interval_seconds))
+        logger.info("cleanup_task_started", interval_hours=settings.debug.cleanup_interval_hours)
+
+    async def stop_cleanup_task(self):
+        """停止定期清理任务。"""
+        if self.cleanup_task and not self.cleanup_task.done():
+            self.cleanup_task.cancel()
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("cleanup_task_stopped")
+
+    async def _cleanup_loop(self, interval_seconds: float):
+        """
+        后台清理循环。
+
+        每隔 interval_seconds 执行一次清理：
+          1. 删除超过保留期的日志
+          2. 删除超过保留期的 shell 历史
+          3. 如果数据库超过大小限制，删除最旧日志
+        """
+        try:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                await self.run_cleanup()
+        except asyncio.CancelledError:
+            logger.info("cleanup_loop_cancelled")
+
+    async def run_cleanup(self) -> dict:
+        """
+        执行一次日志清理。
+
+        清理策略：
+          1. 删除超过 log_retention_days 的日志
+          2. 删除超过 shell_history_days 的 shell 历史
+          3. 如果数据库超过 max_db_size_mb，删除最旧日志直到低于限制
+
+        返回：
+            清理统计信息字典。
+        """
+        from app.core.config import settings as get_settings
+        settings = get_settings()
+
+        log_retention_seconds = settings.debug.log_retention_days * 86400
+        shell_retention_seconds = settings.debug.shell_history_days * 86400
+        max_db_size_bytes = settings.debug.max_db_size_mb * 1024 * 1024
+
+        # 1. 删除超过保留期的日志
+        logs_deleted = await self.repo.delete_old_logs(log_retention_seconds)
+
+        # 2. 删除超过保留期的 shell 历史
+        shell_deleted = await self.repo.delete_old_shell_history(shell_retention_seconds)
+
+        # 3. 如果数据库超过大小限制，删除最旧日志
+        size_trimmed = await self.repo.trim_logs_to_db_size(max_db_size_bytes)
+
+        db_size = await self.repo.get_db_size_bytes()
+
+        result = {
+            "logs_deleted": logs_deleted,
+            "shell_deleted": shell_deleted,
+            "size_trimmed": size_trimmed,
+            "db_size_bytes": db_size,
+            "db_size_mb": round(db_size / (1024 * 1024), 2),
+        }
+
+        logger.info(
+            "cleanup_completed",
+            **result,
+        )
+        return result
+
+    async def cleanup_session(self, session_id: str) -> int:
+        """
+        手动清理指定会话的所有日志。
+
+        参数：
+            session_id: 要清理的会话 ID。
+
+        返回：
+            删除的日志条数。
+        """
+        return await self.repo.delete_session_logs(session_id)
+
+    async def get_db_stats(self) -> dict:
+        """
+        获取数据库统计信息。
+
+        返回：
+            包含数据库大小、日志数量等信息的字典。
+        """
+        db_size = await self.repo.get_db_size_bytes()
+        return {
+            "db_size_bytes": db_size,
+            "db_size_mb": round(db_size / (1024 * 1024), 2),
+            "active_sessions": len(self.sessions),
+            "total_subscribers": sum(len(s) for s in self.subscribers.values()),
+        }

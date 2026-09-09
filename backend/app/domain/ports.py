@@ -155,6 +155,25 @@ class AdbDriver(Protocol):
         """
         ...
 
+    async def shell_stream(self, device_id: str, cmd: str) -> AsyncIterator[str]:
+        """
+        流式执行 shell 命令，逐行产出输出。
+
+        适用于长时间运行的命令（如 logcat -d、find、grep -r），
+        允许调用方在命令仍在执行时处理输出行。
+
+        参数：
+            device_id: ADB 序列号。
+            cmd: 要执行的 shell 命令。
+
+        产出：
+            每次迭代产出一行输出（UTF-8 字符串）。
+
+        异常：
+            AdbError: 命令启动失败时。
+        """
+        ...
+
     async def stream_logcat(self, device_id: str) -> AsyncIterator[str]:
         """
         逐行流式输出 logcat（无限生成器）。
@@ -363,6 +382,69 @@ class DebugRepository(Protocol):
 
         返回：
             (命令, 输出) 元组列表，最旧在前。
+        """
+        ...
+
+    async def delete_old_logs(self, retention_seconds: float) -> int:
+        """
+        删除超过保留期的日志。
+
+        参数：
+            retention_seconds: 保留时间（秒）。
+
+        返回：
+            删除的日志条数。
+        """
+        ...
+
+    async def delete_old_shell_history(self, retention_seconds: float) -> int:
+        """
+        删除超过保留期的 shell 历史。
+
+        参数：
+            retention_seconds: 保留时间（秒）。
+
+        返回：
+            删除的记录数。
+        """
+        ...
+
+    async def delete_session_logs(self, session_id: str) -> int:
+        """
+        删除指定会话的所有日志和 shell 历史。
+
+        参数：
+            session_id: 要清理的会话 ID。
+
+        返回：
+            删除的日志条数。
+        """
+        ...
+
+    async def get_db_size_bytes(self) -> int:
+        """
+        获取数据库文件大小（字节）。
+
+        返回：
+            文件大小（字节）。
+        """
+        ...
+
+    async def trim_logs_to_db_size(self, max_size_bytes: int) -> int:
+        """
+        当数据库超过指定大小时，删除最旧的日志。
+
+        参数：
+            max_size_bytes: 最大数据库大小（字节）。
+
+        返回：
+            删除的日志条数。
+        """
+        ...
+
+    async def vacuum(self):
+        """
+        执行 SQLite VACUUM 回收未使用空间。
         """
         ...
 

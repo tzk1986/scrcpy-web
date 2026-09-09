@@ -209,6 +209,44 @@ class AdbCliDriver:
         """
         return await self._run_serial(device_id, "shell", cmd)
 
+    async def shell_stream(self, device_id: str, cmd: str) -> AsyncIterator[str]:
+        """
+        流式执行 shell 命令，逐行产出输出。
+
+        启动 `adb shell` 子进程并在每行到达时产出。
+        当生成器关闭时（如通过 asyncio.Task.cancel()），子进程被 kill。
+
+        参数：
+            device_id: ADB 序列号。
+            cmd: 要执行的 shell 命令。
+
+        产出：
+            每次迭代产出一行输出（UTF-8 字符串）。
+        """
+        proc = await asyncio.create_subprocess_exec(
+            self.adb_path,
+            "-s",
+            device_id,
+            "shell",
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                yield line.decode("utf-8", errors="replace")
+
+            # 读取 stderr（如果有）
+            stderr_data = await proc.stderr.read()
+            if stderr_data:
+                yield stderr_data.decode("utf-8", errors="replace")
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+
     async def check_connection(self, device_id: str) -> bool:
         """
         检查设备是否仍然连接。
@@ -345,11 +383,8 @@ class AdbCliDriver:
         """
         截取屏幕截图并返回 PNG 字节。
 
-        流程：
-            1. 在设备上运行 `screencap -p /sdcard/screenshot.png`
-            2. 将文件拉到主机上的临时文件
-            3. 清理设备端的文件
-            4. 读取并返回临时文件内容
+        使用 `adb exec-out screencap -p` 直接管道输出 PNG 数据，
+        比传统的 screencap + pull + rm 三步方式快得多（单次 ADB 调用）。
 
         参数：
             device_id: ADB 序列号。
@@ -357,18 +392,18 @@ class AdbCliDriver:
         返回：
             PNG 图像数据字节。
         """
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp_path = tmp.name
+        proc = await asyncio.create_subprocess_exec(
+            self.adb_path, "-s", device_id, "exec-out", "screencap", "-p",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
 
-        try:
-            await self._run_serial(
-                device_id, "shell", "screencap", "-p", "/sdcard/screenshot.png"
-            )
-            await self._run_serial(
-                device_id, "pull", "/sdcard/screenshot.png", tmp_path
-            )
-            await self._run_serial(device_id, "shell", "rm", "/sdcard/screenshot.png")
+        if proc.returncode != 0:
+            error_msg = stderr.decode().strip()
+            raise AdbError(f"Screenshot failed: {error_msg}")
 
-            return Path(tmp_path).read_bytes()
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+        if not stdout:
+            raise AdbError("Screenshot returned empty data")
+
+        return stdout

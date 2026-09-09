@@ -19,6 +19,14 @@ FastAPI 的 @app.websocket 装饰器与 APIRouter 的路径参数路由配合不
 处理逻辑仍然委托给 interfaces/ws/ 中的处理器。
 """
 
+import sys
+import asyncio
+
+# Windows 上需要 ProactorEventLoop 才能使用 asyncio.create_subprocess_exec
+# 必须在任何其他 asyncio 代码之前设置
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
