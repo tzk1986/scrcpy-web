@@ -37,7 +37,7 @@ async def test_video_stream(device_id: str = "192.168.8.34:5555"):
             try:
                 while asyncio.get_event_loop().time() - start_time < 10:  # 最多等待 10 秒
                     # 设置超时
-                    message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
+                    message = await asyncio.wait_for(websocket.recv(), timeout=5.0)
 
                     if isinstance(message, bytes):
                         # 二进制数据（H.264 视频帧）

@@ -40,7 +40,6 @@ export class WebTransportService {
     }
 
     try {
-      // @ts-expect-error - WebTransport API 尚未包含在 TypeScript 类型定义中
       this.transport = new WebTransport(this.url)
       await this.transport.ready
       console.log('WebTransport connected:', this.url)

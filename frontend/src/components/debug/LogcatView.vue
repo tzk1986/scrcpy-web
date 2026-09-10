@@ -107,7 +107,8 @@ const filterTag = ref<string | null>(null)
 /** 日志列表容器 DOM 引用。 */
 const logListRef = ref<HTMLElement>()
 /** 虚拟滚动组件引用。 */
-const scrollerRef = ref<InstanceType<typeof RecycleScroller>>()
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const scrollerRef = ref<any>()
 /** 是否自动滚动到底部。 */
 const autoScroll = ref(true)
 /** 数据库统计信息。 */

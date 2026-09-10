@@ -38,7 +38,6 @@ export interface VideoStreamStats {
 export class VideoStream {
   private deviceId: string
   private canvas: HTMLCanvasElement
-  private ws: WebSocketService
   private timer: number | null = null
   private _state: VideoStreamState = 'idle'
   private _frameCount = 0
@@ -61,12 +60,11 @@ export class VideoStream {
   constructor(
     deviceId: string,
     canvas: HTMLCanvasElement,
-    ws: WebSocketService,
+    _ws: WebSocketService,
     refreshInterval = 1500
   ) {
     this.deviceId = deviceId
     this.canvas = canvas
-    this.ws = ws
     this.refreshInterval = refreshInterval
   }
 
