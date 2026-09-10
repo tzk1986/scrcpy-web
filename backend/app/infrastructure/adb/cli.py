@@ -211,10 +211,9 @@ class AdbCliDriver:
 
     async def shell_stream(self, device_id: str, cmd: str) -> AsyncIterator[str]:
         """
-        流式执行 shell 命令，逐行产出输出。
+        流式执行 shell 命令，逐行产出输出（Pipe 模式，用于 HTTP API 降级）。
 
-        启动 `adb shell` 子进程并在每行到达时产出。
-        当生成器关闭时（如通过 asyncio.Task.cancel()），子进程被 kill。
+        修复：命令追加 `2>&1` 合并 stderr 到 stdout，同时启动后台任务消费 stderr。
 
         参数：
             device_id: ADB 序列号。
@@ -223,27 +222,33 @@ class AdbCliDriver:
         产出：
             每次迭代产出一行输出（UTF-8 字符串）。
         """
+        # 关键：追加 2>&1 合并 stderr
         proc = await asyncio.create_subprocess_exec(
             self.adb_path,
             "-s",
             device_id,
             "shell",
-            cmd,
+            f"{cmd} 2>&1",  # 合并 stderr 到 stdout
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # 备用：启动后台任务消费 stderr（防止极端情况）
+        stderr_task = asyncio.create_task(self._consume_stderr(proc.stderr))
+
         try:
             while True:
                 line = await proc.stdout.readline()
                 if not line:
                     break
-                yield line.decode("utf-8", errors="replace")
+                text = line.decode("utf-8", errors="replace")
+                yield text.rstrip("\r\n") + "\n"
 
-            # 读取 stderr（如果有）
+            # 读取 stderr（如果有遗漏）
             stderr_data = await proc.stderr.read()
             if stderr_data:
                 yield stderr_data.decode("utf-8", errors="replace")
         finally:
+            stderr_task.cancel()
             if proc.returncode is None:
                 proc.kill()
 
@@ -316,11 +321,13 @@ class AdbCliDriver:
 
     async def stream_logcat(self, device_id: str) -> AsyncIterator[str]:
         """
-        逐行流式输出 logcat。
+        逐行流式输出 logcat（修复 stderr 死锁）。
 
         启动长运行的 `adb logcat -v threadtime` 子进程并
         在每行到达时产出。当生成器关闭时
         （如通过 asyncio.Task.cancel()），子进程被 kill。
+
+        修复：启动后台任务消费 stderr，防止管道缓冲区满导致死锁。
 
         参数：
             device_id: ADB 序列号。
@@ -338,13 +345,17 @@ class AdbCliDriver:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # 新增：启动后台任务消费 stderr，防止管道缓冲区满导致死锁
+        stderr_task = asyncio.create_task(self._consume_stderr(proc.stderr))
+
         try:
             while True:
                 line = await proc.stdout.readline()
                 if not line:
                     break
-                yield line.decode("utf-8", errors="replace")
+                yield line.decode("utf-8", errors="replace").rstrip("\r\n")
         finally:
+            stderr_task.cancel()
             proc.kill()
 
     async def push(self, device_id: str, local: str, remote: str):
@@ -407,3 +418,42 @@ class AdbCliDriver:
             raise AdbError("Screenshot returned empty data")
 
         return stdout
+
+    async def _consume_stderr(self, stderr):
+        """
+        消费 stderr 防止管道缓冲区满导致死锁。
+
+        使用场景：
+          - shell_stream()：stderr 已通过 2>&1 合并，此方法作为备用
+          - stream_logcat()：stderr 未合并，必须消费以防止死锁
+
+        参数：
+            stderr: 子进程的 stderr 流。
+        """
+        try:
+            while True:
+                line = await stderr.readline()
+                if not line:
+                    break
+                logger.debug("adb_stderr", line=line.decode(errors="replace").strip())
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def create_shell(self, device_id: str, initial_output_callback=None) -> "ShellSession":
+        """
+        创建交互式 shell 会话（PTY 模式）。
+
+        参数：
+            device_id: ADB 序列号。
+            initial_output_callback: 可选回调，接收初始输出（用于显示 prompt）。
+
+        返回：
+            ShellSession 实例（已启动）。
+
+        异常：
+            AdbError: 启动失败时。
+        """
+        from app.infrastructure.adb.shell import InteractiveShell
+        shell = InteractiveShell()
+        await shell.start(device_id, initial_output_callback)
+        return shell

@@ -63,6 +63,10 @@ class DebugService:
         self.subscribers: dict[str, dict[WebSocket, dict]] = {}
         # 定期清理任务
         self.cleanup_task: asyncio.Task | None = None
+        # 交互式 shell 会话，按 session_id 索引（PTY 模式）
+        self.shell_sessions: dict[str, "ShellSession"] = {}
+        # Shell 输出转发任务，按 session_id 索引
+        self.shell_output_forwarding_tasks: dict[str, asyncio.Task] = {}
 
     async def create_session(self, device_id: str, user_id: str) -> DebugSession:
         """
@@ -115,6 +119,7 @@ class DebugService:
         关闭调试会话并停止 logcat 收集。
 
         取消后台 logcat 任务并从内存字典中移除会话。
+        同时关闭交互式 shell 会话。
         数据库记录被保留用于历史查询。
 
         参数：
@@ -123,6 +128,15 @@ class DebugService:
         logger.info("closing_debug_session", session=session_id)
         if task := self.logcat_tasks.pop(session_id, None):
             task.cancel()
+        # 停止 shell 输出转发任务
+        if fwd_task := self.shell_output_forwarding_tasks.pop(session_id, None):
+            fwd_task.cancel()
+        # 关闭交互式 shell
+        if shell := self.shell_sessions.pop(session_id, None):
+            try:
+                await shell.stop()
+            except Exception as e:
+                logger.warning("shell_stop_failed", session=session_id, error=str(e))
         self.sessions.pop(session_id, None)
         # 清理订阅者
         if session_id in self.subscribers:
@@ -390,12 +404,169 @@ class DebugService:
         session.touch()
         return output
 
+    async def get_or_create_shell(self, session_id: str) -> "ShellSession":
+        """
+        获取或创建交互式 shell 会话。
+
+        如果 shell 已存在且存活，则返回现有实例。
+        否则创建新的 shell 会话，并启动输出转发任务。
+
+        参数：
+            session_id: 活跃的调试会话。
+
+        返回：
+            ShellSession 实例。
+
+        异常：
+            ValueError: 如果找不到 session_id。
+            AdbError: 如果启动失败。
+        """
+        if session_id in self.shell_sessions:
+            shell = self.shell_sessions[session_id]
+            if shell.is_alive:
+                return shell
+            # Shell 已死亡，移除
+            del self.shell_sessions[session_id]
+
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        # 创建新 shell
+        shell = await self.adb.create_shell(session.device_id)
+        self.shell_sessions[session_id] = shell
+        logger.info("shell_created", session=session_id, device=session.device_id)
+
+        # 启动输出转发（将 shell 输出通过 WebSocket 发送给客户端）
+        self._start_output_forwarding(session_id, shell)
+
+        return shell
+
+    def _start_output_forwarding(self, session_id: str, shell: "ShellSession"):
+        """
+        启动 shell 输出转发任务。
+
+        首先发送初始输出（设备 prompt），然后后台持续从 shell._output_queue
+        读取输出并通过 WebSocket 发送给订阅的客户端。
+
+        当 shell 退出时（get_output() 返回 None），任务自动结束。
+
+        参数：
+            session_id: 调试会话 ID。
+            shell: InteractiveShell 实例。
+        """
+        if session_id in self.shell_output_forwarding_tasks:
+            task = self.shell_output_forwarding_tasks[session_id]
+            if not task.done():
+                return  # 已经在运行
+            del self.shell_output_forwarding_tasks[session_id]
+
+        async def forward_loop():
+            try:
+                # 初始输出由 subscribe 处理器直接发送，此处只转发后续输出
+                logger.info("shell_output_forwarding_started", session=session_id)
+                while True:
+                    line = await shell.get_output()
+                    if line is None:
+                        break  # Shell 退出
+                    await self._notify_shell_output(session_id, line)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning("shell_output_forwarding_error",
+                               session=session_id, error=str(e))
+
+        self.shell_output_forwarding_tasks[session_id] = asyncio.create_task(forward_loop())
+        logger.info("shell_output_forwarding_task_created", session=session_id)
+
+    async def _notify_shell_output(self, session_id: str, line: str):
+        """
+        将 shell 输出发送给所有订阅该会话的 WebSocket 客户端。
+
+        参数：
+            session_id: 调试会话 ID。
+            line: 输出行。
+        """
+        if session_id not in self.subscribers:
+            return
+
+        dead_connections = set()
+        for ws in list(self.subscribers[session_id].keys()):
+            try:
+                await ws.send_json({"type": "shell_stream", "line": line})
+            except Exception as e:
+                logger.warning("failed_to_send_shell_output", error=str(e))
+                dead_connections.add(ws)
+
+        # 清理断开的连接
+        for ws in dead_connections:
+            self.subscribers[session_id].pop(ws, None)
+        if not self.subscribers[session_id]:
+            del self.subscribers[session_id]
+
+    async def stop_output_forwarding(self, session_id: str):
+        """
+        停止 shell 输出转发任务。
+
+        通常在 WebSocket 断开时调用。
+
+        参数：
+            session_id: 调试会话 ID。
+        """
+        if task := self.shell_output_forwarding_tasks.pop(session_id, None):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.debug("shell_output_forwarding_stopped", session=session_id)
+
     async def exec_shell_stream(self, session_id: str, cmd: str):
         """
-        流式执行 shell 命令，逐行产出输出。
+        流式执行 shell 命令（使用 InteractiveShell 的 execute）。
 
-        与 exec_shell 类似，但输出是流式的——每行到达时立即产出，
-        而不是等待整个命令完成。适用于长时间运行的命令。
+        执行期间，后台读取器将输出路由到 _exec_queue，
+        避免与 PTY 输出队列冲突。命令完成后返回汇总结果。
+
+        参数：
+            session_id: 活跃的调试会话。
+            cmd: 要执行的 shell 命令。
+
+        返回：
+            字典 {"output": str, "success": bool}
+
+        异常：
+            ValueError: 如果找不到 session_id。
+        """
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        collected_output = []
+        success = True
+        try:
+            # 使用 InteractiveShell（PTY 模式）
+            shell = await self.get_or_create_shell(session_id)
+            async for line in shell.execute(cmd):
+                collected_output.append(line)
+        except Exception as e:
+            collected_output.append(str(e))
+            success = False
+        finally:
+            # 命令完成后，记录到历史
+            full_output = "".join(collected_output)
+            await self.repo.save_shell_history(session_id, cmd, full_output)
+            session.shell_history.append(cmd)
+            session.touch()
+
+        return {"output": full_output, "success": success}
+
+    async def _exec_shell_stream_raw(self, session_id: str, cmd: str):
+        """
+        流式执行 shell 命令，逐行产出输出（供 WebSocket 使用）。
+
+        与 exec_shell_stream 类似，但以异步迭代器形式逐行产出，
+        而不是收集完整输出。WebSocket 处理器使用此方法实时转发输出。
 
         参数：
             session_id: 活跃的调试会话。
@@ -406,15 +577,16 @@ class DebugService:
 
         异常：
             ValueError: 如果找不到 session_id。
-            AdbError: 如果 ADB 命令失败。
+            ShellExitedError: 如果 shell 退出。
         """
         session = self.sessions.get(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
 
+        shell = await self.get_or_create_shell(session_id)
         collected_output = []
         try:
-            async for line in self.adb.shell_stream(session.device_id, cmd):
+            async for line in shell.execute(cmd):
                 collected_output.append(line)
                 yield line
         finally:

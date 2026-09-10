@@ -30,6 +30,35 @@ sys.path.insert(0, str(project_root / "backend"))
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
+def client():
+    """
+    FastAPI 测试客户端。
+
+    使用 TestClient 模拟 HTTP 请求，无需启动真实服务器。
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    return TestClient(app)
+
+
+@pytest.fixture
+def mock_adb():
+    """
+    Mock ADB 驱动。
+
+    模拟 AdbDriver 协议，返回预设的测试数据。
+    用于单元测试中避免依赖真实 ADB 连接。
+    """
+    from app.domain.ports import AdbDriver
+
+    mock = MagicMock(spec=AdbDriver)
+    mock.list_devices = AsyncMock(return_value=["emulator-5554"])
+    mock.get_device_info = AsyncMock()
+    mock.shell = AsyncMock(return_value="mock output")
+    return mock
+
+
+@pytest.fixture
 def mock_device_id():
     """
     模拟设备 ID。

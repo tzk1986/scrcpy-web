@@ -115,14 +115,16 @@ export class H264VideoStream {
 
     // 注册消息处理器
     this.ws.setMessageHandler((data: unknown) => {
+      console.log('[H264] Message received:', typeof data, data instanceof ArrayBuffer ? `${(data as ArrayBuffer).byteLength} bytes` : data)
       if (data instanceof ArrayBuffer) {
         this.handleBinaryFrame(new Uint8Array(data))
       } else if (typeof data === 'string') {
         try {
           const msg = JSON.parse(data)
+          console.log('[H264] JSON message:', msg.type, msg)
           this.handleJsonMessage(msg)
         } catch {
-          console.warn('Failed to parse WebSocket message:', data)
+          console.warn('[H264] Failed to parse WebSocket message:', data)
         }
       } else if (data instanceof Blob) {
         // 如果 WebSocket 的 binaryType 不是 arraybuffer，会收到 Blob
@@ -176,6 +178,8 @@ export class H264VideoStream {
       const codec = msg.codec as string || 'avc1.42E01E'
       const descriptionHex = msg.description as string
 
+      console.log('[H264] Config received:', { codec, descriptionLength: descriptionHex?.length })
+
       if (!descriptionHex) {
         this.setError('Missing codec description in config')
         return
@@ -183,11 +187,14 @@ export class H264VideoStream {
 
       // 解析 hex 格式的 SPS+PPS（Annex B 格式，带起始码）
       const annexBData = this.hexToUint8Array(descriptionHex)
+      console.log('[H264] AnnexB data length:', annexBData.length, 'bytes')
 
       // 提取 SPS 和 PPS NAL 单元
       const nalus = this.extractNalus(annexBData)
+      console.log('[H264] Extracted NALUs:', nalus.length)
       for (const nalu of nalus) {
         const naluType = nalu.data[0] & 0x1F
+        console.log('[H264] NALU type:', naluType, 'length:', nalu.data.length)
         if (naluType === 7) {
           // SPS
           this.spsData = nalu.raw  // 包含起始码
@@ -198,12 +205,13 @@ export class H264VideoStream {
       }
 
       if (!this.spsData || !this.ppsData) {
-        this.setError('Failed to extract SPS/PPS from description')
+        this.setError(`Failed to extract SPS/PPS from description. SPS: ${!!this.spsData}, PPS: ${!!this.ppsData}`)
         return
       }
 
       // 创建 avcC 格式的 description
       const avccDescription = this.buildAvccDescription(this.spsData, this.ppsData)
+      console.log('[H264] AVCC description size:', avccDescription.byteLength)
 
       // 初始化 VideoDecoder
       this.initDecoder(codec, avccDescription)
@@ -215,9 +223,24 @@ export class H264VideoStream {
 
   /** 处理二进制视频帧 */
   private handleBinaryFrame(data: Uint8Array) {
+    // 先尝试解析为 JSON（config 消息可能被作为 ArrayBuffer 接收）
+    try {
+      const text = new TextDecoder().decode(data)
+      const msg = JSON.parse(text)
+      if (msg.type === 'config' || msg.type === 'error') {
+        console.log('[H264] JSON message from binary:', msg.type)
+        this.handleJsonMessage(msg)
+        return
+      }
+    } catch {
+      // 不是 JSON，当作二进制帧处理
+    }
+
     if (!this.decoder || this.decoder.state !== 'configured') {
+      console.log('[H264] Frame dropped: decoder not ready, state:', this.decoder?.state)
       return
     }
+    console.log('[H264] Decoding frame:', data.length, 'bytes')
 
     // 将 Annex B 帧转换为 AVCC 格式
     const avccData = this.annexBToAvcc(data)
@@ -284,11 +307,13 @@ export class H264VideoStream {
       },
     })
 
+    console.log('[H264] Configuring decoder:', codec)
     this.decoder.configure({
       codec: codec,
       description: description,
       optimizeForLatency: true,
     })
+    console.log('[H264] Decoder state after configure:', this.decoder.state)
   }
 
   /** 设置错误状态 */

@@ -34,27 +34,30 @@ export class WebSocketService {
    * 注册 onopen/onmessage/onerror/onclose 回调。
    */
   connect() {
+    console.log('[WS] Connecting to:', this.url)
     this.ws = new WebSocket(this.url)
 
     this.ws.onopen = () => {
-      console.log('WebSocket connected:', this.url)
+      console.log('[WS] Connected:', this.url)
     }
 
     this.ws.onmessage = (event) => {
+      const isBinary = event.data instanceof ArrayBuffer || event.data instanceof Blob
+      console.log('[WS] Message received:', typeof event.data, isBinary ? `(${event.data instanceof ArrayBuffer ? (event.data as ArrayBuffer).byteLength : 'Blob'} bytes)` : event.data.substring(0, 100))
       if (this.onMessage) {
         this.onMessage(event.data)
       }
     }
 
     this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
+      console.error('[WS] Error:', error)
       if (this.onError) {
         this.onError(error)
       }
     }
 
     this.ws.onclose = () => {
-      console.log('WebSocket closed:', this.url)
+      console.log('[WS] Closed:', this.url)
       if (this.onClose) {
         this.onClose()
       }

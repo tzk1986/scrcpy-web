@@ -70,6 +70,8 @@ export const useDebugStore = defineStore('debug', () => {
   let shellResolve: ((result: { output: string; success: boolean }) => void) | null = null
   /** 流式输出回调：每收到一行 shell_stream 消息时调用。 */
   let onStreamLine: ((line: string) => void) | null = null
+  /** Shell 输出处理器：PTY 模式下接收设备输出并写入终端。 */
+  let shellOutputHandler: ((output: string) => void) | null = null
 
   /**
    * 创建调试会话。
@@ -140,12 +142,18 @@ export const useDebugStore = defineStore('debug', () => {
 
     // 使用 window.location.host 支持开发和生产环境
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    debugWs = new WebSocketService(`${wsProtocol}//${window.location.host}/ws/debug/${sessionId.value}`)
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/debug/${sessionId.value}`
+    console.log('[DebugStore] Connecting WebSocket:', wsUrl)
+
+    debugWs = new WebSocketService(wsUrl)
+
+    let connected = false
 
     debugWs.setMessageHandler((data) => {
       if (typeof data === 'string') {
         try {
           const msg = JSON.parse(data)
+          console.log('[DebugStore] Message:', msg.type)
           handleMessage(msg)
         } catch (e) {
           console.error('Failed to parse WebSocket message:', e)
@@ -153,7 +161,12 @@ export const useDebugStore = defineStore('debug', () => {
       }
     })
 
+    debugWs.setErrorHandler((error) => {
+      console.error('[DebugStore] WebSocket error:', error)
+    })
+
     debugWs.setCloseHandler(() => {
+      console.log('[DebugStore] WebSocket closed')
       wsConnected.value = false
       debugWs = null
     })
@@ -161,25 +174,34 @@ export const useDebugStore = defineStore('debug', () => {
     debugWs.connect()
 
     // 等待连接建立后发送订阅请求
-    // 由于 WebSocket 连接是异步的，我们需要等待 onopen 事件
     await new Promise<void>((resolve) => {
       const checkInterval = setInterval(() => {
         if (debugWs && (debugWs as any).ws?.readyState === WebSocket.OPEN) {
+          connected = true
           clearInterval(checkInterval)
           resolve()
         }
       }, 100)
 
-      // 超时保护
+      // 超时保护（10秒）
       setTimeout(() => {
         clearInterval(checkInterval)
+        if (!connected) {
+          console.error('[DebugStore] WebSocket connection timeout')
+        }
         resolve()
-      }, 5000)
+      }, 10000)
     })
 
-    // 发送订阅请求
-    debugWs?.send({ op: 'subscribe' })
-    wsConnected.value = true
+    // 只有在连接成功时才发送订阅请求并设置状态
+    if (connected && debugWs) {
+      debugWs.send({ op: 'subscribe' })
+      wsConnected.value = true
+      console.log('[DebugStore] WebSocket connected and subscribed')
+    } else {
+      console.error('[DebugStore] Failed to connect WebSocket')
+      debugWs = null
+    }
   }
 
   /**
@@ -204,6 +226,42 @@ export const useDebugStore = defineStore('debug', () => {
     if (debugWs && wsConnected.value) {
       debugWs.send({ op: 'filter', level, tag })
     }
+  }
+
+  /**
+   * 发送原始按键到设备 shell（PTY 模式）。
+   *
+   * 用于完全透传的交互式终端，支持 Ctrl+C、Tab、↑↓ 等。
+   * 通过 WebSocket 发送 input 操作，数据使用 base64 编码。
+   *
+   * 参数：
+   *   data: 原始按键数据（字符串）。
+   */
+  function sendInput(data: string) {
+    if (!debugWs || !wsConnected.value) {
+      console.warn('[DebugStore] WebSocket not connected, cannot send input')
+      return
+    }
+    // 修复：设备 PTY 可能未设置 ICRNL 标志，\r 不会被转换为 \n
+    // 将 \r 替换为 \n 确保 shell 的 readline() 能识别行结束符
+    if (data === '\r') {
+      data = '\n'
+    }
+    // base64 编码
+    const encoded = btoa(unescape(encodeURIComponent(data)))
+    debugWs.send({ op: 'input', data: encoded })
+  }
+
+  /**
+   * 设置 shell 输出处理器（PTY 模式）。
+   *
+   * 当收到 shell_stream 消息时，调用此处理器将输出写入终端。
+   *
+   * 参数：
+   *   handler: 输出处理函数。
+   */
+  function setShellOutputHandler(handler: (output: string) => void) {
+    shellOutputHandler = handler
   }
 
   /**
@@ -241,8 +299,9 @@ export const useDebugStore = defineStore('debug', () => {
    * 处理 WebSocket 消息。
    * 根据消息类型分发到不同的处理器：
    *   - log: 追加到日志缓冲区
-   *   - shell_stream: 流式 shell 输出一行（调用 onStreamLine 回调）
+   *   - shell_stream: 流式 shell 输出一行（调用 onStreamLine 和 shellOutputHandler）
    *   - shell_output: shell 命令完成（解析 pending Promise）
+   *   - error: 错误消息（显示在终端）
    *   - session_closed: 更新连接状态
    */
   function handleMessage(msg: any) {
@@ -255,6 +314,10 @@ export const useDebugStore = defineStore('debug', () => {
         if (onStreamLine && msg.line) {
           onStreamLine(msg.line)
         }
+        // PTY 模式：直接写入终端
+        if (shellOutputHandler && msg.line) {
+          shellOutputHandler(msg.line)
+        }
         break
       case 'shell_output':
         // 命令完成：清理回调，解析 Promise
@@ -263,6 +326,13 @@ export const useDebugStore = defineStore('debug', () => {
           shellResolve({ output: msg.output || '', success: msg.success !== false })
           shellResolve = null
         }
+        break
+      case 'error':
+        // 错误消息：写入终端
+        if (shellOutputHandler && msg.message) {
+          shellOutputHandler(`\r\n[Error] ${msg.message}\r\n`)
+        }
+        console.error('[DebugStore] Error:', msg.message)
         break
       case 'session_closed':
         connected.value = false
@@ -297,5 +367,7 @@ export const useDebugStore = defineStore('debug', () => {
     disconnectWebSocket,
     execShellWs,
     setFilter,
+    sendInput,
+    setShellOutputHandler,
   }
 })

@@ -131,17 +131,22 @@ function isWebCodecsSupported(): boolean {
 onMounted(async () => {
   if (!canvasRef.value) return
 
+  console.log('[VideoPlayer] Component mounted, deviceId:', props.deviceId)
+  console.log('[VideoPlayer] Device resolution:', props.deviceWidth, 'x', props.deviceHeight)
+
   // 设置 canvas 初始尺寸（默认手机竖屏比例）
   canvasRef.value.width = props.deviceWidth || 1080
   canvasRef.value.height = props.deviceHeight || 1920
 
   // 初始化 WebSocket（用于视频流和输入事件）
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  ws = new WebSocketService(`${wsProtocol}//${window.location.host}/ws/video/${props.deviceId}`)
+  const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/video/${props.deviceId}`
+  console.log('[VideoPlayer] Creating WebSocket:', wsUrl)
+  ws = new WebSocketService(wsUrl)
   ws.setErrorHandler((e) => {
-    console.error('WebSocket error:', e)
+    console.error('[VideoPlayer] WebSocket error:', e)
   })
   ws.setCloseHandler(() => {
+    console.log('[VideoPlayer] WebSocket closed')
     state.value = 'stopped'
   })
   ws.connect()
@@ -154,11 +159,14 @@ onMounted(async () => {
   )
 
   // 根据浏览器支持选择视频流模式
+  console.log('[VideoPlayer] WebCodecs supported:', isWebCodecsSupported())
   if (isWebCodecsSupported()) {
+    console.log('[VideoPlayer] Using H264 video stream mode')
     mode.value = 'h264'
     h264Stream = new H264VideoStream(ws, canvasRef.value)
 
     h264Stream.setStateChangeHandler((newState) => {
+      console.log('[VideoPlayer] H264 stream state changed:', newState)
       state.value = newState
       if (newState === 'error') {
         error.value = h264Stream?.stats.error || 'Unknown error'
@@ -172,6 +180,7 @@ onMounted(async () => {
 
     h264Stream.start()
   } else {
+    console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
     // 回退到截屏模式
     mode.value = 'screenshot'
     videoStream = new VideoStream(props.deviceId, canvasRef.value, ws)

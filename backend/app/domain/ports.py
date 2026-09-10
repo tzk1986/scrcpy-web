@@ -104,6 +104,97 @@ class EncoderOpts:
 # @runtime_checkable 允许使用 isinstance() 检查进行依赖验证。
 
 @runtime_checkable
+class ShellSession(Protocol):
+    """
+    交互式 Shell 会话抽象 — 持久化 PTY 终端会话。
+
+    实现类：
+        - InteractiveShell（infrastructure/adb/shell.py）：基于 `adb shell -tt`
+
+    与单次 shell 命令不同，ShellSession 保持会话状态（如 cd、su），
+    支持完整终端功能（Ctrl+C、Tab、↑↓ 历史、readline）。
+    """
+
+    @property
+    def is_alive(self) -> bool:
+        """
+        检查 shell 进程是否存活。
+
+        返回：
+            True 表示进程运行中，False 表示已退出。
+        """
+        ...
+
+    async def start(self, device_id: str, initial_output_callback=None):
+        """
+        启动交互式 shell 会话。
+
+        参数：
+            device_id: ADB 序列号。
+            initial_output_callback: 可选回调，接收初始输出（用于显示 prompt）。
+
+        异常：
+            AdbError: 启动失败时。
+        """
+        ...
+
+    async def execute(self, cmd: str) -> AsyncIterator[str]:
+        """
+        执行命令并流式返回输出（用于 HTTP API 降级）。
+
+        参数：
+            cmd: 要执行的 shell 命令。
+
+        产出：
+            每行输出（UTF-8 字符串）。
+
+        异常：
+            ShellExitedError: 进程意外退出时。
+        """
+        ...
+
+    async def send_input(self, data: bytes):
+        """
+        发送原始输入（按键）到 shell（用于 WebSocket 透传）。
+
+        参数：
+            data: 原始字节数据（如按键序列）。
+
+        异常：
+            ShellExitedError: 进程已退出时。
+        """
+        ...
+
+    async def get_output(self) -> str | None:
+        """
+        从输出队列获取一行输出（阻塞）。
+
+        用于 PTY 模式的输出转发。当 shell 退出时返回 None。
+
+        返回：
+            一行输出（UTF-8 字符串），或 None（EOF）。
+        """
+        ...
+
+    def get_initial_output(self) -> str:
+        """
+        获取初始输出（包括设备 prompt）。
+
+        返回：
+            初始输出字符串。
+        """
+        ...
+
+    async def stop(self):
+        """
+        安全关闭 shell 进程。
+
+        先关闭 stdin，等待进程自然退出，超时则强制 kill。
+        """
+        ...
+
+
+@runtime_checkable
 class AdbDriver(Protocol):
     """
     ADB 驱动抽象 — 所有设备通信都通过这里。
@@ -233,6 +324,21 @@ class AdbDriver(Protocol):
 
         返回：
             PNG 图像数据。
+        """
+        ...
+
+    async def create_shell(self, device_id: str) -> "ShellSession":
+        """
+        创建交互式 shell 会话（PTY 模式）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            ShellSession 实例（已启动）。
+
+        异常：
+            AdbError: 启动失败时。
         """
         ...
 
