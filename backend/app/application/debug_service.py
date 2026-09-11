@@ -228,8 +228,8 @@ class DebugService:
         """
         if session_id not in self.subscribers:
             self.subscribers[session_id] = {}
-        # 新订阅者默认无过滤（接收所有日志）
-        self.subscribers[session_id][websocket] = {}
+        # 新订阅者默认无过滤、暂停状态（不接收日志，等待用户手动开启）
+        self.subscribers[session_id][websocket] = {"paused": True}
         logger.info("log_subscriber_added", session=session_id, count=len(self.subscribers[session_id]))
 
     async def unsubscribe(self, session_id: str, websocket: WebSocket):
@@ -252,6 +252,7 @@ class DebugService:
         websocket: WebSocket,
         level: Optional[str] = None,
         tag: Optional[str] = None,
+        paused: bool = False,
     ):
         """
         设置订阅者的日志过滤条件。
@@ -264,14 +265,16 @@ class DebugService:
             websocket: 客户端 WebSocket 连接。
             level: 按日志级别过滤（V/D/I/W/E/F）。None = 所有级别。
             tag: 按标签子串过滤。None = 所有标签。
+            paused: 是否暂停推送（暂停后不再推送新日志，但缓冲区保留）。
         """
         if session_id in self.subscribers and websocket in self.subscribers[session_id]:
-            self.subscribers[session_id][websocket] = {"level": level, "tag": tag}
+            self.subscribers[session_id][websocket] = {"level": level, "tag": tag, "paused": paused}
             logger.info(
                 "subscriber_filter_set",
                 session=session_id,
                 level=level,
                 tag=tag,
+                paused=paused,
             )
 
     async def _notify_subscribers(self, session_id: str, entry: dict):
@@ -287,6 +290,10 @@ class DebugService:
 
         dead_connections = set()
         for ws, filter_opts in self.subscribers[session_id].items():
+            # 检查暂停状态
+            if filter_opts.get("paused"):
+                continue
+
             # 检查过滤条件
             filter_level = filter_opts.get("level")
             filter_tag = filter_opts.get("tag")

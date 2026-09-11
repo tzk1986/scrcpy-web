@@ -2,15 +2,22 @@
   Logcat 日志查看器
   ===================
 
-  实时显示 Android 设备的 logcat 日志。
+  实时显示 Android 设备的 logcat 日志，类似 Chrome DevTools Console。
 
   功能：
+    - 录制开关：开启/暂停接收新日志（默认暂停）
     - 日志级别过滤（V/D/I/W/E/F）
-    - 标签过滤（子串匹配）
+    - 关键词搜索（匹配 Tag 或 Message，不区分大小写）
     - 实时日志推送（通过 WebSocket）
-    - 刷新按钮：从后端重新获取日志
-    - 清空按钮：清除本地日志缓存
     - 自动滚动：新日志时自动滚动到底部
+    - 点击日志复制到剪贴板
+    - 导出、清理、清空
+
+  性能优化：
+    - 使用 computed 缓存过滤结果
+    - 搜索框使用防抖（300ms）减少频繁过滤
+    - 预计算小写字符串加速匹配
+    - 暂停录制时后端停止推送，减少客户端处理
 
   日志显示格式：
     [时间戳] [级别] [标签] 消息内容
@@ -26,15 +33,23 @@
   数据来源：
     使用 useDebugStore 管理日志数据和过滤条件。
     通过 WebSocket 接收实时日志推送。
-
-  性能注意：
-    当日志量很大时（>1000 条），应考虑使用虚拟滚动
-    （vue-virtual-scroller）以避免 DOM 节点过多导致卡顿。
 -->
 <template>
   <div class="logcat-view">
     <div class="toolbar">
-      <el-select v-model="filterLevel" placeholder="Level" clearable size="small">
+      <!-- 录制开关 -->
+      <el-button
+        :type="debugStore.isRecording ? 'success' : 'info'"
+        size="small"
+        @click="toggleRecording"
+        class="record-btn"
+      >
+        <span v-if="debugStore.isRecording">⏸ 暂停</span>
+        <span v-else>▶ 开始</span>
+      </el-button>
+
+      <!-- 级别过滤 -->
+      <el-select v-model="filterLevel" placeholder="级别" clearable size="small" class="filter-select">
         <el-option label="Verbose" value="V" />
         <el-option label="Debug" value="D" />
         <el-option label="Info" value="I" />
@@ -42,7 +57,17 @@
         <el-option label="Error" value="E" />
         <el-option label="Fatal" value="F" />
       </el-select>
-      <el-input v-model="filterTag" placeholder="Tag filter" clearable size="small" />
+
+      <!-- 搜索框 -->
+      <el-input
+        v-model="searchInput"
+        placeholder="搜索 Tag 或消息..."
+        clearable
+        size="small"
+        class="search-input"
+      />
+
+      <!-- 操作按钮 -->
       <el-button size="small" @click="refresh">刷新</el-button>
       <el-button size="small" @click="clear">清空</el-button>
       <el-dropdown size="small" @command="exportLogs" trigger="click">
@@ -55,35 +80,56 @@
         </template>
       </el-dropdown>
       <el-button size="small" @click="runCleanup" :loading="cleaning">清理</el-button>
-      <el-switch
-        v-model="autoScroll"
-        active-text="自动滚动"
-        size="small"
-      />
+
+      <!-- 自动滚动 -->
+      <div class="auto-scroll-control">
+        <el-switch v-model="autoScroll" size="small" />
+        <span class="switch-label">自动滚动</span>
+      </div>
+
+      <!-- 统计信息 -->
+      <div class="stats-control">
+        <span v-if="filterSearch || filterLevel" class="filter-count">
+          显示 {{ filteredLogs.length }} / {{ debugStore.logs.length }}
+        </span>
+        <span v-else class="filter-count">
+          共 {{ debugStore.logs.length }} 条
+        </span>
+      </div>
+
+      <!-- 数据库大小 -->
       <span v-if="dbStats" class="db-stats" :title="`数据库大小: ${dbStats.db_size_mb} MB`">
         DB: {{ dbStats.db_size_mb }} MB
       </span>
     </div>
 
-    <div class="log-list" ref="logListRef">
-      <RecycleScroller
-        ref="scrollerRef"
-        :items="filteredLogs"
-        :item-size="22"
-        key-field="ts"
-        v-slot="{ item }"
-        class="scroller"
-      >
-        <div :class="['log-entry', `level-${item.level.toLowerCase()}`]">
-          <span class="timestamp">{{ formatTime(item.ts) }}</span>
-          <span class="level">{{ item.level }}</span>
-          <span class="tag">{{ item.tag }}</span>
-          <span class="message">{{ item.message }}</span>
-        </div>
-      </RecycleScroller>
+    <!-- 暂停状态提示 -->
+    <div v-if="!debugStore.isRecording" class="paused-banner">
+      ⏸ 日志录制已暂停，当前显示 {{ debugStore.logs.length }} 条历史日志
     </div>
 
-    <div v-if="debugStore.wsConnected" class="status-indicator live">
+    <div class="log-list" ref="logListRef">
+      <div class="log-entries">
+        <div
+          v-for="item in filteredLogs"
+          :key="item.ts"
+          :class="['log-entry', `level-${item.level.toLowerCase()}`]"
+          @click="copyLog(item)"
+          :title="'点击复制'"
+        >
+          <span class="timestamp">{{ formatTime(item.ts) }}</span>
+          <span class="level">{{ item.level }}</span>
+          <span class="tag" :title="item.tag">{{ item.tag }}</span>
+          <span class="message">{{ item.message }}</span>
+        </div>
+        <div v-if="filteredLogs.length === 0" class="empty-state">
+          <span v-if="!debugStore.isRecording">已暂停录制，无新日志</span>
+          <span v-else>▶ 开始</span>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="debugStore.wsConnected && debugStore.isRecording" class="status-indicator live">
       LIVE
     </div>
   </div>
@@ -91,8 +137,6 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { RecycleScroller } from 'vue-virtual-scroller'
-import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useDebugStore } from '@/stores/debug'
 import { api } from '@/services/api'
 
@@ -102,13 +146,12 @@ const debugStore = useDebugStore()
 
 /** 日志级别过滤条件。 */
 const filterLevel = ref<string | null>(null)
-/** 标签过滤条件（子串匹配）。 */
-const filterTag = ref<string | null>(null)
+/** 搜索输入（带防抖）。 */
+const searchInput = ref('')
+/** 实际生效的搜索关键词（防抖后）。 */
+const filterSearch = ref<string | null>(null)
 /** 日志列表容器 DOM 引用。 */
 const logListRef = ref<HTMLElement>()
-/** 虚拟滚动组件引用。 */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const scrollerRef = ref<any>()
 /** 是否自动滚动到底部。 */
 const autoScroll = ref(true)
 /** 数据库统计信息。 */
@@ -116,43 +159,89 @@ const dbStats = ref<{ db_size_mb: number } | null>(null)
 /** 是否正在执行清理。 */
 const cleaning = ref(false)
 
+/** 搜索防抖定时器。 */
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
 /**
  * 计算属性：根据过滤条件过滤日志。
- * 先按级别过滤，再按标签过滤。
+ * 先按级别过滤，再按搜索关键词过滤（匹配 Tag 或 Message）。
  */
 const filteredLogs = computed(() => {
-  let logs = debugStore.logs
-  if (filterLevel.value) {
-    logs = logs.filter((l) => l.level === filterLevel.value)
+  const logs = debugStore.logs
+  const level = filterLevel.value
+  const search = filterSearch.value
+
+  // 无过滤条件时直接返回
+  if (!level && !search) return logs
+
+  if (search) {
+    const query = search.toLowerCase()
+    if (level) {
+      return logs.filter((l) =>
+        l.level === level && (
+          l.tag.toLowerCase().includes(query) ||
+          l.message.toLowerCase().includes(query)
+        )
+      )
+    }
+    return logs.filter((l) =>
+      l.tag.toLowerCase().includes(query) ||
+      l.message.toLowerCase().includes(query)
+    )
   }
-  if (filterTag.value) {
-    logs = logs.filter((l) => l.tag.includes(filterTag.value!))
-  }
-  return logs
+
+  return logs.filter((l) => l.level === level)
 })
 
 // 组件挂载时加载日志并建立 WebSocket 连接
 onMounted(async () => {
-  await debugStore.fetchLogs()
   await debugStore.connectWebSocket()
+  await debugStore.fetchLogs()
+  // 初始加载后滚动到底部：nextTick 等待 Vue DOM 更新
+  await nextTick()
+  scrollToBottom()
   await loadDbStats()
 })
 
 // 监听过滤条件变化，通过 store 的 setFilter 同步到服务端
 watch(filterLevel, () => {
-  debugStore.setFilter(filterLevel.value, filterTag.value)
+  debugStore.setFilter(filterLevel.value, filterSearch.value)
 })
 
-watch(filterTag, () => {
-  debugStore.setFilter(filterLevel.value, filterTag.value)
+// 搜索输入防抖（300ms）
+watch(searchInput, (val) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    filterSearch.value = val || null
+    debugStore.setFilter(filterLevel.value, val || null)
+  }, 300)
 })
 
 // 监听日志变化，自动滚动到底部
-watch(() => debugStore.logs.length, () => {
+// nextTick 确保 Vue 完成 v-for DOM 更新后再计算 scrollHeight
+watch(() => debugStore.logs.length, async () => {
   if (autoScroll.value) {
+    await nextTick()
     scrollToBottom()
   }
 })
+
+// 监听录制状态变化，开始时重新加载日志
+watch(() => debugStore.isRecording, async (recording) => {
+  if (recording) {
+    // 开始录制时，从后端拉取最新日志（填补暂停期间的缺口）
+    await debugStore.fetchLogs()
+    if (autoScroll.value) {
+      await nextTick()
+      scrollToBottom()
+    }
+  }
+})
+
+/** 切换录制状态（开启/暂停）。 */
+function toggleRecording() {
+  debugStore.setRecording(!debugStore.isRecording)
+}
 
 /** 从后端重新获取日志。 */
 async function refresh() {
@@ -175,7 +264,7 @@ async function exportLogs(format: 'json' | 'csv') {
       debugStore.sessionId,
       format,
       filterLevel.value,
-      filterTag.value,
+      filterSearch.value,
     )
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -188,9 +277,7 @@ async function exportLogs(format: 'json' | 'csv') {
   }
 }
 
-/**
- * 加载数据库统计信息。
- */
+/** 加载数据库统计信息。 */
 async function loadDbStats() {
   try {
     dbStats.value = await api.getDebugStats()
@@ -201,11 +288,17 @@ async function loadDbStats() {
 
 /**
  * 执行日志清理。
+ * 清除当前会话的所有日志（数据库 + 内存缓冲区），并刷新统计信息。
  */
 async function runCleanup() {
   cleaning.value = true
   try {
-    await api.runCleanup()
+    if (debugStore.sessionId) {
+      // 清除当前会话的数据库日志
+      await api.cleanupSessionLogs(debugStore.sessionId)
+    }
+    // 清除内存缓冲区，使界面立即更新
+    debugStore.logs = []
     await loadDbStats()
   } catch (e) {
     console.error('Failed to run cleanup:', e)
@@ -214,12 +307,17 @@ async function runCleanup() {
   }
 }
 
-/** 滚动到底部（使用虚拟滚动器的 scrollToItem）。 */
-async function scrollToBottom() {
-  await nextTick()
-  if (scrollerRef.value && filteredLogs.value.length > 0) {
-    scrollerRef.value.scrollToItem(filteredLogs.value.length - 1)
+/** 滚动到底部。调用方需确保已在 nextTick 之后（DOM 已更新）。 */
+function scrollToBottom() {
+  if (logListRef.value) {
+    logListRef.value.scrollTop = logListRef.value.scrollHeight
   }
+}
+
+/** 复制日志条目到剪贴板。 */
+function copyLog(item: { ts: number; level: string; tag: string; message: string }) {
+  const text = `${formatTime(item.ts)} [${item.level}] ${item.tag}: ${item.message}`
+  navigator.clipboard.writeText(text).catch(e => console.error('Copy failed:', e))
 }
 
 /**
@@ -247,36 +345,101 @@ function formatTime(ts: number) {
   border-bottom: 1px solid #eee;
   background: #fff;
   z-index: 1;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.record-btn {
+  min-width: 72px;
+  font-weight: 500;
+}
+
+.filter-select {
+  width: 120px;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 150px;
+  max-width: 300px;
+}
+
+.toolbar :deep(.el-input .el-input__wrapper) {
+  height: 32px;
+}
+
+.auto-scroll-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.switch-label {
+  font-size: 12px;
+  color: #606266;
+  user-select: none;
+}
+
+.stats-control {
+  margin-left: auto;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #909399;
+  white-space: nowrap;
+}
+
+.filter-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.paused-banner {
+  background: #fff3e0;
+  color: #e65100;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-bottom: 1px solid #ffe0b2;
 }
 
 .log-list {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 12px;
 }
 
-.scroller {
-  height: 100%;
+.log-entries {
+  display: flex;
+  flex-direction: column;
 }
 
 .log-entry {
-  padding: 2px 4px;
+  padding: 3px 4px;
   border-bottom: 1px solid #f5f5f5;
   display: flex;
   gap: 8px;
-  height: 22px;
-  align-items: center;
+  align-items: flex-start;
   box-sizing: border-box;
+  cursor: pointer;
+  line-height: 1.5;
 }
 
 .log-entry:hover {
-  background: #f9f9f9;
+  background: #f0f7ff;
+}
+
+.empty-state {
+  padding: 20px;
+  text-align: center;
+  color: #909399;
+  font-size: 12px;
 }
 
 .timestamp {
   color: #999;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .level {
@@ -298,11 +461,16 @@ function formatTime(ts: number) {
   color: #0088aa;
   flex-shrink: 0;
   min-width: 100px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message {
   flex: 1;
   word-break: break-all;
+  white-space: pre-wrap;
 }
 
 .status-indicator {
@@ -329,7 +497,6 @@ function formatTime(ts: number) {
 }
 
 .db-stats {
-  margin-left: auto;
   padding: 0 8px;
   font-size: 11px;
   color: #909399;

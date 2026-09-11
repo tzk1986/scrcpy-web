@@ -16,6 +16,7 @@
 """
 
 import asyncio
+import ipaddress
 import re
 import struct
 import time
@@ -102,8 +103,18 @@ class NetworkSampler:
         if self._prev_rx is not None and self._prev_ts is not None:
             elapsed = now - self._prev_ts
             if elapsed > 0:
-                rx_rate = ((rx_bytes - self._prev_rx) / 1024) / elapsed
-                tx_rate = ((tx_bytes - self._prev_tx) / 1024) / elapsed
+                rx_delta = rx_bytes - self._prev_rx
+                tx_delta = tx_bytes - self._prev_tx
+                # 检测计数器重置（负值），重置基准
+                if rx_delta < 0 or tx_delta < 0:
+                    self._prev_rx = rx_bytes
+                    self._prev_tx = tx_bytes
+                    self._prev_ts = now
+                    rx_rate = 0.0
+                    tx_rate = 0.0
+                else:
+                    rx_rate = (rx_delta / 1024) / elapsed
+                    tx_rate = (tx_delta / 1024) / elapsed
 
         self._prev_rx = rx_bytes
         self._prev_tx = tx_bytes
@@ -131,8 +142,8 @@ class NetworkSampler:
         """
         获取网络流量统计。
 
-        从 /proc/net/dev 读取 wlan0（WiFi）的收发字节数。
-        如果没有 WiFi，则使用所有接口的总和。
+        从 /proc/net/dev 读取 wlan（WiFi）接口的收发字节数。
+        如果没有 WiFi 接口，则使用所有接口的总和。
 
         返回：
             (rx_bytes, tx_bytes) 元组。
@@ -142,8 +153,8 @@ class NetworkSampler:
 
             total_rx = 0
             total_tx = 0
-            wlan_rx = 0
-            wlan_tx = 0
+            wlan_rx: int | None = None
+            wlan_tx: int | None = None
 
             for line in output.splitlines():
                 line = line.strip()
@@ -161,12 +172,11 @@ class NetworkSampler:
                     total_rx += rx
                     total_tx += tx
 
-                    if iface.startswith("wlan") or iface.startswith("eth"):
+                    if wlan_rx is None and iface.startswith("wlan"):
                         wlan_rx = rx
                         wlan_tx = tx
 
-            # 优先使用 WiFi/有线接口数据
-            if wlan_rx > 0 or wlan_tx > 0:
+            if wlan_rx is not None:
                 return wlan_rx, wlan_tx
             return total_rx, total_tx
 
@@ -273,14 +283,33 @@ class NetworkSampler:
         # 解析端口
         port = int(port_hex, 16)
 
-        # 解析 IP（小端序）
+        # 解析 IP
         if len(ip_hex) == 8:
-            # IPv4
+            # IPv4（小端序）
             ip_int = int(ip_hex, 16)
             ip_bytes = struct.pack("<I", ip_int)
             ip_addr = f"{ip_bytes[0]}.{ip_bytes[1]}.{ip_bytes[2]}.{ip_bytes[3]}"
+        elif len(ip_hex) == 32:
+            # IPv6（/proc/net/tcp6 格式）
+            # Linux 内核存储方式：
+            # - 纯 IPv6 地址：网络字节序（直接转换）
+            # - IPv4 映射地址（::ffff:x.x.x.x）：混合字节序（需每 32-bit 字反转）
+            if ip_hex.upper().startswith('0000000000000000FFFF'):
+                # IPv4 映射地址：每 32-bit 字反转
+                raw_bytes = bytearray(16)
+                for i in range(4):
+                    chunk = bytes.fromhex(ip_hex[i*8:(i+1)*8])
+                    raw_bytes[i*4:(i+1)*4] = chunk[::-1]
+                ip6 = ipaddress.IPv6Address(bytes(raw_bytes))
+                if ip6.ipv4_mapped:
+                    ip_addr = f"::ffff:{ip6.ipv4_mapped}"
+                else:
+                    ip_addr = str(ip6)
+            else:
+                # 纯 IPv6 地址：直接转换
+                raw_bytes = bytes.fromhex(ip_hex)
+                ip_addr = str(ipaddress.IPv6Address(raw_bytes))
         else:
-            # IPv6（简化处理）
             ip_addr = f"[{ip_hex}]"
 
         return ip_addr, port

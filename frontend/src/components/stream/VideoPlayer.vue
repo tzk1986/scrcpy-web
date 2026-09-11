@@ -158,12 +158,12 @@ onMounted(async () => {
   console.log('[VideoPlayer] Device resolution:', props.deviceWidth, 'x', props.deviceHeight)
 
   // 设置 canvas 初始尺寸（使用设备实际分辨率，保持比例）
+  // CSS 尺寸由 width:100%; height:100%; object-fit:contain 控制，
+  // 自适应容器大小并维持视频原始比例（含 letterboxing）。
   const initWidth = props.deviceWidth || 1080
   const initHeight = props.deviceHeight || 1920
   canvasRef.value.width = initWidth
   canvasRef.value.height = initHeight
-  // 设置 CSS aspect-ratio 保持显示比例
-  canvasRef.value.style.aspectRatio = `${initWidth} / ${initHeight}`
 
   // 初始化 WebSocket（用于视频流和输入事件）
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/video/${props.deviceId}`
@@ -326,9 +326,10 @@ async function reconnect() {
 }
 
 .video-canvas {
-  max-width: 100%;
-  max-height: 100%;
-  /* aspect-ratio 由 JS 动态设置，保持视频原始比例 */
+  /* CSS 尺寸填满容器，object-fit:contain 保持视频原始比例并自动 letterbox */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   cursor: pointer;
   touch-action: none;
   user-select: none;

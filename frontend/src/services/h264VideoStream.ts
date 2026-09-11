@@ -234,16 +234,16 @@ export class H264VideoStream {
         Array.from(new Uint8Array(avccDescription)).map(b => b.toString(16).padStart(2, '0')).join(' '))
       console.log('[H264] AVCC description size:', avccDescription.byteLength)
 
-      // 关键：收到 config 后立即设置 canvas 尺寸为设备分辨率
-      // 这样 InputController 的坐标映射从一开始就使用正确的设备坐标
-      // 而不是默认的 1080x1920（方向可能错误）
+      // 关键：收到 config 后立即设置 canvas 绘制缓冲区尺寸为设备分辨率
+      // CSS 尺寸由 object-fit:contain 控制，自适应容器并保持比例。
+      // InputController 的坐标映射基于 canvas.width/height（绘制缓冲区）和
+      // getBoundingClientRect()（CSS 盒），自动处理 letterboxing。
       if (width > 0 && height > 0) {
         this.canvas.width = width
         this.canvas.height = height
-        this.canvas.style.aspectRatio = `${width} / ${height}`
         this._width = width
         this._height = height
-        console.log('[H264] Canvas initialized to device resolution:', width, 'x', height)
+        console.log('[H264] Canvas buffer initialized to device resolution:', width, 'x', height)
       }
 
       // 初始化 VideoDecoder

@@ -66,7 +66,10 @@ class PerformanceSampler:
         self.device_id = device_id
         self._prev_cpu_times: tuple[int, int] | None = None  # (total, idle)
         self._prev_frames: int | None = None  # 上次采样的累计帧数
+        self._prev_jank: int = 0              # 上次采样的累计卡顿帧数
         self._prev_ts: float | None = None    # 上次采样时间戳
+        self._prev_package: str = ""          # 上次采样的应用包名
+        self._last_fps: float = 0.0           # 上次有效的 FPS 值（用于过渡显示）
 
     async def sample(self, interval: float = 1.0) -> AsyncIterator[PerformanceMetrics]:
         """
@@ -197,8 +200,9 @@ class PerformanceSampler:
             now: 当前时间戳（秒）。
 
         返回：
-            (fps, jank_count) 元组。
+            (fps, jank_delta) 元组。
             fps 可能为 None（首次采样或无法获取时）。
+            jank_delta 是本周期内的卡顿帧增量。
         """
         try:
             # 先获取当前前台 Activity
@@ -206,13 +210,13 @@ class PerformanceSampler:
             if not package:
                 return None, 0
 
-            # 获取该 Activity 的 gfxinfo
+            # 获取该 Activity 的 gfxinfo（不用 grep，避免二进制输出问题）
             output = await self.adb.shell(
                 self.device_id,
-                f"dumpsys gfxinfo {package} | grep -E 'Total frames rendered|Janky frames'"
+                f"dumpsys gfxinfo {package}"
             )
 
-            # 解析帧数
+            # 解析累计帧数
             frames_match = re.search(r"Total frames rendered:\s*(\d+)", output)
             jank_match = re.search(r"Janky frames:\s*(\d+)", output)
 
@@ -220,20 +224,33 @@ class PerformanceSampler:
                 return None, 0
 
             total_frames = int(frames_match.group(1))
-            jank_count = int(jank_match.group(1)) if jank_match else 0
+            total_jank = int(jank_match.group(1)) if jank_match else 0
 
-            # 计算实时 FPS（两次采样差值 / 时间差）
+            # 计算实时 FPS 和卡顿增量
             fps: float | None = None
+            jank_delta = 0
             if self._prev_frames is not None and self._prev_ts is not None:
                 elapsed = now - self._prev_ts
                 if elapsed > 0:
                     frame_delta = total_frames - self._prev_frames
-                    fps = round(frame_delta / elapsed, 1)
+                    # 检测应用切换（包名变化）或计数器重置
+                    if self._prev_package != package:
+                        # 应用切换，重置基准，返回上次有效 FPS 作为过渡
+                        fps = self._last_fps
+                    elif frame_delta < 0 or frame_delta > 10000:
+                        # 计数器异常，重置基准
+                        fps = self._last_fps
+                    else:
+                        fps = round(frame_delta / elapsed, 1)
+                        self._last_fps = fps  # 记录有效 FPS
+                        jank_delta = max(0, total_jank - self._prev_jank)
 
             self._prev_frames = total_frames
+            self._prev_jank = total_jank
             self._prev_ts = now
+            self._prev_package = package
 
-            return fps, jank_count
+            return fps, jank_delta
 
         except Exception as e:
             logger.warning("get_fps_failed", device=self.device_id, error=str(e))

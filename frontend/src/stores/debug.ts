@@ -57,6 +57,8 @@ export const useDebugStore = defineStore('debug', () => {
   })
   const connected = ref(false)
   const wsConnected = ref(false)
+  /** 是否正在录制（接收）新日志。默认开启。 */
+  const isRecording = ref(false)
 
   let debugWs: WebSocketService | null = null
 
@@ -196,8 +198,10 @@ export const useDebugStore = defineStore('debug', () => {
     // 只有在连接成功时才发送订阅请求并设置状态
     if (connected && debugWs) {
       debugWs.send({ op: 'subscribe' })
+      // 同步当前的录制状态到后端
+      debugWs.send({ op: 'filter', level: filter.value.level, tag: filter.value.tag, paused: !isRecording.value })
       wsConnected.value = true
-      console.log('[DebugStore] WebSocket connected and subscribed')
+      console.log('[DebugStore] WebSocket connected and subscribed, paused:', !isRecording.value)
     } else {
       console.error('[DebugStore] Failed to connect WebSocket')
       debugWs = null
@@ -224,7 +228,18 @@ export const useDebugStore = defineStore('debug', () => {
     filter.value.level = level
     filter.value.tag = tag
     if (debugWs && wsConnected.value) {
-      debugWs.send({ op: 'filter', level, tag })
+      debugWs.send({ op: 'filter', level, tag, paused: !isRecording.value })
+    }
+  }
+
+  /**
+   * 设置录制状态（开启/暂停接收新日志）。
+   * 暂停时后端不再推送新日志，但缓冲区中的日志保留可搜索。
+   */
+  function setRecording(recording: boolean) {
+    isRecording.value = recording
+    if (debugWs && wsConnected.value) {
+      debugWs.send({ op: 'filter', level: filter.value.level, tag: filter.value.tag, paused: !recording })
     }
   }
 
@@ -307,6 +322,7 @@ export const useDebugStore = defineStore('debug', () => {
   function handleMessage(msg: any) {
     switch (msg.type) {
       case 'log':
+        // 后端已经根据 paused 状态控制推送，这里直接追加
         appendLog(msg.entry)
         break
       case 'shell_stream':
@@ -358,6 +374,7 @@ export const useDebugStore = defineStore('debug', () => {
     filter,
     connected,
     wsConnected,
+    isRecording,
     createSession,
     fetchLogs,
     execShell,
@@ -367,6 +384,7 @@ export const useDebugStore = defineStore('debug', () => {
     disconnectWebSocket,
     execShellWs,
     setFilter,
+    setRecording,
     sendInput,
     setShellOutputHandler,
   }

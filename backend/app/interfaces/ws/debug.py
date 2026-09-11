@@ -89,11 +89,13 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                 # 设置服务端过滤条件（减少网络流量）
                 level = data.get("level")
                 tag = data.get("tag")
-                await debug_service.set_subscriber_filter(session_id, websocket, level, tag)
+                paused = data.get("paused", False)
+                await debug_service.set_subscriber_filter(session_id, websocket, level, tag, paused)
                 await websocket.send_json({
                     "type": "filter_applied",
                     "level": level,
                     "tag": tag,
+                    "paused": paused,
                 })
 
             elif op == "exec":

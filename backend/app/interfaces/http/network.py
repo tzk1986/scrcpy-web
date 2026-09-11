@@ -11,6 +11,8 @@
 参考方案文档：方案/14-调试面板其他标签完善.md
 """
 
+import time
+
 from fastapi import APIRouter
 
 from app.core.logging import get_logger
@@ -21,11 +23,34 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/network", tags=["network"])
 
+# 每个设备缓存一个 NetworkSampler 实例，保持速率计算所需的历史状态
+# 格式：{device_id: (sampler, last_access_time)}
+_samplers: dict[str, tuple[NetworkSampler, float]] = {}
+# 缓存 TTL（秒）：5 分钟无访问自动清理
+_SAMPLER_TTL = 300
+
 
 def _get_sampler(device_id: str) -> NetworkSampler:
-    """创建 NetworkSampler 实例。"""
-    from app.deps import get_adb_driver
-    return NetworkSampler(get_adb_driver(), device_id)
+    """获取或创建 NetworkSampler 实例（每设备复用，5 分钟无访问自动清理）。"""
+    now = time.time()
+
+    # 清理超时实例
+    expired = [did for did, (_, last_access) in _samplers.items() if now - last_access > _SAMPLER_TTL]
+    for did in expired:
+        del _samplers[did]
+        logger.debug("network_sampler_expired", device=did)
+
+    # 获取或创建
+    if device_id not in _samplers:
+        from app.deps import get_adb_driver
+        sampler = NetworkSampler(get_adb_driver(), device_id)
+        _samplers[device_id] = (sampler, now)
+    else:
+        # 更新访问时间
+        sampler, _ = _samplers[device_id]
+        _samplers[device_id] = (sampler, now)
+
+    return sampler
 
 
 @router.get("/{device_id}/stats")

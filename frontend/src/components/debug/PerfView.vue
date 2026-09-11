@@ -49,8 +49,8 @@
         <div class="metric-value" :class="{ warning: latestMetrics.fps && latestMetrics.fps < 30 }">
           {{ latestMetrics.fps?.toFixed(0) || '-' }} FPS
         </div>
-        <div class="metric-detail" v-if="latestMetrics.jank_count">
-          卡顿: {{ latestMetrics.jank_count }} 帧
+        <div class="metric-detail" v-if="latestMetrics.jank_count !== undefined && latestMetrics.jank_count > 0">
+          卡顿: {{ latestMetrics.jank_count }} 帧/秒
         </div>
       </div>
 
