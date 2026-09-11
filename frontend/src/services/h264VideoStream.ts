@@ -291,6 +291,8 @@ export class H264VideoStream {
           this.canvas.height = frame.displayHeight
           this._width = frame.displayWidth
           this._height = frame.displayHeight
+          // 设置 CSS aspect-ratio 保持显示比例
+          this.canvas.style.aspectRatio = `${frame.displayWidth} / ${frame.displayHeight}`
         }
         ctx.drawImage(frame, 0, 0)
         frame.close()

@@ -86,7 +86,13 @@ async def video_stream(
 
     try:
         # 发送视频流
+        frame_count = 0
+        chunk_count = 0
         async for chunk in stream_service.start_stream(device_id):
+            chunk_count += 1
+            if chunk_count <= 3:
+                logger.info("video_chunk_received", device=device_id,
+                            chunk_size=len(chunk), chunk_count=chunk_count)
             nalus = parser.feed(chunk)
 
             for nalu in nalus:
@@ -94,24 +100,35 @@ async def video_stream(
 
                 if nalu_type == NALU_TYPE_SPS:
                     sps_data = nalu
-                    # SPS 和 PPS 都收到后，立即发送配置
+                    logger.info("sps_received", device=device_id, nalu_size=len(nalu))
                     if sps_data and pps_data and not config_sent:
                         await _send_config(websocket, sps_data, pps_data)
                         config_sent = True
+                        logger.info("config_sent", device=device_id)
 
                 elif nalu_type == NALU_TYPE_PPS:
                     pps_data = nalu
+                    logger.info("pps_received", device=device_id, nalu_size=len(nalu))
                     if sps_data and pps_data and not config_sent:
                         await _send_config(websocket, sps_data, pps_data)
                         config_sent = True
+                        logger.info("config_sent", device=device_id)
 
                 else:
-                    # 发送视频帧（IDR 或 P/B 帧），必须在配置发送之后
                     if config_sent:
                         await websocket.send_bytes(nalu)
+                        frame_count += 1
+                    else:
+                        if frame_count == 0:
+                            logger.info("frame_before_config", device=device_id,
+                                        nalu_type=nalu_type, nalu_size=len(nalu))
+
+        logger.info("video_stream_ended", device=device_id,
+                     chunks=chunk_count, frames=frame_count,
+                     config_sent=config_sent)
 
     except WebSocketDisconnect:
-        pass
+        logger.info("video_websocket_disconnected", device=device_id)
     except Exception as e:
         logger.error("video_stream_error", device=device_id, error=str(e))
         try:

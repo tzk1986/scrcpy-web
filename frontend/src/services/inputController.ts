@@ -47,8 +47,6 @@ interface TouchState {
 
 export class InputController {
   private ws: WebSocketService
-  private deviceWidth: number
-  private deviceHeight: number
   private touchState: TouchState | null = null
   private longPressTimer: number | null = null
   private readonly LONG_PRESS_THRESHOLD = 500  // ms
@@ -56,23 +54,26 @@ export class InputController {
 
   /**
    * @param ws - WebSocket 连接
-   * @param deviceWidth - 设备屏幕宽度（像素）
-   * @param deviceHeight - 设备屏幕高度（像素）
+   * @param _deviceWidth - 设备屏幕宽度（像素），保留用于向后兼容，实际坐标映射基于 canvas 尺寸
+   * @param _deviceHeight - 设备屏幕高度（像素），保留用于向后兼容，实际坐标映射基于 canvas 尺寸
    */
-  constructor(ws: WebSocketService, deviceWidth: number, deviceHeight: number) {
+  constructor(ws: WebSocketService, _deviceWidth: number, _deviceHeight: number) {
     this.ws = ws
-    this.deviceWidth = deviceWidth
-    this.deviceHeight = deviceHeight
   }
 
-  /** 更新设备分辨率（从设备信息获取后调用） */
-  setDeviceResolution(width: number, height: number) {
-    this.deviceWidth = width
-    this.deviceHeight = height
+  /** 更新设备分辨率（保留用于向后兼容） */
+  setDeviceResolution(_width: number, _height: number) {
+    // 坐标映射现在基于 canvas 的实际像素尺寸，无需保存设备分辨率
   }
 
   /**
    * 将浏览器坐标映射到设备坐标。
+   *
+   * 参考 scrcpy 源码实现（app/src/input_manager.c + screen.h）：
+   * 1. 获取鼠标在 canvas 内的位置（CSS 像素）
+   * 2. 考虑 HiDPI（devicePixelRatio）
+   * 3. 处理视频 letterboxing（黑边）
+   * 4. 基于**视频/截图的实际尺寸**映射到设备坐标
    *
    * @param clientX - 浏览器 clientX
    * @param clientY - 浏览器 clientY
@@ -81,38 +82,49 @@ export class InputController {
    */
   mapToScreen(clientX: number, clientY: number, canvas: HTMLCanvasElement): { x: number; y: number } {
     const rect = canvas.getBoundingClientRect()
-    // canvas 显示尺寸可能与实际尺寸不同（CSS 缩放）
-    // 需要计算显示区域中视频的实际位置
-    const canvasAspect = canvas.width / canvas.height
+
+    // canvas 实际像素尺寸（考虑 HiDPI）
+    // canvas.width/height 是实际像素，rect.width/height 是 CSS 像素
+    const canvasPixelWidth = canvas.width
+    const canvasPixelHeight = canvas.height
+
+    // 计算视频在 canvas 中的实际显示区域（处理 letterboxing）
+    // 视频纵横比基于 canvas 像素尺寸
+    const videoAspect = canvasPixelWidth / canvasPixelHeight
     const containerAspect = rect.width / rect.height
 
-    let videoWidth: number
-    let videoHeight: number
+    let displayWidth: number
+    let displayHeight: number
     let offsetX: number
     let offsetY: number
 
-    if (canvasAspect > containerAspect) {
+    if (videoAspect > containerAspect) {
       // 视频宽度填满容器，上下有黑边
-      videoWidth = rect.width
-      videoHeight = rect.width / canvasAspect
+      displayWidth = rect.width
+      displayHeight = rect.width / videoAspect
       offsetX = 0
-      offsetY = (rect.height - videoHeight) / 2
+      offsetY = (rect.height - displayHeight) / 2
     } else {
       // 视频高度填满容器，左右有黑边
-      videoHeight = rect.height
-      videoWidth = rect.height * canvasAspect
-      offsetX = (rect.width - videoWidth) / 2
+      displayHeight = rect.height
+      displayWidth = rect.height * videoAspect
+      offsetX = (rect.width - displayWidth) / 2
       offsetY = 0
     }
 
-    // 计算点击在视频区域内的相对位置
-    const relX = (clientX - rect.left - offsetX) / videoWidth
-    const relY = (clientY - rect.top - offsetY) / videoHeight
+    // 计算点击在视频区域内的相对位置（0-1）
+    const relX = (clientX - rect.left - offsetX) / displayWidth
+    const relY = (clientY - rect.top - offsetY) / displayHeight
+
+    // 边界检查
+    const clampedX = Math.max(0, Math.min(1, relX))
+    const clampedY = Math.max(0, Math.min(1, relY))
 
     // 映射到设备坐标
+    // 使用 canvas 像素尺寸作为参考（这是截图/视频帧的实际尺寸）
     return {
-      x: Math.round(relX * this.deviceWidth),
-      y: Math.round(relY * this.deviceHeight),
+      x: Math.round(clampedX * canvasPixelWidth),
+      y: Math.round(clampedY * canvasPixelHeight),
     }
   }
 

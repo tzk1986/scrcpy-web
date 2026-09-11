@@ -128,15 +128,42 @@ function isWebCodecsSupported(): boolean {
   return typeof VideoDecoder !== 'undefined' && typeof EncodedVideoChunk !== 'undefined'
 }
 
+/** 启动截图回退模式 */
+function startScreenshotMode() {
+  console.log('[VideoPlayer] Starting screenshot fallback mode')
+  mode.value = 'screenshot'
+  state.value = 'idle'
+  videoStream = new VideoStream(props.deviceId, canvasRef.value!, ws!)
+
+  videoStream.setStateChangeHandler((newState) => {
+    console.log('[VideoPlayer] Screenshot stream state changed:', newState)
+    state.value = newState
+    if (newState === 'error') {
+      error.value = videoStream?.stats.error || 'Unknown error'
+    }
+  })
+
+  videoStream.setStatsUpdateHandler((stats) => {
+    fps.value = stats.fps
+    frameCount.value = stats.frameCount
+  })
+
+  videoStream.start()
+}
+
 onMounted(async () => {
   if (!canvasRef.value) return
 
   console.log('[VideoPlayer] Component mounted, deviceId:', props.deviceId)
   console.log('[VideoPlayer] Device resolution:', props.deviceWidth, 'x', props.deviceHeight)
 
-  // 设置 canvas 初始尺寸（默认手机竖屏比例）
-  canvasRef.value.width = props.deviceWidth || 1080
-  canvasRef.value.height = props.deviceHeight || 1920
+  // 设置 canvas 初始尺寸（使用设备实际分辨率，保持比例）
+  const initWidth = props.deviceWidth || 1080
+  const initHeight = props.deviceHeight || 1920
+  canvasRef.value.width = initWidth
+  canvasRef.value.height = initHeight
+  // 设置 CSS aspect-ratio 保持显示比例
+  canvasRef.value.style.aspectRatio = `${initWidth} / ${initHeight}`
 
   // 初始化 WebSocket（用于视频流和输入事件）
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/video/${props.deviceId}`
@@ -179,25 +206,31 @@ onMounted(async () => {
     })
 
     h264Stream.start()
-  } else {
-    console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
-    // 回退到截屏模式
-    mode.value = 'screenshot'
-    videoStream = new VideoStream(props.deviceId, canvasRef.value, ws)
 
-    videoStream.setStateChangeHandler((newState) => {
-      state.value = newState
-      if (newState === 'error') {
-        error.value = videoStream?.stats.error || 'Unknown error'
+    // H264 自动回退：如果 10 秒内没有收到任何帧，切换到截图模式
+    // 某些设备（如 Rockchip RK3288）的硬件编码器会崩溃，导致 H264 流无法工作
+    let h264FallbackTimer: number | null = window.setTimeout(() => {
+      if (h264Stream && h264Stream.stats.frameCount === 0 && mode.value === 'h264') {
+        console.warn('[VideoPlayer] H264 stream received no frames in 10s, falling back to screenshot mode')
+        h264Stream.stop()
+        h264Stream = null
+        startScreenshotMode()
       }
-    })
+      h264FallbackTimer = null
+    }, 10000)
 
-    videoStream.setStatsUpdateHandler((stats) => {
+    // 如果成功收到帧，取消回退定时器
+    h264Stream.setStatsUpdateHandler((stats) => {
       fps.value = stats.fps
       frameCount.value = stats.frameCount
+      if (stats.frameCount > 0 && h264FallbackTimer !== null) {
+        window.clearTimeout(h264FallbackTimer)
+        h264FallbackTimer = null
+      }
     })
-
-    await videoStream.start()
+  } else {
+    console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
+    startScreenshotMode()
   }
 })
 
@@ -285,7 +318,7 @@ async function reconnect() {
 .video-canvas {
   max-width: 100%;
   max-height: 100%;
-  object-fit: contain;
+  /* aspect-ratio 由 JS 动态设置，保持视频原始比例 */
   cursor: pointer;
   touch-action: none;
   user-select: none;

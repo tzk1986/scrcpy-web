@@ -175,6 +175,8 @@ export class VideoStream {
       if (this.canvas.width !== bitmap.width || this.canvas.height !== bitmap.height) {
         this.canvas.width = bitmap.width
         this.canvas.height = bitmap.height
+        // 设置 CSS aspect-ratio 保持显示比例
+        this.canvas.style.aspectRatio = `${bitmap.width} / ${bitmap.height}`
       }
 
       ctx.drawImage(bitmap, 0, 0)

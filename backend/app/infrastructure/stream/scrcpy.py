@@ -354,20 +354,36 @@ class ScrcpyEncoder:
             logger.warning("device_info_error", device=device_id, error=str(e))
 
         # 10. 后台任务：从 socket 读取数据到队列
+        import time as _time
+        _read_start = _time.time()
+        _read_count = 0
+        _read_bytes = 0
+
         async def read_socket():
+            nonlocal _read_count, _read_bytes
             try:
                 while self._running and self._reader:
                     chunk = await self._reader.read(VIDEO_STREAM_FRAME_SIZE)
                     if not chunk:
-                        logger.info("socket_closed", device=device_id)
+                        logger.info("socket_closed", device=device_id,
+                                    chunks=_read_count, total_bytes=_read_bytes,
+                                    elapsed=f"{_time.time() - _read_start:.1f}s")
                         break
+                    _read_count += 1
+                    _read_bytes += len(chunk)
+                    if _read_count <= 5 or _read_count % 100 == 0:
+                        logger.info("socket_data_received", device=device_id,
+                                    chunk_num=_read_count, chunk_size=len(chunk),
+                                    total_bytes=_read_bytes,
+                                    elapsed=f"{_time.time() - _read_start:.1f}s")
                     try:
                         await asyncio.wait_for(
                             self._data_queue.put(chunk),
                             timeout=1.0,
                         )
                     except asyncio.TimeoutError:
-                        pass
+                        logger.warning("socket_queue_full_dropping_chunk",
+                                       device=device_id, chunk_size=len(chunk))
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -381,6 +397,8 @@ class ScrcpyEncoder:
         read_task = asyncio.create_task(read_socket())
 
         # 11. 从队列 yield 数据
+        _yield_count = 0
+        _yield_bytes = 0
         try:
             while self._running:
                 try:
@@ -388,7 +406,16 @@ class ScrcpyEncoder:
                         self._data_queue.get(), timeout=2.0
                     )
                     if data is None:
+                        logger.info("queue_sentinel_received",
+                                    device=device_id,
+                                    yielded=_yield_count, bytes=_yield_bytes)
                         break
+                    _yield_count += 1
+                    _yield_bytes += len(data)
+                    if _yield_count <= 5 or _yield_count % 100 == 0:
+                        logger.info("yielding_data", device=device_id,
+                                    yield_num=_yield_count, chunk_size=len(data),
+                                    total_bytes=_yield_bytes)
                     yield data
                 except asyncio.TimeoutError:
                     if self.process and self.process.returncode is not None:
