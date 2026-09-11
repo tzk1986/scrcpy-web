@@ -8,20 +8,16 @@
  * 协议：
  *   服务端 → 客户端：
  *     - 配置消息（JSON）:
- *       { "type": "config", "codec": "avc1.42E01E",
- *         "width": 1080, "height": 1920, "description": "<hex SPS+PPS>" }
+ *       { "type": "config", "codec": "avc1.XXYYZZ",
+ *         "width": 1280, "height": 720, "description": "<hex SPS+PPS>" }
  *     - 视频帧（二进制）: H.264 NAL 单元（Annex B 格式，带起始码）
  *     - 错误（JSON）: { "type": "error", "message": "..." }
  *
  *   客户端 → 服务端：JSON 输入消息
- *     { "action": "touch", "x": 100, "y": 200 }
- *     { "action": "swipe", "x1": ..., "y1": ..., "x2": ..., "y2": ..., "duration": 300 }
- *     { "action": "key", "keycode": 4 }
- *     { "action": "text", "text": "hello" }
  *
  * 解码流程：
  *   1. 收到 config 消息 → 从 hex description 提取 SPS/PPS
- *   2. 转换为 AVCC 格式（avcC box）
+ *   2. 构建 AVCC 格式（avcC box）description
  *   3. 创建 VideoDecoder 实例
  *   4. 收到二进制帧 → Annex B 转 AVCC → EncodedVideoChunk → decode()
  *   5. VideoDecoder output → VideoFrame → drawImage(canvas)
@@ -47,6 +43,7 @@ export class H264VideoStream {
   private decoder: VideoDecoder | null = null
   private _state: H264StreamState = 'idle'
   private _frameCount = 0
+  private _decodedCount = 0
   private _lastFrameTime = 0
   private _fps = 0
   private _fpsCounter = 0
@@ -56,7 +53,7 @@ export class H264VideoStream {
   private _height = 0
   private onStateChange?: (state: H264StreamState) => void
   private onStatsUpdate?: (stats: H264StreamStats) => void
-  // 保存最近的 SPS/PPS，用于重新初始化解码器（如需要）
+  // 保存最近的 SPS/PPS，用于重新初始化解码器
   private spsData: Uint8Array | null = null
   private ppsData: Uint8Array | null = null
 
@@ -103,6 +100,7 @@ export class H264VideoStream {
     this._state = 'configuring'
     this._error = null
     this._frameCount = 0
+    this._decodedCount = 0
     this._fpsCounter = 0
     this.onStateChange?.(this._state)
 
@@ -113,29 +111,34 @@ export class H264VideoStream {
       this.onStatsUpdate?.(this.stats)
     }, 1000)
 
+    // 重要：先设置 binaryType，再注册消息处理器
+    // 确保二进制数据以 ArrayBuffer 形式接收
+    this.setBinaryType()
+
     // 注册消息处理器
     this.ws.setMessageHandler((data: unknown) => {
-      console.log('[H264] Message received:', typeof data, data instanceof ArrayBuffer ? `${(data as ArrayBuffer).byteLength} bytes` : data)
       if (data instanceof ArrayBuffer) {
+        console.log('[H264] Binary frame received:', data.byteLength, 'bytes')
         this.handleBinaryFrame(new Uint8Array(data))
       } else if (typeof data === 'string') {
+        console.log('[H264] Text message received:', data.substring(0, 200))
         try {
           const msg = JSON.parse(data)
-          console.log('[H264] JSON message:', msg.type, msg)
           this.handleJsonMessage(msg)
         } catch {
-          console.warn('[H264] Failed to parse WebSocket message:', data)
+          console.warn('[H264] Failed to parse text message:', data)
         }
       } else if (data instanceof Blob) {
-        // 如果 WebSocket 的 binaryType 不是 arraybuffer，会收到 Blob
+        console.log('[H264] Blob frame received:', data.size, 'bytes')
         data.arrayBuffer().then(buf => {
           this.handleBinaryFrame(new Uint8Array(buf))
         })
+      } else {
+        console.warn('[H264] Unknown message type:', typeof data, data)
       }
     })
 
-    // 确保 WebSocket 的 binaryType 是 arraybuffer
-    this.setBinaryType()
+    console.log('[H264] Stream started, waiting for config...')
   }
 
   /** 停止视频流，释放解码器资源 */
@@ -162,23 +165,32 @@ export class H264VideoStream {
 
   /** 设置 WebSocket 的 binaryType 为 arraybuffer */
   private setBinaryType() {
-    // WebSocketService 内部持有 WebSocket 实例
-    // 通过类型断言访问内部 ws
     const wsInternal = (this.ws as unknown as { ws: WebSocket | null }).ws
     if (wsInternal) {
       wsInternal.binaryType = 'arraybuffer'
+      console.log('[H264] WebSocket binaryType set to arraybuffer')
+    } else {
+      console.warn('[H264] WebSocket not available, binaryType not set')
     }
   }
 
   /** 处理 JSON 控制消息 */
   private handleJsonMessage(msg: Record<string, unknown>) {
     const type = msg.type as string
+    console.log('[H264] JSON message type:', type, msg)
 
     if (type === 'config') {
       const codec = msg.codec as string || 'avc1.42E01E'
       const descriptionHex = msg.description as string
+      const width = msg.width as number || 0
+      const height = msg.height as number || 0
 
-      console.log('[H264] Config received:', { codec, descriptionLength: descriptionHex?.length })
+      console.log('[H264] Config received:', {
+        codec,
+        descriptionLength: descriptionHex?.length,
+        width,
+        height,
+      })
 
       if (!descriptionHex) {
         this.setError('Missing codec description in config')
@@ -187,14 +199,17 @@ export class H264VideoStream {
 
       // 解析 hex 格式的 SPS+PPS（Annex B 格式，带起始码）
       const annexBData = this.hexToUint8Array(descriptionHex)
-      console.log('[H264] AnnexB data length:', annexBData.length, 'bytes')
+      console.log('[H264] AnnexB data hex (first 40 bytes):',
+        Array.from(annexBData.slice(0, 40)).map(b => b.toString(16).padStart(2, '0')).join(' '))
 
       // 提取 SPS 和 PPS NAL 单元
       const nalus = this.extractNalus(annexBData)
       console.log('[H264] Extracted NALUs:', nalus.length)
       for (const nalu of nalus) {
         const naluType = nalu.data[0] & 0x1F
-        console.log('[H264] NALU type:', naluType, 'length:', nalu.data.length)
+        console.log('[H264] NALU type:', naluType,
+          'length (with NAL header):', nalu.data.length,
+          'first bytes:', Array.from(nalu.data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' '))
         if (naluType === 7) {
           // SPS
           this.spsData = nalu.raw  // 包含起始码
@@ -211,10 +226,28 @@ export class H264VideoStream {
 
       // 创建 avcC 格式的 description
       const avccDescription = this.buildAvccDescription(this.spsData, this.ppsData)
+      if (avccDescription.byteLength === 0) {
+        this.setError('Failed to build AVCC description')
+        return
+      }
+      console.log('[H264] AVCC description hex:',
+        Array.from(new Uint8Array(avccDescription)).map(b => b.toString(16).padStart(2, '0')).join(' '))
       console.log('[H264] AVCC description size:', avccDescription.byteLength)
 
+      // 关键：收到 config 后立即设置 canvas 尺寸为设备分辨率
+      // 这样 InputController 的坐标映射从一开始就使用正确的设备坐标
+      // 而不是默认的 1080x1920（方向可能错误）
+      if (width > 0 && height > 0) {
+        this.canvas.width = width
+        this.canvas.height = height
+        this.canvas.style.aspectRatio = `${width} / ${height}`
+        this._width = width
+        this._height = height
+        console.log('[H264] Canvas initialized to device resolution:', width, 'x', height)
+      }
+
       // 初始化 VideoDecoder
-      this.initDecoder(codec, avccDescription)
+      this.initDecoder(codec, avccDescription, width, height)
 
     } else if (type === 'error') {
       this.setError(msg.message as string || 'Unknown server error')
@@ -225,29 +258,41 @@ export class H264VideoStream {
   private handleBinaryFrame(data: Uint8Array) {
     // 先尝试解析为 JSON（config 消息可能被作为 ArrayBuffer 接收）
     try {
-      const text = new TextDecoder().decode(data)
-      const msg = JSON.parse(text)
-      if (msg.type === 'config' || msg.type === 'error') {
-        console.log('[H264] JSON message from binary:', msg.type)
-        this.handleJsonMessage(msg)
-        return
+      const text = new TextDecoder().decode(data.slice(0, 100))
+      if (text.startsWith('{')) {
+        const msg = JSON.parse(text)
+        if (msg.type === 'config' || msg.type === 'error') {
+          console.log('[H264] JSON message from binary:', msg.type)
+          this.handleJsonMessage(msg)
+          return
+        }
       }
     } catch {
       // 不是 JSON，当作二进制帧处理
     }
 
     if (!this.decoder || this.decoder.state !== 'configured') {
-      console.log('[H264] Frame dropped: decoder not ready, state:', this.decoder?.state)
+      console.warn('[H264] Frame dropped: decoder not ready, state:', this.decoder?.state,
+        'decoder exists:', !!this.decoder)
       return
     }
-    console.log('[H264] Decoding frame:', data.length, 'bytes')
+
+    this._frameCount++
 
     // 将 Annex B 帧转换为 AVCC 格式
     const avccData = this.annexBToAvcc(data)
 
-    // 创建 EncodedVideoChunk
     // 判断是否为关键帧：第一个 NAL 的类型为 IDR (5)
     const isKeyFrame = this.isKeyFrame(data)
+
+    if (this._frameCount <= 3) {
+      const nalus = this.extractNalus(data)
+      console.log('[H264] Frame', this._frameCount, ':',
+        'raw size:', data.length,
+        'avcc size:', avccData.byteLength,
+        'isKeyFrame:', isKeyFrame,
+        'NALUs:', nalus.map(n => `type=${n.data[0] & 0x1F},len=${n.data.length}`))
+    }
 
     const chunk = new EncodedVideoChunk({
       type: isKeyFrame ? 'key' : 'delta',
@@ -257,16 +302,16 @@ export class H264VideoStream {
 
     try {
       this.decoder.decode(chunk)
-      this._frameCount++
+      this._decodedCount++
       this._fpsCounter++
       this._lastFrameTime = Date.now()
     } catch (e) {
-      console.error('Failed to decode frame:', e)
+      console.error('[H264] Decode failed for frame', this._frameCount, ':', e)
     }
   }
 
   /** 初始化 VideoDecoder */
-  private initDecoder(codec: string, description: ArrayBuffer) {
+  private initDecoder(codec: string, description: ArrayBuffer, width: number, height: number) {
     // 关闭旧的解码器
     if (this.decoder) {
       try {
@@ -282,19 +327,28 @@ export class H264VideoStream {
       return
     }
 
+    console.log('[H264] Creating VideoDecoder with codec:', codec,
+      'description size:', description.byteLength,
+      'expected dimensions:', width, 'x', height)
+
     this.decoder = new VideoDecoder({
       output: (frame: VideoFrame) => {
-        // 更新 canvas 尺寸（首次或变化时）
+        console.log('[H264] Decoder output frame:',
+          frame.displayWidth, 'x', frame.displayHeight,
+          'timestamp:', frame.timestamp,
+          'decoded count:', this._decodedCount)
+
+        // canvas 尺寸已在 config 到达时设为设备分辨率（deviceW x deviceH）。
+        // max_size=0 保证帧尺寸 == 设备分辨率，因此此处不再调整 canvas。
+        // 若帧尺寸与 canvas 不同（异常情况），仅记录警告，不改变 canvas（保持坐标映射正确）。
         if (this.canvas.width !== frame.displayWidth ||
             this.canvas.height !== frame.displayHeight) {
-          this.canvas.width = frame.displayWidth
-          this.canvas.height = frame.displayHeight
-          this._width = frame.displayWidth
-          this._height = frame.displayHeight
-          // 设置 CSS aspect-ratio 保持显示比例
-          this.canvas.style.aspectRatio = `${frame.displayWidth} / ${frame.displayHeight}`
+          console.warn('[H264] Frame size mismatch with canvas!',
+            'canvas:', this.canvas.width, 'x', this.canvas.height,
+            'frame:', frame.displayWidth, 'x', frame.displayHeight,
+            '- click mapping may be inaccurate')
         }
-        ctx.drawImage(frame, 0, 0)
+        ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height)
         frame.close()
 
         // 首次输出帧时标记为 streaming
@@ -304,22 +358,30 @@ export class H264VideoStream {
         }
       },
       error: (e: DOMException) => {
-        console.error('VideoDecoder error:', e)
-        this.setError(`Decoder error: ${e.message}`)
+        console.error('[H264] VideoDecoder error:', e.name, e.message)
+        this.setError(`Decoder error: ${e.name}: ${e.message}`)
       },
     })
 
-    console.log('[H264] Configuring decoder:', codec)
-    this.decoder.configure({
-      codec: codec,
-      description: description,
-      optimizeForLatency: true,
-    })
-    console.log('[H264] Decoder state after configure:', this.decoder.state)
+    try {
+      this.decoder.configure({
+        codec: codec,
+        description: description,
+        optimizeForLatency: true,
+      })
+      console.log('[H264] Decoder state after configure:', this.decoder.state)
+      if (this.decoder.state !== 'configured') {
+        this.setError(`VideoDecoder configure failed, state: ${this.decoder.state}`)
+      }
+    } catch (e) {
+      console.error('[H264] VideoDecoder configure threw exception:', e)
+      this.setError(`VideoDecoder configure exception: ${e}`)
+    }
   }
 
   /** 设置错误状态 */
   private setError(message: string) {
+    console.error('[H264] Error:', message)
     this._error = message
     this._state = 'error'
     this.onStateChange?.(this._state)
@@ -336,7 +398,12 @@ export class H264VideoStream {
     return bytes
   }
 
-  /** 从 Annex B 字节流中提取所有 NAL 单元 */
+  /**
+   * 从 Annex B 字节流中提取所有 NAL 单元。
+   * 返回的每个 NALU 包含：
+   *   raw: 包含起始码的完整 NALU
+   *   data: 不含起始码但包含 NAL 头的 NALU（如 0x67 xx xx ... 或 0x65 xx xx ...）
+   */
   private extractNalus(data: Uint8Array): Array<{ raw: Uint8Array; data: Uint8Array }> {
     const nalus: Array<{ raw: Uint8Array; data: Uint8Array }> = []
     let i = 0
@@ -370,7 +437,7 @@ export class H264VideoStream {
 
       nalus.push({
         raw: data.slice(i, naluEnd),       // 包含起始码
-        data: data.slice(naluStart, naluEnd), // 不含起始码
+        data: data.slice(naluStart, naluEnd), // 不含起始码（含 NAL 头）
       })
 
       i = naluEnd
@@ -380,61 +447,9 @@ export class H264VideoStream {
   }
 
   /**
-   * 构建 AVCC avcC 格式的 description（用于 VideoDecoder.configure）。
-   *
-   * avcC 格式：
-   *   version(1) + profile(1) + compatibility(1) + level(1)
-   *   + lengthSizeMinusOne(1) + SPS count + SPS data
-   *   + PPS count + PPS data
+   * 去掉 NALU 的起始码（3 字节或 4 字节），返回包含 NAL 头的数据。
+   * 例如：00 00 00 01 67 42 00 1e ... → 67 42 00 1e ...
    */
-  private buildAvccDescription(spsWithStartCode: Uint8Array, ppsWithStartCode: Uint8Array): ArrayBuffer {
-    // 去掉起始码，获取纯 NALU 数据
-    const sps = this.stripStartCode(spsWithStartCode)
-    const pps = this.stripStartCode(ppsWithStartCode)
-
-    // 从 SPS 提取 profile/level（SPS 第 1 字节: profile_idc, 第 2 字节: constraint flags, 第 3 字节: level_idc）
-    const profileIdc = sps[0]
-    const compatibility = sps[1]
-    const levelIdc = sps[2]
-
-    // 计算总大小
-    const totalSize = 6 + 2 + sps.length + 2 + pps.length
-    const buffer = new ArrayBuffer(totalSize)
-    const view = new DataView(buffer)
-    const bytes = new Uint8Array(buffer)
-
-    let offset = 0
-
-    // version (1 byte)
-    view.setUint8(offset++, 1)
-    // profile (1 byte)
-    view.setUint8(offset++, profileIdc)
-    // compatibility (1 byte)
-    view.setUint8(offset++, compatibility)
-    // level (1 byte)
-    view.setUint8(offset++, levelIdc)
-    // lengthSizeMinusOne (1 byte): NAL 长度前缀为 4 字节 → 值 = 3
-    view.setUint8(offset++, 0xFF)
-    // numSPS (1 byte)
-    view.setUint8(offset++, 0xE1)
-    // SPS length (2 bytes)
-    view.setUint16(offset, sps.length)
-    offset += 2
-    // SPS data
-    bytes.set(sps, offset)
-    offset += sps.length
-    // numPPS (1 byte)
-    view.setUint8(offset++, 1)
-    // PPS length (2 bytes)
-    view.setUint16(offset, pps.length)
-    offset += 2
-    // PPS data
-    bytes.set(pps, offset)
-
-    return buffer
-  }
-
-  /** 去掉 NALU 的起始码（3 字节或 4 字节） */
   private stripStartCode(nalu: Uint8Array): Uint8Array {
     if (nalu.length >= 4 && nalu[0] === 0 && nalu[1] === 0 && nalu[2] === 0 && nalu[3] === 1) {
       return nalu.slice(4)
@@ -446,9 +461,98 @@ export class H264VideoStream {
   }
 
   /**
+   * 构建 AVCC avcC 格式的 description（用于 VideoDecoder.configure）。
+   *
+   * 参考 ISO 14496-15 Section 5.3.3.1.2:
+   *
+   * avcC box 结构：
+   *   configurationVersion (1 byte) = 1
+   *   AVCProfileIndication (1 byte) = SPS 的 profile_idc
+   *   profile_compatibility (1 byte) = SPS 的 constraint flags
+   *   AVCLevelIndication (1 byte) = SPS 的 level_idc
+   *   lengthSizeMinusOne (1 byte) = 0xFC | 3 (NAL 长度前缀 4 字节)
+   *   numOfSPS (1 byte) = 0xE0 | 1
+   *   SPS length (2 bytes, big-endian)
+   *   SPS data (含 NAL 头，不含起始码)
+   *   numOfPPS (1 byte) = 1
+   *   PPS length (2 bytes, big-endian)
+   *   PPS data (含 NAL 头，不含起始码)
+   *
+   * 注意：avcC 中的 SPS/PPS 包含 NAL 头字节（如 0x27, 0x28）！
+   */
+  private buildAvccDescription(spsWithStartCode: Uint8Array, ppsWithStartCode: Uint8Array): ArrayBuffer {
+    // 去掉起始码，保留 NAL 头
+    // SPS: 00 00 00 01 27 42 e0 1f ... → 27 42 e0 1f ...
+    // PPS: 00 00 00 01 28 ce 32 48 → 28 ce 32 48
+    const sps = this.stripStartCode(spsWithStartCode)
+    const pps = this.stripStartCode(ppsWithStartCode)
+
+    // 从 SPS（含 NAL 头）中提取 profile/level
+    // SPS 格式：[NAL_header=0x27] [profile_idc=0x42] [constraint=0xe0] [level=0x1f] ...
+    if (sps.length < 4) {
+      console.error('[H264] SPS too short:', sps.length, 'bytes')
+      return new ArrayBuffer(0)
+    }
+
+    const profileIdc = sps[1]  // profile_idc
+    const compatibility = sps[2]  // constraint_set flags
+    const levelIdc = sps[3]  // level_idc
+
+    console.log('[H264] AVCC params:', {
+      profileIdc: `0x${profileIdc.toString(16).padStart(2, '0')}`,
+      compatibility: `0x${compatibility.toString(16).padStart(2, '0')}`,
+      levelIdc: `0x${levelIdc.toString(16).padStart(2, '0')}`,
+      spsLength: sps.length,
+      ppsLength: pps.length,
+      spsHex: Array.from(sps.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' '),
+      ppsHex: Array.from(pps.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' '),
+    })
+
+    // 计算总大小（avcC box 结构）：
+    // configurationVersion(1) + profile(1) + compatibility(1) + level(1)
+    // + lengthSizeMinusOne(1) + numOfSPS(1) + SPS_length(2) + SPS_data + numOfPPS(1) + PPS_length(2) + PPS_data
+    const totalSize = 7 + 2 + sps.length + 2 + pps.length
+    const buffer = new ArrayBuffer(totalSize)
+    const view = new DataView(buffer)
+    const bytes = new Uint8Array(buffer)
+
+    let offset = 0
+
+    // configurationVersion (1 byte) = 1
+    view.setUint8(offset++, 1)
+    // AVCProfileIndication (1 byte)
+    view.setUint8(offset++, profileIdc)
+    // profile_compatibility (1 byte)
+    view.setUint8(offset++, compatibility)
+    // AVCLevelIndication (1 byte)
+    view.setUint8(offset++, levelIdc)
+    // lengthSizeMinusOne: 高6位保留位(全1) + 低2位=3 (NAL长度前缀=4字节)
+    view.setUint8(offset++, 0xFC | 3)
+    // numOfSPS: 高3位保留位(全1) + 低5位=1
+    view.setUint8(offset++, 0xE0 | 1)
+    // SPS length (2 bytes, big-endian)
+    view.setUint16(offset, sps.length)
+    offset += 2
+    // SPS data (含 NAL 头，不含起始码)
+    bytes.set(sps, offset)
+    offset += sps.length
+    // numOfPPS (1 byte) = 1
+    view.setUint8(offset++, 1)
+    // PPS length (2 bytes, big-endian)
+    view.setUint16(offset, pps.length)
+    offset += 2
+    // PPS data (含 NAL 头，不含起始码)
+    bytes.set(pps, offset)
+
+    return buffer
+  }
+
+  /**
    * 将 Annex B 帧转换为 AVCC 格式。
    * Annex B: [start_code] NALU [start_code] NALU ...
    * AVCC:    [4-byte length] NALU [4-byte length] NALU ...
+   *
+   * 注意：AVCC 格式的 NALU 包含 NAL 头字节（与 avcC description 不同）。
    */
   private annexBToAvcc(annexB: Uint8Array): ArrayBuffer {
     const nalus = this.extractNalus(annexB)

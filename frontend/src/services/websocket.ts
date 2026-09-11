@@ -36,9 +36,11 @@ export class WebSocketService {
   connect() {
     console.log('[WS] Connecting to:', this.url)
     this.ws = new WebSocket(this.url)
+    // 默认设置为 arraybuffer，确保二进制数据直接可用
+    this.ws.binaryType = 'arraybuffer'
 
     this.ws.onopen = () => {
-      console.log('[WS] Connected:', this.url)
+      console.log('[WS] Connected:', this.url, 'binaryType:', this.ws?.binaryType)
     }
 
     this.ws.onmessage = (event) => {
@@ -61,6 +63,14 @@ export class WebSocketService {
       if (this.onClose) {
         this.onClose()
       }
+    }
+  }
+
+  /** 设置 binaryType */
+  setBinaryType(type: 'arraybuffer' | 'blob') {
+    if (this.ws) {
+      this.ws.binaryType = type
+      console.log('[WS] binaryType set to:', type)
     }
   }
 

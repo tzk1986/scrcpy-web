@@ -75,7 +75,7 @@ async def video_stream(
         try:
             while True:
                 data = await websocket.receive_json()
-                await _handle_input(device_id, data)
+                await _handle_input(device_id, data, stream_service)
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -93,6 +93,11 @@ async def video_stream(
             if chunk_count <= 3:
                 logger.info("video_chunk_received", device=device_id,
                             chunk_size=len(chunk), chunk_count=chunk_count)
+            elif chunk_count % 100 == 0:
+                # 每 100 个 chunk 记录一次（避免日志过多）
+                logger.info("video_chunk_progress", device=device_id,
+                           chunk_count=chunk_count, frame_count=frame_count)
+
             nalus = parser.feed(chunk)
 
             for nalu in nalus:
@@ -102,7 +107,7 @@ async def video_stream(
                     sps_data = nalu
                     logger.info("sps_received", device=device_id, nalu_size=len(nalu))
                     if sps_data and pps_data and not config_sent:
-                        await _send_config(websocket, sps_data, pps_data)
+                        await _send_config(websocket, sps_data, pps_data, stream_service, device_id)
                         config_sent = True
                         logger.info("config_sent", device=device_id)
 
@@ -110,7 +115,7 @@ async def video_stream(
                     pps_data = nalu
                     logger.info("pps_received", device=device_id, nalu_size=len(nalu))
                     if sps_data and pps_data and not config_sent:
-                        await _send_config(websocket, sps_data, pps_data)
+                        await _send_config(websocket, sps_data, pps_data, stream_service, device_id)
                         config_sent = True
                         logger.info("config_sent", device=device_id)
 
@@ -118,6 +123,11 @@ async def video_stream(
                     if config_sent:
                         await websocket.send_bytes(nalu)
                         frame_count += 1
+                        if frame_count <= 5:
+                            logger.info("video_frame_sent", device=device_id,
+                                       frame_count=frame_count,
+                                       nalu_type=nalu_type,
+                                       nalu_size=len(nalu))
                     else:
                         if frame_count == 0:
                             logger.info("frame_before_config", device=device_id,
@@ -145,67 +155,88 @@ async def video_stream(
         await stream_service.stop_stream(device_id)
 
 
-async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes):
+async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes, stream_service: StreamService, device_id: str):
     """
     发送编解码器配置（SPS/PPS）。
 
     WebCodecs 需要 SPS/PPS 来初始化解码器。
     将它们以 hex 编码发送给客户端，客户端转为 AVCC 格式后创建 VideoDecoder。
     """
+    # 从 SPS 动态提取 codec 信息
+    # SPS 格式（包含起始码）：
+    # - 起始码（3或4字节）：00 00 01 或 00 00 00 01
+    # - NAL 头（1字节）：0x67 表示 SPS
+    # - profile_idc（1字节）
+    # - constraint_set flags（1字节）
+    # - level_idc（1字节）
+    #
+    # 需要跳过起始码和 NAL 头，提取 profile/constraint/level
+    codec = "avc1.42E01E"  # 默认值
+
+    # 查找起始码后的位置
+    sps_data_start = 0
+    if sps[:4] == b'\x00\x00\x00\x01':
+        sps_data_start = 4
+    elif sps[:3] == b'\x00\x00\x01':
+        sps_data_start = 3
+
+    # sps[sps_data_start] = NAL 头（0x67）
+    # sps[sps_data_start + 1] = profile_idc
+    # sps[sps_data_start + 2] = constraint_set flags
+    # sps[sps_data_start + 3] = level_idc
+    if len(sps) >= sps_data_start + 4:
+        nal_header = sps[sps_data_start]
+        profile_idc = sps[sps_data_start + 1]
+        constraint_flags = sps[sps_data_start + 2]
+        level_idc = sps[sps_data_start + 3]
+
+        # 构建 codec 字符串：avc1.XXYYZZ
+        # XX = profile_idc, YY = constraint_flags, ZZ = level_idc
+        codec = f"avc1.{profile_idc:02X}{constraint_flags:02X}{level_idc:02X}"
+        logger.info("codec_extracted_from_sps", device=device_id, codec=codec,
+                    nal_header=f"0x{nal_header:02X}",
+                    profile_idc=f"0x{profile_idc:02X}",
+                    constraint_flags=f"0x{constraint_flags:02X}",
+                    level_idc=f"0x{level_idc:02X}")
+    else:
+        logger.warning("sps_too_short_for_codec_extraction", device=device_id, sps_length=len(sps))
+
+    # 获取设备分辨率
+    encoder = stream_service.get_encoder(device_id)
+    width = encoder.resolution[0] if encoder else 0
+    height = encoder.resolution[1] if encoder else 0
+
     await websocket.send_json({
         "type": "config",
-        "codec": "avc1.42E01E",  # H.264 Baseline Profile
-        "width": 0,  # 客户端从 SPS 解析或从 VideoDecoder output 获取
-        "height": 0,
+        "codec": codec,
+        "width": width,
+        "height": height,
         "description": (sps + pps).hex(),  # Annex B 格式的 SPS+PPS
     })
 
 
-async def _handle_input(device_id: str, data: dict):
+async def _handle_input(device_id: str, data: dict, stream_service: StreamService):
     """
     处理来自客户端的输入事件。
+
+    通过 ScrcpyEncoder.send_input() 发送二进制控制消息（scrcpy 协议），
+    延迟 <5ms。如果控制 socket 不可用，自动回退到 adb shell input。
 
     支持的 action：
         - touch: 触摸事件（x, y）
         - swipe: 滑动事件（x1, y1, x2, y2, duration）
         - key: 按键事件（keycode）
         - text: 文本输入（text）
-
-    注意：
-        当前直接调用 adb 子进程。未来应重构为通过 AdbDriver 接口调用，
-        以保持架构一致性并支持 mock 测试。
     """
-    action = data.get("action")
+    logger.info("input_received", device=device_id, action=data.get("action"), data=data)
 
-    if action == "touch":
-        x, y = data["x"], data["y"]
-        await asyncio.create_subprocess_exec(
-            "adb", "-s", device_id, "shell", "input", "tap", str(x), str(y)
-        )
-    elif action == "swipe":
-        x1, y1 = data["x1"], data["y1"]
-        x2, y2 = data["x2"], data["y2"]
-        duration = data.get("duration", 300)
-        await asyncio.create_subprocess_exec(
-            "adb",
-            "-s",
-            device_id,
-            "shell",
-            "input",
-            "swipe",
-            str(x1),
-            str(y1),
-            str(x2),
-            str(y2),
-            str(duration),
-        )
-    elif action == "key":
-        keycode = data["keycode"]
-        await asyncio.create_subprocess_exec(
-            "adb", "-s", device_id, "shell", "input", "keyevent", str(keycode)
-        )
-    elif action == "text":
-        text = data["text"]
-        await asyncio.create_subprocess_exec(
-            "adb", "-s", device_id, "shell", "input", "text", text
-        )
+    encoder = stream_service.get_encoder(device_id)
+    if encoder is None:
+        logger.warning("no_encoder_for_input", device=device_id)
+        return
+
+    logger.info("sending_input_via_encoder", device=device_id,
+                resolution=encoder.resolution,
+                has_control_sender=encoder._control_sender is not None)
+    await encoder.send_input(data)
+    logger.info("input_sent", device=device_id)

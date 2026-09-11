@@ -125,3 +125,18 @@ class StreamService:
             正在流式传输的设备 ID 列表。
         """
         return [device_id for device_id, active in self.active_streams.items() if active]
+
+    def get_encoder(self, device_id: str) -> ScrcpyEncoder | None:
+        """
+        获取设备对应的编码器实例。
+
+        用于 WebSocket 输入处理：通过编码器实例的 send_input() 方法
+        发送二进制控制消息（延迟 <5ms），而非 adb shell input（50-200ms）。
+
+        参数：
+            device_id: 设备的 ADB 序列号。
+
+        返回：
+            ScrcpyEncoder 实例，如果设备没有活跃流则返回 None。
+        """
+        return self.encoders.get(device_id)

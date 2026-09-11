@@ -7,16 +7,16 @@ Scrcpy 模块使用示例
 
 import asyncio
 from app.scrcpy import (
-    ScrcpyEncoder,
     EncoderOpts,
     H264Parser,
-    InputController,
+    ControlSender,
     ServerManager,
     KEYCODE_HOME,
     KEYCODE_BACK,
     DEFAULT_ENCODER_OPTS,
     LOW_LATENCY_ENCODER_OPTS,
 )
+from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 
 
 async def example_video_stream():
@@ -83,44 +83,46 @@ async def example_low_latency_stream():
 
 async def example_input_control():
     """
-    示例 3：输入控制。
+    示例 3：输入控制（通过 scrcpy 二进制协议）。
 
-    演示各种输入操作。
+    演示通过 encoder.send_input() 发送各种输入操作。
+    延迟 <5ms（对比 adb shell input 的 50-200ms）。
     """
     device_id = "emulator-5554"
-    controller = InputController()
+    encoder = ScrcpyEncoder()
+    opts = DEFAULT_ENCODER_OPTS
 
     print(f"开始输入控制: {device_id}")
 
+    # 启动编码器（建立控制 socket）
+    stream = encoder.start(device_id, opts)
+
     # 触摸点击 (100, 200)
-    await controller.tap(device_id, x=100, y=200)
+    await encoder.send_input({"action": "touch", "x": 100, "y": 200})
     print("执行: 触摸点击 (100, 200)")
 
     # 滑动 (100, 200) -> (300, 400)，持续 300ms
-    await controller.swipe(
-        device_id,
-        x1=100, y1=200,
-        x2=300, y2=400,
-        duration=300
-    )
+    await encoder.send_input({
+        "action": "swipe",
+        "x1": 100, "y1": 200,
+        "x2": 300, "y2": 400,
+        "duration": 300,
+    })
     print("执行: 滑动")
 
     # 按 HOME 键
-    await controller.key(device_id, KEYCODE_HOME)
+    await encoder.send_input({"action": "key", "keycode": KEYCODE_HOME})
     print("执行: 按 HOME 键")
 
     # 按返回键
-    await controller.key(device_id, KEYCODE_BACK)
+    await encoder.send_input({"action": "key", "keycode": KEYCODE_BACK})
     print("执行: 按返回键")
 
     # 输入文本（注意：不支持中文）
-    await controller.text(device_id, "hello world")
+    await encoder.send_input({"action": "text", "text": "hello world"})
     print("执行: 输入文本 'hello world'")
 
-    # 长按 (200, 300)，持续 1 秒
-    await controller.long_press(device_id, x=200, y=300, duration=1000)
-    print("执行: 长按")
-
+    await encoder.stop()
     print("输入控制完成")
 
 
@@ -200,7 +202,7 @@ async def example_websocket_integration():
     演示如何将 scrcpy 模块集成到 WebSocket 端点。
     """
     from fastapi import WebSocket
-    from app.scrcpy import ScrcpyEncoder, InputController
+    from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 
     # 这个示例展示了完整的 WebSocket 端点结构
     # 实际实现需要在 FastAPI 路由中使用
@@ -210,7 +212,6 @@ async def example_websocket_integration():
         await websocket.accept()
 
         encoder = ScrcpyEncoder()
-        controller = InputController()
         opts = DEFAULT_ENCODER_OPTS
 
         try:
@@ -227,8 +228,8 @@ async def example_websocket_integration():
                         websocket.receive_json(),
                         timeout=0.001
                     )
-                    # 处理输入事件
-                    await controller.handle_input_event(device_id, data)
+                    # 通过二进制控制协议发送输入（<5ms 延迟）
+                    await encoder.send_input(data)
                 except asyncio.TimeoutError:
                     pass
 

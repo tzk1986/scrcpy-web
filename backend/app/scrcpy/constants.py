@@ -140,7 +140,7 @@ HIGH_QUALITY_ENCODER_OPTS = EncoderOpts(
 # scrcpy-server 配置
 # ---------------------------------------------------------------------------
 
-SCRCPY_SERVER_VERSION = "2.4"                           # scrcpy-server 版本（使用 v2.4 协议）
+SCRCPY_SERVER_VERSION = "4.1"                           # scrcpy-server 版本（使用 v4.1 协议）
 SCRCPY_SERVER_JAR_NAME = "scrcpy-server.jar"            # server JAR 文件名
 SCRCPY_SERVER_REMOTE_PATH = "/data/local/tmp/scrcpy-server.jar"  # 设备上的路径
 

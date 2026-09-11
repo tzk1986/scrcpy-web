@@ -16,7 +16,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
 
-from app.scrcpy.encoder import ScrcpyEncoder
+from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 from app.scrcpy.constants import (
     EncoderOpts,
     DEFAULT_ENCODER_OPTS,

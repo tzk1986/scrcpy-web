@@ -17,6 +17,11 @@ scrcpy-server 视频编码器
     8. yield 原始字节给上层（video.py 中 H264Parser 负责解析为 NALU）
     9. 停止时 kill 进程并清理端口转发
 
+控制输入：
+    - 通过控制 socket 发送二进制控制消息（scrcpy 协议）
+    - 延迟 <5ms（对比 adb shell input 的 50-200ms）
+    - 控制 socket 不可用时自动回退到 adb shell input
+
 关键细节（参考 py-scrcpy-client 实现）：
     - 使用 scrcpy-server v2.4
     - socket 名称固定为 "scrcpy"（v2.x 协议）
@@ -39,14 +44,14 @@ scrcpy-server 视频编码器
 """
 
 import asyncio
-import os
-import secrets
+import struct
 from typing import AsyncIterator
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import EncoderOpts
 from app.scrcpy.server_manager import ServerManager
+from app.scrcpy.control_sender import ControlSender, ACTION_DOWN, ACTION_UP, ACTION_MOVE
 from app.scrcpy.constants import (
     SCRCPY_SERVER_REMOTE_PATH,
     SCRCPY_SERVER_CLASS,
@@ -66,6 +71,8 @@ class ScrcpyEncoder:
     实现 domain.ports.VideoEncoder 协议。
     yield 的是原始 H.264 字节流（可能跨多个 NALU），
     上层使用 H264Parser 解析为完整的 NALU。
+
+    同时提供 send_input() 方法，通过控制 socket 发送二进制控制消息。
     """
 
     def __init__(self):
@@ -76,15 +83,35 @@ class ScrcpyEncoder:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._control_writer: asyncio.StreamWriter | None = None  # 控制连接
+        self._control_sender: ControlSender | None = None  # 控制消息发送器
+        self._resolution: tuple[int, int] = (0, 0)  # 屏幕分辨率
         self._server_manager = ServerManager()
         self._local_port = 27183
         self._socket_name: str = "scrcpy"  # 固定 socket 名称
         self._data_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 
+    @property
+    def resolution(self) -> tuple[int, int]:
+        """获取屏幕分辨率。"""
+        return self._resolution
+
     async def start(self, device_id: str, opts: EncoderOpts) -> AsyncIterator[bytes]:
         """
         启动 scrcpy-server 并 yield 原始 H.264 字节。
+
+        注意：max_size 强制设为 0（不缩放），保证视频帧尺寸 == 设备物理分辨率。
+        这样前端 canvas 坐标（基于视频帧尺寸）== 设备坐标（scrcpy-server 需要），
+        避免坐标映射错位导致点击位置不准。
         """
+        # 强制禁用缩放：视频帧尺寸 = 设备物理分辨率
+        # 如果不这样做，max_size=1080 会把 1280x720 视频缩小为 1080x607，
+        # 导致前端坐标（0-1080）与 scrcpy-server 期望的设备坐标（0-1280）不一致
+        opts = EncoderOpts(
+            max_size=0,
+            bit_rate=opts.bit_rate,
+            codec=opts.codec,
+            fps=opts.fps,
+        )
         logger.info(
             "starting_scrcpy_server_encoder",
             device=device_id,
@@ -100,8 +127,6 @@ class ScrcpyEncoder:
         self._local_port = 27183 + port_offset
 
         # socket 名称使用固定的 "scrcpy"（py-scrcpy-client 的做法）
-        # 注意：scrcpy v2.x 使用固定 "scrcpy"，v4.x 使用 "scrcpy_<scid>"
-        # 但我们使用的 server.jar 需要匹配客户端协议
         self._socket_name = "scrcpy"
 
         # 1. 推送 JAR（server 退出时会删除 JAR，每次必须推送）
@@ -131,7 +156,6 @@ class ScrcpyEncoder:
                 bit_rate_value = int(bit_rate_value)
 
         # 4. 设置端口转发（必须在 server 启动前完成）
-        # adb forward: tcp:PORT → localabstract:scrcpy_<scid_hex>
         logger.info(
             "setting_up_port_forward",
             device=device_id,
@@ -155,9 +179,6 @@ class ScrcpyEncoder:
             raise RuntimeError(f"adb forward failed: {error_msg}")
 
         # 5. 构建 scrcpy-server 启动命令
-        # 参考 py-scrcpy-client，但不指定 video_encoder（让服务器自动选择）
-        # 因为不同设备支持的编码器不同（如 RK3288 使用 OMX.rk.video_encoder.avc）
-        # tunnel_forward=true：server 在设备端作为 LocalServerSocket 监听
         cmd = [
             "adb", "-s", device_id, "shell",
             f"CLASSPATH={SCRCPY_SERVER_REMOTE_PATH}",
@@ -168,11 +189,11 @@ class ScrcpyEncoder:
             f"max_size={opts.max_size}",
             f"max_fps={opts.fps}",
             f"video_bit_rate={bit_rate_value}",
-            "video_codec=h264",                        # 指定编码格式
-            # 不指定 video_encoder，让服务器自动选择可用的编码器
-            "tunnel_forward=true",                     # server 监听模式
-            "send_frame_meta=false",                   # 不发送帧元数据
-            "control=true",                            # 必须启用控制（即使不用）
+            "video_codec=h264",
+            "tunnel_forward=true",
+            "send_frame_meta=false",
+            "raw_stream=true",       # 禁用 dummy byte + device meta + codec header，直接输出原始 H264
+            "control=true",
             "audio=false",
             "show_touches=false",
             "stay_awake=false",
@@ -180,11 +201,7 @@ class ScrcpyEncoder:
             "clipboard_autosync=false",
         ]
 
-        logger.info(
-            "starting_scrcpy_server",
-            device=device_id,
-            socket_name=self._socket_name,
-        )
+        logger.info("starting_scrcpy_server", device=device_id)
 
         # 6. 启动 scrcpy-server 子进程
         self.process = await asyncio.create_subprocess_exec(
@@ -212,7 +229,7 @@ class ScrcpyEncoder:
                     if line:
                         decoded = line.decode().strip()
                         if decoded:
-                            logger.info("scrcpy_server_log",
+                            logger.debug("scrcpy_server_log",
                                         device=device_id, log=decoded)
                         if "Device:" in decoded:
                             server_ready = True
@@ -240,34 +257,41 @@ class ScrcpyEncoder:
                         if line:
                             decoded = line.decode().strip()
                             if decoded:
+                                # 使用 info 级别以便调试
                                 logger.info("scrcpy_server_log",
                                           device=device_id, log=decoded)
                         elif self.process.returncode is not None:
+                            logger.info("server_process_ended_during_log_read",
+                                       device=device_id,
+                                       returncode=self.process.returncode)
                             break
                     except asyncio.TimeoutError:
                         continue
                     except Exception as e:
                         if "not connected" not in str(e).lower():
-                            logger.debug("server_log_read_error",
+                            logger.warning("server_log_read_error",
                                        device=device_id, error=str(e))
                         break
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.debug("server_log_task_error",
+                logger.warning("server_log_task_error",
                            device=device_id, error=str(e))
 
         log_task = asyncio.create_task(read_server_logs())
 
-        # 8. 连接到 scrcpy-server 的 socket
-        # Python 作为 TCP 客户端，连接到本地端口
-        # adb forward 将连接转发到设备端 server 的监听 socket
-        logger.info(
-            "connecting_to_scrcpy_server",
-            device=device_id,
-            port=self._local_port,
-            socket_name=self._socket_name,
-        )
+        # 7.6 检查 server 进程状态
+        if self.process.returncode is not None:
+            stderr_data = await self.process.stderr.read()
+            error_msg = stderr_data.decode().strip()
+            logger.error("scrcpy_server_exited_early",
+                        device=device_id,
+                        returncode=self.process.returncode,
+                        stderr=error_msg)
+            raise RuntimeError(f"scrcpy-server exited early: {error_msg}")
+
+        # 8. 连接到 scrcpy-server 的 socket（视频 socket）
+        logger.info("connecting_to_scrcpy_server", device=device_id)
         try:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", self._local_port),
@@ -279,103 +303,67 @@ class ScrcpyEncoder:
 
         logger.info("connected_to_scrcpy_server", device=device_id)
 
-        # 8.5 建立第二个连接（控制 socket）
-        # py-scrcpy-client 协议需要两个连接：视频和控制
+        # 9. 获取设备分辨率（通过 adb，因为 raw_stream=true 跳过协议握手）
+        # raw_stream=true 禁用了 dummy byte / device meta / codec header，
+        # 视频 socket 直接输出原始 H264 数据，无需读取协议字段。
+        try:
+            resolution_proc = await asyncio.create_subprocess_exec(
+                "adb", "-s", device_id, "shell", "wm", "size",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(resolution_proc.communicate(), timeout=5.0)
+            # 解析输出，如 "Physical size: 1080x1920"
+            output = stdout.decode().strip()
+            for line in output.splitlines():
+                if "size" in line.lower():
+                    # 提取 "1080x1920" 部分
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        size_str = parts[-1].strip()
+                        if "x" in size_str:
+                            w, h = size_str.split("x")
+                            self._resolution = (int(w), int(h))
+                            logger.info("scrcpy_resolution",
+                                       device=device_id,
+                                       width=self._resolution[0],
+                                       height=self._resolution[1])
+                            break
+        except Exception as e:
+            logger.warning("resolution_adb_error", device=device_id, error=str(e))
+
+        # 10. 建立控制 socket 并创建 ControlSender
         logger.info("establishing_control_connection", device=device_id)
         try:
             _, control_writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", self._local_port),
                 timeout=3.0,
             )
-            logger.info("control_connection_established", device=device_id)
-            # 保存控制连接以便后续清理
             self._control_writer = control_writer
+
+            # 创建控制消息发送器（需要分辨率）
+            if self._resolution != (0, 0):
+                self._control_sender = ControlSender(
+                    self._control_writer, self._resolution)
+                logger.info("control_sender_created",
+                           device=device_id,
+                           resolution=self._resolution)
+            else:
+                logger.warning("resolution_unknown_control_sender_not_created",
+                              device=device_id)
+
         except Exception as e:
             logger.warning("control_connection_failed", device=device_id, error=str(e))
-            # 控制连接失败不是致命的，继续尝试
+            # 控制连接失败不是致命的，会回退到 adb shell input
 
-        # 9. 读取协议数据（完全按照 scrcpy v2.4 协议实现）
-        # 协议流程：
-        #   1. 读取 1 字节 dummy byte (应该是 0x00)
-        #   2. 读取 64 字节设备名
-        #   3. 读取 4 字节 codec 名称（ASCII 字符串，如 "h264"）
-        #   4. 读取 4 字节宽度 (uint32, 大端序)
-        #   5. 读取 4 字节高度 (uint32, 大端序)
-        import struct
-        try:
-            # 读取 dummy byte
-            dummy_byte = await asyncio.wait_for(
-                self._reader.readexactly(1),
-                timeout=2.0,
-            )
-            if dummy_byte != b"\x00":
-                logger.warning("unexpected_dummy_byte",
-                             device=device_id,
-                             byte=dummy_byte.hex())
-
-            # 读取设备名
-            device_name_data = await asyncio.wait_for(
-                self._reader.readexactly(64),
-                timeout=3.0,
-            )
-            device_name = device_name_data.decode("utf-8").rstrip("\x00")
-            logger.info("scrcpy_device_name", device=device_id, name=device_name)
-
-            # 读取 codec 名称（4 字节 ASCII 字符串）
-            codec_data = await asyncio.wait_for(
-                self._reader.readexactly(4),
-                timeout=2.0,
-            )
-            codec_name = codec_data.decode("ascii")
-            logger.info("scrcpy_codec", device=device_id, codec=codec_name)
-
-            # 读取宽度（4 字节 uint32，大端序）
-            width_data = await asyncio.wait_for(
-                self._reader.readexactly(4),
-                timeout=2.0,
-            )
-            width = struct.unpack(">I", width_data)[0]
-
-            # 读取高度（4 字节 uint32，大端序）
-            height_data = await asyncio.wait_for(
-                self._reader.readexactly(4),
-                timeout=2.0,
-            )
-            height = struct.unpack(">I", height_data)[0]
-
-            logger.info("scrcpy_resolution",
-                       device=device_id,
-                       width=width,
-                       height=height)
-
-        except asyncio.TimeoutError:
-            logger.warning("device_info_timeout", device=device_id)
-        except Exception as e:
-            logger.warning("device_info_error", device=device_id, error=str(e))
-
-        # 10. 后台任务：从 socket 读取数据到队列
-        import time as _time
-        _read_start = _time.time()
-        _read_count = 0
-        _read_bytes = 0
-
+        # 11. 后台任务：从 socket 读取数据到队列
         async def read_socket():
-            nonlocal _read_count, _read_bytes
             try:
                 while self._running and self._reader:
                     chunk = await self._reader.read(VIDEO_STREAM_FRAME_SIZE)
                     if not chunk:
-                        logger.info("socket_closed", device=device_id,
-                                    chunks=_read_count, total_bytes=_read_bytes,
-                                    elapsed=f"{_time.time() - _read_start:.1f}s")
+                        logger.info("socket_closed", device=device_id)
                         break
-                    _read_count += 1
-                    _read_bytes += len(chunk)
-                    if _read_count <= 5 or _read_count % 100 == 0:
-                        logger.info("socket_data_received", device=device_id,
-                                    chunk_num=_read_count, chunk_size=len(chunk),
-                                    total_bytes=_read_bytes,
-                                    elapsed=f"{_time.time() - _read_start:.1f}s")
                     try:
                         await asyncio.wait_for(
                             self._data_queue.put(chunk),
@@ -396,9 +384,7 @@ class ScrcpyEncoder:
 
         read_task = asyncio.create_task(read_socket())
 
-        # 11. 从队列 yield 数据
-        _yield_count = 0
-        _yield_bytes = 0
+        # 12. 从队列 yield 数据
         try:
             while self._running:
                 try:
@@ -406,16 +392,8 @@ class ScrcpyEncoder:
                         self._data_queue.get(), timeout=2.0
                     )
                     if data is None:
-                        logger.info("queue_sentinel_received",
-                                    device=device_id,
-                                    yielded=_yield_count, bytes=_yield_bytes)
+                        logger.info("queue_sentinel_received", device=device_id)
                         break
-                    _yield_count += 1
-                    _yield_bytes += len(data)
-                    if _yield_count <= 5 or _yield_count % 100 == 0:
-                        logger.info("yielding_data", device=device_id,
-                                    yield_num=_yield_count, chunk_size=len(data),
-                                    total_bytes=_yield_bytes)
                     yield data
                 except asyncio.TimeoutError:
                     if self.process and self.process.returncode is not None:
@@ -441,6 +419,146 @@ class ScrcpyEncoder:
                 pass
             await self.stop()
 
+    # =========================================================================
+    # 控制输入方法
+    # =========================================================================
+
+    async def send_input(self, data: dict):
+        """
+        通过控制 socket 发送输入事件。
+
+        参数：
+            data: JSON 格式的输入数据，包含 action 字段和对应参数。
+
+        支持的 action：
+            - "touch": {"action": "touch", "x": 100, "y": 200}
+            - "swipe": {"action": "swipe", "x1": 100, "y1": 200, "x2": 300, "y2": 400, "duration": 300}
+            - "key": {"action": "key", "keycode": 4}
+            - "text": {"action": "text", "text": "hello"}
+
+        如果控制 socket 不可用，自动回退到 adb shell input。
+        """
+        logger.info("send_input_called", device=self._device_id,
+                    action=data.get("action"),
+                    has_control_sender=self._control_sender is not None,
+                    resolution=self._resolution)
+
+        if not self._control_sender or self._resolution == (0, 0):
+            logger.warning("control_socket_unavailable_fallback_to_adb",
+                          device=self._device_id,
+                          has_control_sender=self._control_sender is not None,
+                          resolution=self._resolution)
+            await self._fallback_adb_input(data)
+            return
+
+        action = data.get("action")
+
+        try:
+            if action == "touch":
+                x, y = data["x"], data["y"]
+                logger.info("sending_touch", device=self._device_id, x=x, y=y)
+                await self._control_sender.touch(x, y, ACTION_DOWN)
+                await self._control_sender.touch(x, y, ACTION_UP)
+
+            elif action == "swipe":
+                await self._send_swipe(data)
+
+            elif action == "key":
+                keycode = data["keycode"]
+                await self._control_sender.keycode(keycode, ACTION_DOWN)
+                await self._control_sender.keycode(keycode, ACTION_UP)
+
+            elif action == "text":
+                text = data["text"]
+                await self._control_sender.text(text)
+
+            else:
+                logger.warning("unknown_input_action", action=action)
+                await self._fallback_adb_input(data)
+
+        except Exception as e:
+            logger.error("control_send_failed", device=self._device_id, error=str(e))
+            # 回退到 adb shell input
+            await self._fallback_adb_input(data)
+
+    async def _send_swipe(self, data: dict):
+        """
+        连续 MOVE 事件滑动（参考 py-scrcpy-client swipe()）。
+
+        参数：
+            data: 滑动数据，包含 x1, y1, x2, y2, duration
+        """
+        x1, y1 = data["x1"], data["y1"]
+        x2, y2 = data["x2"], data["y2"]
+        duration = data.get("duration", 300)
+
+        assert self._control_sender is not None
+
+        await self._control_sender.touch(x1, y1, ACTION_DOWN)
+
+        # 短距离或短时间：直接 UP
+        distance = ((x2-x1)**2 + (y2-y1)**2) ** 0.5
+        if distance < 10 or duration < 100:
+            await self._control_sender.touch(x2, y2, ACTION_UP)
+            return
+
+        # 限制最大步数，避免过多 MOVE 事件
+        step_length = 5
+        total_steps = min(int(distance / step_length), 100)
+        if total_steps < 1:
+            total_steps = 1
+        step_delay = duration / 1000.0 / total_steps
+
+        dx = x2 - x1
+        dy = y2 - y1
+        for i in range(1, total_steps + 1):
+            ratio = i / total_steps
+            nx = x1 + int(dx * ratio)
+            ny = y1 + int(dy * ratio)
+            await self._control_sender.touch(nx, ny, ACTION_MOVE)
+            await asyncio.sleep(step_delay)
+
+        await self._control_sender.touch(x2, y2, ACTION_UP)
+
+    async def _fallback_adb_input(self, data: dict):
+        """
+        回退到 adb shell input（控制 socket 不可用时）。
+
+        参数：
+            data: JSON 格式的输入数据
+        """
+        action = data.get("action")
+
+        try:
+            if action == "touch":
+                x, y = data["x"], data["y"]
+                await asyncio.create_subprocess_exec(
+                    "adb", "-s", self._device_id, "shell", "input", "tap", str(x), str(y))
+
+            elif action == "swipe":
+                x1, y1 = data["x1"], data["y1"]
+                x2, y2 = data["x2"], data["y2"]
+                duration = data.get("duration", 300)
+                await asyncio.create_subprocess_exec(
+                    "adb", "-s", self._device_id, "shell", "input", "swipe",
+                    str(x1), str(y1), str(x2), str(y2), str(duration))
+
+            elif action == "key":
+                keycode = data["keycode"]
+                await asyncio.create_subprocess_exec(
+                    "adb", "-s", self._device_id, "shell", "input", "keyevent", str(keycode))
+
+            elif action == "text":
+                text = data["text"]
+                await asyncio.create_subprocess_exec(
+                    "adb", "-s", self._device_id, "shell", "input", "text", text)
+
+            else:
+                logger.warning("unknown_input_action_fallback", action=action)
+
+        except Exception as e:
+            logger.error("fallback_adb_input_failed", device=self._device_id, error=str(e))
+
     async def stop(self):
         """停止编码并释放资源。"""
         logger.info("stopping_scrcpy_encoder", device=self._device_id)
@@ -454,6 +572,7 @@ class ScrcpyEncoder:
             except Exception:
                 pass
             self._control_writer = None
+            self._control_sender = None
 
         # 关闭视频 socket
         if self._writer:
@@ -502,3 +621,4 @@ class ScrcpyEncoder:
         logger.info("scrcpy_encoder_stopped", device=self._device_id)
         self._device_id = ""
         self._socket_name = "scrcpy"
+        self._resolution = (0, 0)

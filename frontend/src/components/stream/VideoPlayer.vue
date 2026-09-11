@@ -176,7 +176,6 @@ onMounted(async () => {
     console.log('[VideoPlayer] WebSocket closed')
     state.value = 'stopped'
   })
-  ws.connect()
 
   // 初始化输入控制器
   inputController = new InputController(
@@ -205,25 +204,36 @@ onMounted(async () => {
       frameCount.value = stats.frameCount
     })
 
+    // 重要：先注册消息处理器，再建立 WebSocket 连接
+    // 避免 config 消息在处理器注册前到达被丢弃
     h264Stream.start()
+    ws.connect()
 
-    // H264 自动回退：如果 10 秒内没有收到任何帧，切换到截图模式
+    // H264 自动回退：如果 15 秒内没有成功解码任何帧，切换到截图模式
     // 某些设备（如 Rockchip RK3288）的硬件编码器会崩溃，导致 H264 流无法工作
     let h264FallbackTimer: number | null = window.setTimeout(() => {
-      if (h264Stream && h264Stream.stats.frameCount === 0 && mode.value === 'h264') {
-        console.warn('[VideoPlayer] H264 stream received no frames in 10s, falling back to screenshot mode')
-        h264Stream.stop()
-        h264Stream = null
-        startScreenshotMode()
+      if (h264Stream && mode.value === 'h264') {
+        const stats = h264Stream.stats
+        console.warn('[VideoPlayer] H264 fallback triggered:',
+          'state:', stats.state,
+          'frameCount:', stats.frameCount,
+          'error:', stats.error)
+        if (stats.state !== 'streaming') {
+          console.warn('[VideoPlayer] Falling back to screenshot mode')
+          h264Stream.stop()
+          h264Stream = null
+          startScreenshotMode()
+        }
       }
       h264FallbackTimer = null
-    }, 10000)
+    }, 15000)
 
-    // 如果成功收到帧，取消回退定时器
+    // 统计更新回调：更新 FPS/帧数显示，成功进入 streaming 状态后取消回退定时器
     h264Stream.setStatsUpdateHandler((stats) => {
       fps.value = stats.fps
       frameCount.value = stats.frameCount
-      if (stats.frameCount > 0 && h264FallbackTimer !== null) {
+      if (stats.state === 'streaming' && h264FallbackTimer !== null) {
+        console.log('[VideoPlayer] H264 streaming confirmed, canceling fallback timer')
         window.clearTimeout(h264FallbackTimer)
         h264FallbackTimer = null
       }

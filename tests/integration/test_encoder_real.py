@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "backend"))
 
-from app.scrcpy.encoder import ScrcpyEncoder
+from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 from app.domain.ports import EncoderOpts
 
 
