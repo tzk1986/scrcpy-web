@@ -38,8 +38,9 @@ from app.core.exceptions import (
     http_exception_handler,
     openscrcpy_exception_handler,
 )
-from app.interfaces.http import debug, devices, sessions
+from app.interfaces.http import apps, debug, devices, network, performance, sessions
 from app.interfaces.ws import debug as ws_debug
+from app.interfaces.ws import performance as ws_performance
 from app.interfaces.ws import video as ws_video
 from app.lifecycle import lifespan
 
@@ -81,8 +82,11 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, generic_exception_handler)
 
     # --- HTTP 路由（interfaces/http/）--------------------------------------
+    app.include_router(apps.router)        # /api/apps
     app.include_router(devices.router)     # /api/devices
     app.include_router(debug.router)       # /api/debug
+    app.include_router(network.router)     # /api/network
+    app.include_router(performance.router) # /api/perf
     app.include_router(sessions.router)    # /api/sessions
 
     # --- WebSocket 端点 ---------------------------------------------------
@@ -97,6 +101,11 @@ def create_app() -> FastAPI:
     async def debug_ws(websocket: WebSocket, session_id: str):
         from app.deps import get_debug_service
         await ws_debug.debug_stream(websocket, session_id, get_debug_service())
+
+    @app.websocket("/ws/perf/{device_id}")
+    async def perf_ws(websocket: WebSocket, device_id: str):
+        from app.deps import get_performance_service
+        await ws_performance.stream_metrics(websocket, device_id, get_performance_service())
 
     # --- 健康检查 ---------------------------------------------------------
     # 供 Docker HEALTHCHECK 和容器编排器（k8s、compose）使用。

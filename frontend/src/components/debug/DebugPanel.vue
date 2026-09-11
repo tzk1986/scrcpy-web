@@ -5,9 +5,9 @@
   可停靠调试面板，包含多个标签页：
     - Logcat: 实时日志查看器（LogcatView.vue）
     - Shell: 远程 shell 终端（ShellView.vue）
-    - Network: 网络抓包（待实现）
-    - Performance: 性能监控（待实现）
-    - Apps: 应用管理（待实现）
+    - Network: 网络监控（NetworkView.vue）
+    - Performance: 性能监控（PerfView.vue）
+    - Apps: 应用管理（AppsView.vue）
 
   功能：
     - 底部/右侧停靠切换
@@ -22,6 +22,9 @@
     DebugPanel.vue → DockPanel.vue
                    → LogcatView.vue
                    → ShellView.vue
+                   → NetworkView.vue
+                   → PerfView.vue
+                   → AppsView.vue
 -->
 <template>
   <DockPanel
@@ -55,8 +58,11 @@
     <div class="tab-content">
       <LogcatView v-if="activeTab === 'logcat'" :device-id="deviceId" />
       <ShellView v-else-if="activeTab === 'shell'" :device-id="deviceId" />
+      <NetworkView v-else-if="activeTab === 'network'" :device-id="deviceId" />
+      <PerfView v-else-if="activeTab === 'perf'" :device-id="deviceId" />
+      <AppsView v-else-if="activeTab === 'apps'" :device-id="deviceId" />
       <div v-else class="coming-soon">
-        {{ activeTab }} tab (coming soon)
+        未知标签页
       </div>
     </div>
   </DockPanel>
@@ -67,6 +73,9 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import DockPanel from '@/components/ui/DockPanel.vue'
 import LogcatView from './LogcatView.vue'
 import ShellView from './ShellView.vue'
+import NetworkView from './NetworkView.vue'
+import PerfView from './PerfView.vue'
+import AppsView from './AppsView.vue'
 
 /** 目标设备 ID（从父组件传入）。 */
 defineProps<{ deviceId: string }>()

@@ -195,4 +195,126 @@ export const api = {
     })
     return res.data as Blob
   },
+
+  // ==================== 性能监控 API ====================
+
+  /**
+   * 获取设备历史性能指标。
+   * 对应：GET /api/perf/{deviceId}/metrics?limit=...
+   */
+  async getPerfMetrics(deviceId: string, limit = 100) {
+    const res = await client.get(`/perf/${encodeURIComponent(deviceId)}/metrics`, {
+      params: { limit },
+    })
+    return res.data
+  },
+
+  /**
+   * 启动性能监控。
+   * 对应：POST /api/perf/{deviceId}/start?interval=...
+   */
+  async startPerfMonitoring(deviceId: string, interval = 1.0) {
+    const res = await client.post(`/perf/${encodeURIComponent(deviceId)}/start`, null, {
+      params: { interval },
+    })
+    return res.data
+  },
+
+  /**
+   * 停止性能监控。
+   * 对应：POST /api/perf/{deviceId}/stop
+   */
+  async stopPerfMonitoring(deviceId: string) {
+    const res = await client.post(`/perf/${encodeURIComponent(deviceId)}/stop`)
+    return res.data
+  },
+
+  // ==================== 应用管理 API ====================
+
+  /**
+   * 获取设备应用列表。
+   * 对应：GET /api/apps/{deviceId}?include_system=...
+   */
+  async listApps(deviceId: string, includeSystem = false) {
+    const res = await client.get(`/apps/${encodeURIComponent(deviceId)}`, {
+      params: { include_system: includeSystem },
+    })
+    return res.data
+  },
+
+  /**
+   * 获取应用详情。
+   * 对应：GET /api/apps/{deviceId}/{package}
+   */
+  async getAppInfo(deviceId: string, packageName: string) {
+    const res = await client.get(`/apps/${encodeURIComponent(deviceId)}/${packageName}`)
+    return res.data
+  },
+
+  /**
+   * 启动应用。
+   * 对应：POST /api/apps/{deviceId}/{package}/launch
+   */
+  async launchApp(deviceId: string, packageName: string) {
+    const res = await client.post(`/apps/${encodeURIComponent(deviceId)}/${packageName}/launch`)
+    return res.data
+  },
+
+  /**
+   * 强制停止应用。
+   * 对应：POST /api/apps/{deviceId}/{package}/stop
+   */
+  async stopApp(deviceId: string, packageName: string) {
+    const res = await client.post(`/apps/${encodeURIComponent(deviceId)}/${packageName}/stop`)
+    return res.data
+  },
+
+  /**
+   * 卸载应用。
+   * 对应：POST /api/apps/{deviceId}/{package}/uninstall
+   */
+  async uninstallApp(deviceId: string, packageName: string) {
+    const res = await client.post(`/apps/${encodeURIComponent(deviceId)}/${packageName}/uninstall`)
+    return res.data
+  },
+
+  /**
+   * 清除应用数据。
+   * 对应：POST /api/apps/{deviceId}/{package}/clear-data
+   */
+  async clearAppData(deviceId: string, packageName: string) {
+    const res = await client.post(`/apps/${encodeURIComponent(deviceId)}/${packageName}/clear-data`)
+    return res.data
+  },
+
+  /**
+   * 获取应用内存占用。
+   * 对应：GET /api/apps/{deviceId}/{package}/memory
+   */
+  async getAppMemory(deviceId: string, packageName: string) {
+    const res = await client.get(`/apps/${encodeURIComponent(deviceId)}/${packageName}/memory`)
+    return res.data
+  },
+
+  // ==================== 网络监控 API ====================
+
+  /**
+   * 获取当前网络统计。
+   * 对应：GET /api/network/{deviceId}/stats
+   */
+  async getNetworkStats(deviceId: string) {
+    const res = await client.get(`/network/${encodeURIComponent(deviceId)}/stats`)
+    return res.data
+  },
+
+  /**
+   * 获取活跃连接列表。
+   * 对应：GET /api/network/{deviceId}/connections?protocol=...
+   */
+  async getNetworkConnections(deviceId: string, protocol?: string) {
+    const res = await client.get(`/network/${encodeURIComponent(deviceId)}/connections`, {
+      params: { protocol },
+    })
+    return res.data
+  },
 }

@@ -27,8 +27,10 @@
 
 from functools import lru_cache
 
+from app.application.app_service import AppService
 from app.application.debug_service import DebugService
 from app.application.device_service import DeviceService
+from app.application.performance_service import PerformanceService
 from app.application.session_service import SessionService
 from app.application.stream_service import StreamService
 from app.domain.ports import AdbDriver, DebugRepository, DeviceRepository, VideoEncoder
@@ -93,6 +95,18 @@ def get_debug_service() -> DebugService:
         adb=get_adb_driver(),
         repo=get_debug_repository(),
     )
+
+
+@lru_cache()
+def get_performance_service() -> PerformanceService:
+    """返回进程级 PerformanceService 单例。"""
+    return PerformanceService(adb=get_adb_driver())
+
+
+@lru_cache()
+def get_app_service() -> AppService:
+    """返回进程级 AppService 单例。"""
+    return AppService(adb=get_adb_driver())
 
 
 def get_stream_service() -> StreamService:
