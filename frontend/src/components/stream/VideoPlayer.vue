@@ -123,6 +123,8 @@ let ws: WebSocketService | null = null
 let videoStream: VideoStream | null = null
 let h264Stream: H264VideoStream | null = null
 let inputController: InputController | null = null
+/** 停止 H264 stats 上报定时器（onMounted 内赋值，onUnmounted 调用） */
+let stopStatsTimer: (() => void) | null = null
 
 /** 检测浏览器是否支持 WebCodecs VideoDecoder */
 function isWebCodecsSupported(): boolean {
@@ -198,8 +200,17 @@ onMounted(async () => {
     // H264VideoStream 的 1Hz stats 心跳驱动。
     const h264StartedAt = Date.now()
     let h264FallbackDone = false
+    let h264StatsTimer: number | null = null
+    const stopH264Stats = () => {
+      if (h264StatsTimer !== null) {
+        clearInterval(h264StatsTimer)
+        h264StatsTimer = null
+      }
+    }
     const checkH264Fallback = () => {
       if (!h264Stream || h264FallbackDone) return
+      // 码率重启宽限期内（服务端预告 restarting）黑屏 1-3s 属预期，暂停判定
+      if (Date.now() < h264Stream.restartGraceUntil) return
       const s = h264Stream.stats
       const r = evaluateH264Fallback({
         state: s.state,
@@ -212,6 +223,7 @@ onMounted(async () => {
       h264FallbackDone = true
       console.warn('[VideoPlayer] H264 fallback triggered:', r.reason,
         'state:', s.state, 'frameCount:', s.frameCount, 'error:', s.error)
+      stopH264Stats()
       h264Stream.stop()
       h264Stream = null
       startScreenshotMode()
@@ -236,6 +248,15 @@ onMounted(async () => {
     // 避免 config 消息在处理器注册前到达被丢弃
     h264Stream.start()
     ws.connect()
+
+    // 自适应码率：每 2s 向服务端上报实测帧率（服务端 1Hz 采样足够）。
+    // 码率重启宽限期内暂停上报，避免重启间隙 fps≈0 污染决策窗口。
+    h264StatsTimer = window.setInterval(() => {
+      if (!h264Stream || !ws) return
+      if (Date.now() < h264Stream.restartGraceUntil) return
+      ws.send({ op: 'stats', fps: h264Stream.stats.fps })
+    }, 2000)
+    stopStatsTimer = () => stopH264Stats()
   } else {
     console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
     startScreenshotMode()
@@ -243,6 +264,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  stopStatsTimer?.()
   h264Stream?.stop()
   videoStream?.stop()
   ws?.close()

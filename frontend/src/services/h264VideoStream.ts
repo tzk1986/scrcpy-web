@@ -56,6 +56,8 @@ export class H264VideoStream {
   // 保存最近的 SPS/PPS，用于重新初始化解码器
   private spsData: Uint8Array | null = null
   private ppsData: Uint8Array | null = null
+  // 服务端自适应码率重启的宽限截止时间戳（暂停回退 watchdog 与 stats 上报）
+  private _restartGraceUntil = 0
 
   constructor(ws: WebSocketService, canvas: HTMLCanvasElement) {
     this.ws = ws
@@ -88,6 +90,11 @@ export class H264VideoStream {
   /** 注册统计信息更新回调 */
   setStatsUpdateHandler(handler: (stats: H264StreamStats) => void) {
     this.onStatsUpdate = handler
+  }
+
+  /** 码率重启宽限截止时间戳（ms）。未处于宽限期为 0。 */
+  get restartGraceUntil(): number {
+    return this._restartGraceUntil
   }
 
   /**
@@ -249,6 +256,11 @@ export class H264VideoStream {
       // 初始化 VideoDecoder
       this.initDecoder(codec, avccDescription, width, height)
 
+    } else if (type === 'restarting') {
+      // 服务端自适应码率重启预告：1-3s 黑屏属预期，宽限期内
+      // 暂停回退 watchdog 与 stats 上报（重启后 config 会再次到达并重建解码器）
+      this._restartGraceUntil = Date.now() + 15_000
+      console.log('[H264] Stream restarting for bitrate switch, grace until', this._restartGraceUntil)
     } else if (type === 'error') {
       this.setError(msg.message as string || 'Unknown server error')
     }
