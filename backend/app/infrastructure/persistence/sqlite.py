@@ -245,6 +245,23 @@ class SqliteDebugRepository(DebugRepository):
             )
             await conn.commit()
 
+    async def list_recent_sessions(self, since_ts: float, limit: int = 20) -> list[DebugSession]:
+        """列出 last_active >= since_ts 的会话（重启恢复用），按最近活跃优先。"""
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT id, device_id, user_id, created_at, last_active, metadata "
+                "FROM debug_sessions WHERE last_active >= ? "
+                "ORDER BY last_active DESC LIMIT ?",
+                (since_ts, limit))
+            rows = await cursor.fetchall()
+        out = []
+        for r in rows:
+            meta = json.loads(r[5]) if r[5] else {}
+            out.append(DebugSession(id=r[0], device_id=r[1], user_id=r[2],
+                                    created_at=r[3], last_active=r[4], metadata=meta))
+        return out
+
     async def save_logs_bulk(self, rows: list[tuple]):
         """批量插入日志行，单事务提交。rows 元素为 9 元组（与 debug_logs 列一致）。"""
         if not rows:

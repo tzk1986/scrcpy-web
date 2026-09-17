@@ -98,6 +98,7 @@ class DebugConfig(BaseSettings):
     log_rate_limit: int = 100  # 每秒最大日志数，超过时自动丢弃低级别日志
     db_pool_size: int = 5  # SQLite 连接池大小
     log_batch_size: int = 100  # 日志批量写入缓冲条数
+    restore_max_sessions: int = 20  # 重启最多恢复的会话数（限制恢复时间）
 
 
 class SecurityConfig(BaseSettings):

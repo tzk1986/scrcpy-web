@@ -154,6 +154,30 @@ class DebugService:
                     pass
             del self.subscribers[session_id]
 
+    async def restore_sessions(self) -> int:
+        """
+        服务启动时恢复近期活跃会话：重建内存对象并续跑 logcat 采集。
+        仅恢复 last_active 在 session_ttl_days 内、且数量 <= restore_max_sessions 的会话。
+        seq_next 从 DB 的 next_seq 续接，保证序列号单调。
+        """
+        from app.core.config import settings as get_settings
+        cfg = get_settings().debug
+        since = time.time() - cfg.session_ttl_days * 86400
+        rows = await self.repo.list_recent_sessions(since, cfg.restore_max_sessions)
+        restored = 0
+        for session in rows:
+            if session.id in self.sessions:
+                continue
+            session.seq_next = await self.repo.next_seq(session.id)
+            self.sessions[session.id] = session
+            await self.writer.start()
+            self.logcat_tasks[session.id] = asyncio.create_task(
+                self._collect_logcat(session))
+            restored += 1
+        if restored:
+            logger.info("sessions_restored", count=restored)
+        return restored
+
     async def _collect_logcat(self, session: DebugSession):
         """
         后台任务：持续流式传输 logcat 并缓冲条目。

@@ -10,10 +10,12 @@
 启动顺序：
     1. setup_logging()  — 配置 structlog（生产环境 JSON，开发环境控制台）
     2. init_db()        — 如果不存在则创建 SQLite 表
-    3. start_cleanup_task() — 启动定期日志清理后台任务
+    3. restore_sessions() — 恢复 TTL 内的活跃调试会话（续跑 logcat 采集）
+    4. start_cleanup_task() — 启动定期日志清理后台任务
 
 关闭顺序：
     1. stop_cleanup_task() — 停止日志清理任务
+    2. writer.flush()      — 冲刷批量日志缓冲
 
 添加新的启动工作时（如连接池、后台任务），放在 `yield` 之前。
 添加关闭工作时，放在 `yield` 之后。
@@ -44,9 +46,12 @@ async def lifespan(app: FastAPI):
     setup_logging()
     await init_db()
 
-    # 启动日志清理任务
+    # 恢复上次进程遗留的活跃调试会话（续跑 logcat 采集）
     from app.deps import get_debug_service
     debug_service = get_debug_service()
+    await debug_service.restore_sessions()
+
+    # 启动日志清理任务
     await debug_service.start_cleanup_task()
 
     logger.info("application_started")

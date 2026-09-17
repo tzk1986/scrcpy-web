@@ -442,6 +442,12 @@ class DebugRepository(Protocol):
         """
         ...
 
+    async def list_recent_sessions(self, since_ts: float, limit: int = 20) -> list[DebugSession]:
+        """
+        列出 last_active >= since_ts 的会话（重启恢复用），按最近活跃优先。
+        """
+        ...
+
     async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0):
         """
         持久化单条日志条目。
