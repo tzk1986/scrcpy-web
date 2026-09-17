@@ -7,6 +7,8 @@
 """
 
 import asyncio
+import os
+
 import websockets
 import json
 
@@ -14,7 +16,8 @@ import json
 async def test_websocket_stream():
     """测试 WebSocket 视频流"""
     device_id = "192.168.8.34:5555"
-    uri = f"ws://127.0.0.1:8765/ws/video/{device_id}"
+    port = os.environ.get("BACKEND_PORT", "8765")
+    uri = f"ws://127.0.0.1:{port}/ws/video/{device_id}"
 
     print(f"连接到: {uri}")
 

@@ -1,8 +1,11 @@
 import { defineConfig } from '@playwright/test'
 import * as path from 'path'
 
-// E2E 编排：自动拉起后端(8765) + 前端 dev server(8080)
-// 端口与代理关系见 CLAUDE.md：vite 将 /api 与 /ws 代理到 8765
+// 后端端口：与后端/vite 共用 BACKEND_PORT（默认 8765），保持三处一致
+const backendPort = process.env.BACKEND_PORT || '8765'
+
+// E2E 编排：自动拉起后端 + 前端 dev server(8080)
+// vite 将 /api 与 /ws 代理到后端 BACKEND_PORT
 export default defineConfig({
   testDir: './specs',
   outputDir: './.test-output',
@@ -25,13 +28,14 @@ export default defineConfig({
     {
       command: 'python run_server.py',
       cwd: path.resolve(__dirname, '../..'),
-      url: 'http://localhost:8765/health',
+      url: `http://localhost:${backendPort}/health`,
       reuseExistingServer: true,
       timeout: 60_000,
       stdout: 'pipe',
       // APP_ENV=e2e → 加载 config/e2e.yaml，关闭自适应码率，
       // 避免真机低帧画面触发按档重启黑屏导致用例时序抖动。
-      env: { APP_ENV: 'e2e' },
+      // BACKEND_PORT → 后端绑定端口，与下方 vite 代理目标保持一致。
+      env: { APP_ENV: 'e2e', BACKEND_PORT: backendPort },
     },
     {
       command: 'npm run dev',
@@ -40,6 +44,7 @@ export default defineConfig({
       reuseExistingServer: true,
       timeout: 120_000,
       stdout: 'pipe',
+      env: { BACKEND_PORT: backendPort },
     },
   ],
 })

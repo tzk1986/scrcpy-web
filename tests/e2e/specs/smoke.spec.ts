@@ -4,8 +4,9 @@ import { test as dtest, expect as dexpect } from '../fixtures'
 // 冒烟层：只验证三方进程（后端/前端/页面）可达，不依赖设备
 test.describe('smoke', () => {
   test('后端健康检查可达', async ({ request }) => {
-    // 走前端 8080 没有 /health 代理，直连后端
-    const res = await request.get('http://localhost:8765/health')
+    // 走前端 8080 没有 /health 代理，直连后端（端口与后端共用 BACKEND_PORT）
+    const backendPort = process.env.BACKEND_PORT || '8765'
+    const res = await request.get(`http://localhost:${backendPort}/health`)
     expect(res.ok()).toBeTruthy()
     expect(await res.json()).toEqual({ status: 'ok' })
   })

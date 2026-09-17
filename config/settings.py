@@ -24,7 +24,7 @@ class AppConfig(BaseSettings):
 
 class ServerConfig(BaseSettings):
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8765  # 后端 HTTP/WS 端口；可被 base.yaml server.port 或 BACKEND_PORT 环境变量覆盖
     workers: int = 4
 
 
@@ -156,12 +156,30 @@ def get_settings() -> Settings:
     """Get application settings"""
     import os
 
+    # 载入项目根 .env（override=False：已存在的 OS 环境变量优先），
+    # 使 BACKEND_HOST/BACKEND_PORT 无论来自 OS env 还是 .env 都能生效
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).parent.parent / ".env")
+    except Exception:
+        pass
+
     env = os.getenv("APP_ENV", "base")
     config = load_yaml_config("base")
 
     if env != "base":
         env_config = load_yaml_config(env)
         config = _deep_merge(config, env_config)
+
+    # 环境变量优先级最高：打包/部署时可据此把后端挪离默认端口，
+    # 且 base.yaml 的 server 节点会作为 init kwargs 传入（压过 pydantic env 读取），
+    # 故此处显式覆盖，确保 BACKEND_HOST/BACKEND_PORT 生效。
+    server = config.setdefault("server", {})
+    if os.getenv("BACKEND_HOST"):
+        server["host"] = os.environ["BACKEND_HOST"]
+    if os.getenv("BACKEND_PORT"):
+        server["port"] = int(os.environ["BACKEND_PORT"])
 
     return Settings(**config)
 

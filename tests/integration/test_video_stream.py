@@ -13,6 +13,8 @@
 
 import asyncio
 import json
+import os
+
 import websockets
 
 
@@ -20,7 +22,8 @@ async def test_video_stream(device_id: str = "192.168.8.34:5555"):
     """测试视频流连接"""
     print(f"测试视频流连接: {device_id}")
 
-    ws_url = f"ws://127.0.0.1:8765/ws/video/{device_id}"
+    port = os.environ.get("BACKEND_PORT", "8765")
+    ws_url = f"ws://127.0.0.1:{port}/ws/video/{device_id}"
     print(f"连接到: {ws_url}")
 
     try:

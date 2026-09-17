@@ -39,9 +39,13 @@ if __name__ == "__main__":
         shutil.rmtree(temp_dir, ignore_errors=True)
         print(f"Cleaned old temp files: {temp_dir}")
 
+    # 主机/端口来自配置：base.yaml server.* 为默认，BACKEND_HOST/BACKEND_PORT 环境变量可覆盖
+    from app.core.config import settings
+
+    srv = settings().server
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
-        port=8765,  # 使用不常用端口，避免冲突
+        host=srv.host,
+        port=srv.port,
         reload=False,  # 禁用 reload 以确保使用我们设置的事件循环
     )

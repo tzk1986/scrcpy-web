@@ -2,6 +2,9 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
+// 后端端口：与后端共用 BACKEND_PORT 环境变量（默认 8765，见 config/settings.py）
+const backendPort = process.env.BACKEND_PORT || '8765'
+
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -14,11 +17,11 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8765',
+        target: `http://localhost:${backendPort}`,
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8765',
+        target: `ws://localhost:${backendPort}`,
         ws: true,
       },
     },
