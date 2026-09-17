@@ -91,6 +91,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { WebSocketService } from '@/services/websocket'
 import { VideoStream, type VideoStreamState } from '@/services/videoStream'
 import { H264VideoStream, type H264StreamState } from '@/services/h264VideoStream'
+import { evaluateH264Fallback } from '@/services/videoFallback'
 import { InputController, KeyCode } from '@/services/inputController'
 
 const props = defineProps<{
@@ -191,53 +192,50 @@ onMounted(async () => {
     mode.value = 'h264'
     h264Stream = new H264VideoStream(ws, canvasRef.value)
 
+    // H264 自动回退 watchdog：编码器崩溃不上报错误（如 RK3288 OMX
+    // 崩溃后 socket 保持打开、码流停止），按帧到达时间戳等信号判定。
+    // 判据见 services/videoFallback.ts；error 即时检查，其余由
+    // H264VideoStream 的 1Hz stats 心跳驱动。
+    const h264StartedAt = Date.now()
+    let h264FallbackDone = false
+    const checkH264Fallback = () => {
+      if (!h264Stream || h264FallbackDone) return
+      const s = h264Stream.stats
+      const r = evaluateH264Fallback({
+        state: s.state,
+        frameCount: s.frameCount,
+        lastFrameTime: s.lastFrameTime,
+        startedAt: h264StartedAt,
+        now: Date.now(),
+      })
+      if (!r.fallback) return
+      h264FallbackDone = true
+      console.warn('[VideoPlayer] H264 fallback triggered:', r.reason,
+        'state:', s.state, 'frameCount:', s.frameCount, 'error:', s.error)
+      h264Stream.stop()
+      h264Stream = null
+      startScreenshotMode()
+    }
+
     h264Stream.setStateChangeHandler((newState) => {
       console.log('[VideoPlayer] H264 stream state changed:', newState)
       state.value = newState
       if (newState === 'error') {
         error.value = h264Stream?.stats.error || 'Unknown error'
       }
+      checkH264Fallback()
     })
 
     h264Stream.setStatsUpdateHandler((stats) => {
       fps.value = stats.fps
       frameCount.value = stats.frameCount
+      checkH264Fallback()
     })
 
     // 重要：先注册消息处理器，再建立 WebSocket 连接
     // 避免 config 消息在处理器注册前到达被丢弃
     h264Stream.start()
     ws.connect()
-
-    // H264 自动回退：如果 15 秒内没有成功解码任何帧，切换到截图模式
-    // 某些设备（如 Rockchip RK3288）的硬件编码器会崩溃，导致 H264 流无法工作
-    let h264FallbackTimer: number | null = window.setTimeout(() => {
-      if (h264Stream && mode.value === 'h264') {
-        const stats = h264Stream.stats
-        console.warn('[VideoPlayer] H264 fallback triggered:',
-          'state:', stats.state,
-          'frameCount:', stats.frameCount,
-          'error:', stats.error)
-        if (stats.state !== 'streaming') {
-          console.warn('[VideoPlayer] Falling back to screenshot mode')
-          h264Stream.stop()
-          h264Stream = null
-          startScreenshotMode()
-        }
-      }
-      h264FallbackTimer = null
-    }, 15000)
-
-    // 统计更新回调：更新 FPS/帧数显示，成功进入 streaming 状态后取消回退定时器
-    h264Stream.setStatsUpdateHandler((stats) => {
-      fps.value = stats.fps
-      frameCount.value = stats.frameCount
-      if (stats.state === 'streaming' && h264FallbackTimer !== null) {
-        console.log('[VideoPlayer] H264 streaming confirmed, canceling fallback timer')
-        window.clearTimeout(h264FallbackTimer)
-        h264FallbackTimer = null
-      }
-    })
   } else {
     console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
     startScreenshotMode()
