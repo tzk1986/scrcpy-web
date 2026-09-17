@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { test as dtest, expect as dexpect } from '../fixtures'
 
 // 冒烟层：只验证三方进程（后端/前端/页面）可达，不依赖设备
 test.describe('smoke', () => {
@@ -19,4 +20,11 @@ test.describe('smoke', () => {
     await page.goto('/')
     await expect(page.locator('text=添加设备')).toBeVisible({ timeout: 10_000 })
   })
+})
+
+dtest('fixture：设备探测与 shell 通道', async ({ device, shell }) => {
+  dtest.skip(!device, '无在线 ADB 设备，跳过')
+  dexpect(device!.id).toBeTruthy()
+  const out = await shell('echo e2e-ok')
+  dexpect(out).toContain('e2e-ok')
 })
