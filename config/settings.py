@@ -86,6 +86,9 @@ class StreamConfig(BaseSettings):
     codec: str = "h264"
     fps: int = 30
     scrcpy_path: str = Field(default="D:/scrcpy-win64-v4.1/scrcpy.exe", alias="SCRCPY_PATH")
+    # 自适应码率：scrcpy 协议无运行中改码率消息，通过按档重启编码器实现（每次切换约 1-3s 黑屏）
+    adaptive_bitrate: bool = True
+    bitrate_tiers: str = "8M,4M,2M,1M"  # 降序档位阶梯，起始档取不超过 bit_rate 的最大档
 
 
 class DebugConfig(BaseSettings):

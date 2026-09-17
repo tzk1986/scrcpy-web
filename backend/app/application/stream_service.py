@@ -25,8 +25,10 @@
     可以同时为多个设备启动视频流。
 """
 
+import time
 from typing import AsyncIterator
 
+from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor, parse_bit_rate
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import EncoderOpts, VideoEncoder
@@ -38,16 +40,24 @@ logger = get_logger(__name__)
 class StreamService:
     """视频流用例。"""
 
-    def __init__(self):
+    def __init__(self, encoder_factory=None):
         """
         初始化视频流服务。
 
         为每个设备维护独立的编码器实例。
+
+        参数：
+            encoder_factory: 编码器工厂（默认 ScrcpyEncoder），
+                注入点便于单测替换为假编码器。
         """
         # 按 device_id 跟踪活跃流
         self.active_streams: dict[str, bool] = {}
         # 按 device_id 跟踪编码器实例
         self.encoders: dict[str, ScrcpyEncoder] = {}
+        self._encoder_factory = encoder_factory or ScrcpyEncoder
+        # 自适应码率：决策器与待生效的码率（由 report_client_fps 写入，帧循环消费）
+        self._advisors: dict[str, object] = {}
+        self._pending_bitrate: dict[str, int] = {}
 
     async def start_stream(self, device_id: str) -> AsyncIterator[bytes]:
         """
@@ -56,6 +66,11 @@ class StreamService:
         从配置读取编码器选项，创建编码器实例，启动编码，并产出 H.264 帧。
         循环在每次迭代时检查 active_streams[device_id]——
         如果为 False（由 stop_stream 设置），循环优雅退出。
+
+        自适应码率开启时，外层循环支持运行中重启编码器切换码率档：
+        report_client_fps 决策出新档位后，帧循环在下一次取帧时停止
+        当前编码器并以新码率重建（scrcpy 协议无运行中改码率消息，
+        只能重启；每次切换有约 1-3s 黑屏，由决策器的迟滞+冷却控制频率）。
 
         参数：
             device_id: 要流式传输的设备的 ADB 序列号。
@@ -70,29 +85,84 @@ class StreamService:
             logger.warning("stream_already_active", device=device_id)
             return
 
-        # 创建新的编码器实例
-        encoder = ScrcpyEncoder()
-        self.encoders[device_id] = encoder
-
         s = settings()
-        opts = EncoderOpts(
-            max_size=s.stream.max_size,
-            bit_rate=s.stream.bit_rate,
-            codec=s.stream.codec,
-            fps=s.stream.fps,
-        )
+        base_bps = parse_bit_rate(s.stream.bit_rate)
+        current_bps = base_bps
+        if s.stream.adaptive_bitrate:
+            tiers = tuple(
+                parse_bit_rate(t)
+                for t in str(s.stream.bitrate_tiers).split(",")
+                if t.strip()
+            )
+            if tiers:
+                self._advisors[device_id] = BitrateAdvisor(
+                    AdvisorConfig(
+                        tiers_bps=tiers,
+                        target_fps=float(s.stream.fps),
+                        start_bps=base_bps,
+                    )
+                )
         self.active_streams[device_id] = True
 
         try:
-            async for frame in encoder.start(device_id, opts):
-                if not self.active_streams.get(device_id):
+            while self.active_streams.get(device_id):
+                encoder = self._encoder_factory()
+                self.encoders[device_id] = encoder
+                opts = EncoderOpts(
+                    max_size=s.stream.max_size,
+                    bit_rate=str(current_bps),
+                    codec=s.stream.codec,
+                    fps=s.stream.fps,
+                )
+                restart_bitrate = None
+                try:
+                    async for frame in encoder.start(device_id, opts):
+                        if not self.active_streams.get(device_id):
+                            break
+                        pend = self._pending_bitrate.pop(device_id, None)
+                        if pend is not None and pend != current_bps:
+                            restart_bitrate = pend
+                            break
+                        yield frame
+                finally:
+                    await encoder.stop()
+                    self.encoders.pop(device_id, None)
+                if restart_bitrate is None:
                     break
-                yield frame
+                current_bps = restart_bitrate
+                logger.info(
+                    "adaptive_bitrate_restarting_encoder",
+                    device=device_id,
+                    bit_rate=current_bps,
+                )
         finally:
             self.active_streams.pop(device_id, None)
-            await encoder.stop()
-            self.encoders.pop(device_id, None)
+            self._advisors.pop(device_id, None)
+            self._pending_bitrate.pop(device_id, None)
             logger.info("video_stream_stopped", device=device_id)
+
+    def report_client_fps(self, device_id: str, fps: float, now: float | None = None):
+        """
+        接收客户端上报的实测帧率，喂给自适应决策器。
+
+        决策器认为应切换档位时记录 pending 码率，由 start_stream
+        的帧循环在下一次取帧时重启编码器。无活跃流或未开启自适应时为空操作。
+        """
+        advisor = self._advisors.get(device_id)
+        if advisor is None:
+            return
+        if now is None:
+            now = time.monotonic()
+        advisor.add_sample(now, fps)
+        new_bps = advisor.decide(now)
+        if new_bps is not None:
+            self._pending_bitrate[device_id] = new_bps
+            logger.info(
+                "adaptive_bitrate_switch_pending",
+                device=device_id,
+                fps=fps,
+                bit_rate=new_bps,
+            )
 
     async def stop_stream(self, device_id: str):
         """
