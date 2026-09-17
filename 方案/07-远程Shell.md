@@ -8,8 +8,8 @@
 
 - ✅ ShellView 组件框架
 - ✅ 后端 exec_shell
-- ⏳ PTY 伪终端
-- ⏳ 流式输出
+- ✅ PTY 伪终端（设备侧 `adb shell -tt` + 宿主侧 ConPTY/pywinpty，2026-09-17）
+- ✅ 流式输出
 - ⏳ 命令历史
 - ⏳ 自动补全
 
@@ -100,6 +100,16 @@ class PTYShell:
 ```
 
 **注意**：Windows 不支持 PTY，需要使用 `pywinpty` 或改为 WebSocket 中继方案。
+
+**已实施（2026-09-17）**：宿主侧接入 ConPTY（`infrastructure/adb/winpty.py`，
+pywinpty 3.x 底层 PTY 直连）。要点：
+- 设备侧仍用 `adb shell -tt` 分配 PTY；宿主侧给 adb.exe 伪控制台，
+  解决无控制台宿主（PyInstaller windowed 打包）下管道 stdio 终端行为异常。
+- 实际启动 `cmd.exe /Q /C "chcp 65001>nul & adb ..."`：把伪控制台代码页
+  切到 UTF-8，中文全链路无损往返（默认 OEM CP936 会乱码）。
+- ConPTY 无 stdin EOF：`stdin.close()` 为 no-op，退出由 wait 超时 →
+  `taskkill /T /F` 连坐 cmd+adb 进程树兜底。
+- 配置开关 `adb.use_conpty`（默认 true），任何 ConPTY 失败自动降级管道。
 
 ### Step 2: Shell 会话管理 ⏳
 
