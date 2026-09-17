@@ -266,6 +266,21 @@ class SqliteDebugRepository(DebugRepository):
             row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def query_logs_since(self, session_id: str, from_seq: int, limit: int = 1000) -> list[dict]:
+        """按 seq 增量查询（断线续传补发用），返回 dict 列表（含 seq），seq 升序。"""
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT ts, level, pid, tid, tag, message, raw, seq FROM debug_logs "
+                "WHERE session_id=? AND seq>=? ORDER BY seq ASC LIMIT ?",
+                (session_id, from_seq, limit))
+            rows = await cursor.fetchall()
+        return [
+            {"ts": r[0], "level": r[1], "pid": r[2], "tid": r[3],
+             "tag": r[4], "message": r[5], "raw": r[6], "seq": r[7]}
+            for r in rows
+        ]
+
     async def query_logs(self, session_id: str, filter: LogFilter) -> list[LogEntry]:
         """
         带动态过滤的日志条目查询。

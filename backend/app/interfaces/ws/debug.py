@@ -71,8 +71,16 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
             op = data.get("op")
 
             if op == "subscribe":
-                # 订阅实时日志推送
-                await debug_service.subscribe(session_id, websocket)
+                # 订阅实时日志推送；带 from_seq 时先补发断线期间的日志（断线续传）
+                from_seq = data.get("from_seq")
+                if from_seq is not None:
+                    await debug_service.subscribe(session_id, websocket)
+                    logs, missing = await debug_service.get_logs_since(
+                        session_id, int(from_seq))
+                    await websocket.send_json({
+                        "type": "log_batch", "logs": logs, "missing": missing})
+                else:
+                    await debug_service.subscribe(session_id, websocket)
                 # 创建 shell（内部已启动输出转发任务）
                 shell = await debug_service.get_or_create_shell(session_id)
                 # 直接发送初始输出（设备 prompt），不依赖转发任务的时序

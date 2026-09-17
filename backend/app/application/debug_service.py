@@ -395,6 +395,25 @@ class DebugService:
             entries = await self.repo.query_logs(session_id, filter_obj)
             return [e.__dict__ for e in entries]
 
+    async def get_logs_since(self, session_id: str, from_seq: int,
+                             limit: int = 1000) -> tuple[list[dict], int]:
+        """
+        增量拉取：返回 (seq >= from_seq 的日志, missing 条数)。
+        活跃会话读内存缓冲；缓冲已被环形淘汰或会话已关闭则回退 DB。
+        missing = 请求范围内已无法恢复的最旧条目数（旧日志超出缓冲窗口）。
+        """
+        await self.writer.flush()
+        session = self.sessions.get(session_id)
+        if session:
+            buf = session.log_buffer
+            first_avail = buf[0].get("seq", 0) if buf else 0
+            missing = max(0, first_avail - from_seq)
+            logs = [e for e in buf if e.get("seq", 0) >= from_seq][:limit]
+            return logs, missing
+        # 历史会话：DB 查询（seq 列）
+        rows = await self.repo.query_logs_since(session_id, from_seq, limit)
+        return rows, 0
+
     async def exec_shell(self, session_id: str, cmd: str) -> str:
         """
         在设备上执行 shell 命令并记录到历史。

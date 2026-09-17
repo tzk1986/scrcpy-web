@@ -42,6 +42,7 @@ export interface LogEntry {
   tag: string     // 日志标签
   message: string // 日志消息
   raw?: string    // 原始日志行
+  seq?: number    // 会话内单调递增序列号（断线续传游标）
 }
 
 /**
@@ -61,6 +62,10 @@ export const useDebugStore = defineStore('debug', () => {
   const isRecording = ref(false)
 
   let debugWs: WebSocketService | null = null
+  /** 已收到的最大日志 seq（-1 表示尚无带 seq 的日志；重连时据此增量补发）。 */
+  const lastSeq = ref(-1)
+  /** 主动断开标记：区分 closeSession/disconnectWebSocket 与意外断线。 */
+  let manualClose = false
 
   /**
    * Shell 命令的 pending promise 解析器。
@@ -122,6 +127,7 @@ export const useDebugStore = defineStore('debug', () => {
     sessionId.value = null
     logs.value = []
     connected.value = false
+    lastSeq.value = -1
   }
 
   /**
@@ -171,8 +177,15 @@ export const useDebugStore = defineStore('debug', () => {
       console.log('[DebugStore] WebSocket closed')
       wsConnected.value = false
       debugWs = null
+      // 意外断线（非主动断开）且会话仍存活时自动重连，按 from_seq 补发缺口日志
+      if (!manualClose && sessionId.value) {
+        setTimeout(() => {
+          if (!debugWs && sessionId.value) connectWebSocket()
+        }, 2000)
+      }
     })
 
+    manualClose = false
     debugWs.connect()
 
     // 等待连接建立后发送订阅请求
@@ -197,7 +210,11 @@ export const useDebugStore = defineStore('debug', () => {
 
     // 只有在连接成功时才发送订阅请求并设置状态
     if (connected && debugWs) {
-      debugWs.send({ op: 'subscribe' })
+      // 带 lastSeq 时请求从 seq+1 补发（断线续传），首次订阅行为与旧协议一致
+      debugWs.send({
+        op: 'subscribe',
+        ...(lastSeq.value >= 0 ? { from_seq: lastSeq.value + 1 } : {}),
+      })
       // 同步当前的录制状态到后端
       debugWs.send({ op: 'filter', level: filter.value.level, tag: filter.value.tag, paused: !isRecording.value })
       wsConnected.value = true
@@ -213,6 +230,7 @@ export const useDebugStore = defineStore('debug', () => {
    */
   async function disconnectWebSocket() {
     if (debugWs) {
+      manualClose = true
       debugWs.close()
       debugWs = null
     }
@@ -323,8 +341,29 @@ export const useDebugStore = defineStore('debug', () => {
     switch (msg.type) {
       case 'log':
         // 后端已经根据 paused 状态控制推送，这里直接追加
+        if (typeof msg.entry?.seq === 'number') {
+          lastSeq.value = Math.max(lastSeq.value, msg.entry.seq)
+        }
         appendLog(msg.entry)
         break
+      case 'log_batch': {
+        // 断线重连补发：按 seq 去重合并，保留已加载历史
+        const seen = new Set(
+          logs.value.map((l) => l.seq).filter((s) => s != null)
+        )
+        for (const e of msg.logs || []) {
+          if (typeof e.seq === 'number') {
+            lastSeq.value = Math.max(lastSeq.value, e.seq)
+            if (seen.has(e.seq)) continue
+            seen.add(e.seq)
+          }
+          appendLog(e)
+        }
+        if (msg.missing > 0) {
+          console.warn(`[DebugStore] 断线期间 ${msg.missing} 条日志已不可恢复`)
+        }
+        break
+      }
       case 'shell_stream':
         // 流式输出：每行立即传递给回调
         if (onStreamLine && msg.line) {

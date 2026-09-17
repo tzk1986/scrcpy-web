@@ -466,6 +466,12 @@ class DebugRepository(Protocol):
         """
         ...
 
+    async def query_logs_since(self, session_id: str, from_seq: int, limit: int = 1000) -> list[dict]:
+        """
+        按 seq 增量查询（断线续传补发），返回 dict 列表（含 seq），seq 升序。
+        """
+        ...
+
     async def query_logs(self, session_id: str, filter: LogFilter) -> list[LogEntry]:
         """
         带过滤的日志条目查询。
