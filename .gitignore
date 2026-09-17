@@ -53,3 +53,9 @@ htmlcov/
 *.jar
 *.exe
 *.dll
+
+# Playwright E2E
+test-results/
+.playwright-output/
+tests/e2e/.test-output/
+tests/e2e/report/
