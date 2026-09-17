@@ -1,0 +1,6 @@
+# E2E 专用配置覆盖（APP_ENV=e2e 时加载，见 backend config/settings.py get_settings）
+# 关闭自适应码率：真机静止/低帧画面下客户端低 fps 上报会触发按档重启，
+# 每次约 1-4s 黑屏，导致 E2E 用例时序不确定而偶发失败。
+# 自适应逻辑本身由 tests/application 单测覆盖，不依赖 E2E。
+stream:
+  adaptive_bitrate: false

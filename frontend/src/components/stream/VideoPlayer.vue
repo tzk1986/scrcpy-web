@@ -254,7 +254,12 @@ onMounted(async () => {
     h264StatsTimer = window.setInterval(() => {
       if (!h264Stream || !ws) return
       if (Date.now() < h264Stream.restartGraceUntil) return
-      ws.send({ op: 'stats', fps: h264Stream.stats.fps })
+      // 静止画面下 scrcpy 几乎不出帧，实测 fps≈0 与"码率过高拥塞"同签名。
+      // 仅在 fps≥1（有流但偏慢=疑似拥塞）时上报，避免无谓降档重启黑屏；
+      // fps<1 交由 #4 watchdog 的 stall 判据处理（真崩溃才回退截图）。
+      const measured = h264Stream.stats.fps
+      if (measured < 1) return
+      ws.send({ op: 'stats', fps: measured })
     }, 2000)
     stopStatsTimer = () => stopH264Stats()
   } else {

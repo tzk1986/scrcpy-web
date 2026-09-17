@@ -29,6 +29,9 @@ export default defineConfig({
       reuseExistingServer: true,
       timeout: 60_000,
       stdout: 'pipe',
+      // APP_ENV=e2e → 加载 config/e2e.yaml，关闭自适应码率，
+      // 避免真机低帧画面触发按档重启黑屏导致用例时序抖动。
+      env: { APP_ENV: 'e2e' },
     },
     {
       command: 'npm run dev',
