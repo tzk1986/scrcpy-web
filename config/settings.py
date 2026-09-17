@@ -37,6 +37,7 @@ class AdbConfig(BaseSettings):
     adb_path: str = Field(default="", alias="ADB_PATH")  # 使用不同名字避免与 PATH 冲突
     timeout: int = 30
     reconnect_interval: int = 5
+    use_conpty: bool = True  # Windows 交互 shell 走 ConPTY 伪控制台，不可用时自动降级管道
 
     model_config = SettingsConfigDict(
         env_file=".env",

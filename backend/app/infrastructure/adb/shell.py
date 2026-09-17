@@ -35,6 +35,7 @@
 
 import asyncio
 import re
+import sys
 import uuid
 from typing import AsyncIterator
 
@@ -68,6 +69,7 @@ class InteractiveShell:
     def __init__(self):
         """从配置初始化 ADB 二进制路径。"""
         self._adb_path = settings().adb.path
+        # ConPTY 模式下为 ConPtyProcess（鸭子类型，最小 Process 接口）
         self._proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._device_id: str | None = None
@@ -102,14 +104,7 @@ class InteractiveShell:
         self._initial_output = ""  # 存储初始输出（包括 prompt）
 
         try:
-            self._proc = await asyncio.create_subprocess_exec(
-                self._adb_path,
-                "-s", device_id,
-                "shell", "-tt",  # 强制 PTY 分配
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            self._proc = await self._spawn_process(device_id)
         except FileNotFoundError:
             logger.error("adb_not_found", path=self._adb_path)
             raise AdbError(
@@ -128,6 +123,32 @@ class InteractiveShell:
 
         # 启动后台读取器（持续读取 stdout 并路由到队列）
         self._reader_task = asyncio.create_task(self._background_reader())
+
+    async def _spawn_process(self, device_id: str):
+        """
+        启动 adb shell 子进程。
+
+        Windows 优先使用 ConPTY 伪控制台（adb.exe 是控制台程序，
+        宿主无控制台时——如 PyInstaller windowed 打包——管道 stdio
+        的终端行为会异常），任何 ConPTY 失败自动降级为普通管道。
+        """
+        argv = (self._adb_path, "-s", device_id, "shell", "-tt")  # -tt 强制 PTY 分配
+        if sys.platform == "win32" and settings().adb.use_conpty:
+            try:
+                from app.infrastructure.adb.winpty import conpty_supported, spawn_conpty
+                if conpty_supported():
+                    proc = await spawn_conpty(argv)
+                    logger.info("shell_using_conpty", device=device_id, pid=proc.pid)
+                    return proc
+            except Exception as e:
+                logger.warning("conpty_spawn_failed_fallback_pipe",
+                               device=device_id, error=str(e))
+        return await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
     async def _read_until_prompt(self, callback=None):
         """读取初始输出，直到看到 shell prompt，并转发给回调。

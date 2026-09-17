@@ -21,8 +21,13 @@ returncode / pid / wait / kill）。
     '0011Ignore' 哨兵包粘连风险。PTY.read(blocking=False) 一次
     返回全部可用输出（str），无数据立即返回空串，这里用线程池
     轮询包装成 awaitable read()。
+  - ConPTY 与子进程间的字节转换默认走 OEM 代码页（中文系统为
+    CP936），UTF-8 中文往返会乱码。因此实际启动的是
+    `cmd.exe /Q /C "chcp 65001>nul & <命令>"`：先把伪控制台
+    代码页切到 UTF-8，再 exec 真实命令，全链路按 UTF-8 转换。
   - ConPTY 没有 stdin EOF 语义：stdin.close() 为 no-op，进程退出
-    由 wait 超时后的 kill 兜底（或显式 terminate）。
+    由 wait 超时后的 kill 兜底（或显式 terminate）。kill 用
+    taskkill /T 连坐 cmd 包装层与 adb 整棵进程树。
 """
 import asyncio
 import os
@@ -125,11 +130,19 @@ class ConPtyProcess:
         return self.returncode
 
     def kill(self):
+        # 实际进程树为 cmd.exe → 目标命令，须连坐整棵树，否则目标进程成孤儿
         try:
-            # Windows 上 os.kill(pid, 非 CTRL_* 信号) 即 TerminateProcess（强杀）
-            os.kill(self.pty.pid, signal.SIGTERM)
+            subprocess.run(
+                ["taskkill", "/PID", str(self.pty.pid), "/T", "/F"],
+                capture_output=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
         except Exception as e:
             logger.warning("conpty_kill_failed", error=str(e))
+            try:
+                os.kill(self.pty.pid, signal.SIGTERM)
+            except Exception:
+                pass
 
     def terminate(self):
         # Windows 无优雅终止语义，与 kill 等价（TerminateProcess）
@@ -157,13 +170,16 @@ async def spawn_conpty(argv: Sequence[str],
     command = which(argv[0]) or argv[0]
     if not os.path.exists(command):
         raise FileNotFoundError(f"command not found: {argv[0]}")
-    cmdline = " " + subprocess.list2cmdline(argv[1:]) if len(argv) > 1 else None
+    # 经 cmd 先切 UTF-8 代码页再执行目标命令（见模块 docstring）。
+    # 命令行本身保持 ASCII，避免 PTY.spawn 传参转码破坏非 ASCII 字符。
+    inner = subprocess.list2cmdline([command] + argv[1:])
+    cmdline = f' /Q /C "chcp 65001>nul & {inner}"'
+    comspec = os.environ.get("ComSpec", "cmd.exe")
     rows, cols = dimensions
 
     def _spawn() -> ConPtyProcess:
         pty = PTY(cols, rows)
-        ok = pty.spawn(command, cwd=None, cmdline=cmdline) if cmdline \
-            else pty.spawn(command, cwd=None)
+        ok = pty.spawn(comspec, cwd=None, cmdline=cmdline)
         if not ok:
             raise OSError(f"conpty spawn failed: {argv[0]}")
         return ConPtyProcess(pty)
