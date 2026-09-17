@@ -52,7 +52,7 @@ describe('buildCommands', () => {
 })
 
 describe('filterCommands', () => {
-  const mk = (title: string, section: string, keywords = ''): Command =>
+  const mk = (title: string, section: Command['section'], keywords = ''): Command =>
     ({ id: title, title, section, keywords, run: () => {} })
 
   it('空查询返回全部', () => {

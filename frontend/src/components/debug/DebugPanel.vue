@@ -123,12 +123,21 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+/** 命令面板通过 CustomEvent 请求切换标签页。 */
+const VALID_TABS = ['logcat', 'shell', 'network', 'perf', 'apps']
+function handleSetDebugTab(e: Event) {
+  const tab = (e as CustomEvent<string>).detail
+  if (VALID_TABS.includes(tab)) activeTab.value = tab
+}
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('openscrcpy:set-debug-tab', handleSetDebugTab)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('openscrcpy:set-debug-tab', handleSetDebugTab)
 })
 </script>
 

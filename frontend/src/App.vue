@@ -24,11 +24,12 @@
         <router-view />
       </el-main>
     </el-container>
+    <CommandPalette />
   </div>
 </template>
 
 <script setup lang="ts">
-// 根组件无需额外逻辑，仅提供布局骨架
+import CommandPalette from '@/components/ui/CommandPalette.vue'
 </script>
 
 <style>
