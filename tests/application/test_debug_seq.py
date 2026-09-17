@@ -21,6 +21,10 @@ class FakeRepo:
     async def save_log(self, session_id, entry, seq=0):
         self.saved.append((seq, entry.message))
 
+    async def save_logs_bulk(self, rows):
+        # 批量路径：rows 为 9 元组 (session_id, ts, level, pid, tid, tag, message, raw, seq)
+        self.saved.extend((r[8], r[6]) for r in rows)
+
     async def save_session(self, session):
         pass
 
@@ -42,5 +46,6 @@ async def test_collect_logcat_assigns_increasing_seq():
     svc = DebugService(adb=FakeAdb(lines), repo=repo)
     session = DebugSession(id="s", device_id="d", user_id="u")
     await svc._collect_logcat(session)  # FakeAdb 流自然耗尽结束
+    await svc.writer.flush()            # submit 只进缓冲，断言前冲刷落库
     assert [s for s, _ in repo.saved] == [0, 1, 2]
     assert [e["seq"] for e in session.log_buffer] == [0, 1, 2]

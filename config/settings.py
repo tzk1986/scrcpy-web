@@ -97,6 +97,7 @@ class DebugConfig(BaseSettings):
     min_log_level: str = "I"  # 最低日志级别：V/D/I/W/E/F（生产环境建议 W）
     log_rate_limit: int = 100  # 每秒最大日志数，超过时自动丢弃低级别日志
     db_pool_size: int = 5  # SQLite 连接池大小
+    log_batch_size: int = 100  # 日志批量写入缓冲条数
 
 
 class SecurityConfig(BaseSettings):

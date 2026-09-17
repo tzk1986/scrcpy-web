@@ -35,6 +35,7 @@ from fastapi import WebSocket
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver, DebugRepository, LogEntry, LogFilter
 from app.domain.session import DebugSession
+from app.infrastructure.persistence.batch_writer import BatchLogWriter
 
 logger = get_logger(__name__)
 
@@ -67,6 +68,9 @@ class DebugService:
         self.shell_sessions: dict[str, "ShellSession"] = {}
         # Shell 输出转发任务，按 session_id 索引
         self.shell_output_forwarding_tasks: dict[str, asyncio.Task] = {}
+        # 日志批量写入器（满批/定时 executemany 落库，摊薄逐条 commit 开销）
+        from app.core.config import settings as get_settings
+        self.writer = BatchLogWriter(repo, batch_size=get_settings().debug.log_batch_size)
 
     async def create_session(self, device_id: str, user_id: str) -> DebugSession:
         """
@@ -83,6 +87,7 @@ class DebugService:
             新创建的 DebugSession。
         """
         logger.info("creating_debug_session", device=device_id, user=user_id)
+        await self.writer.start()
         session_id = f"{device_id}_{user_id}_{int(time.time())}"
         session = DebugSession(
             id=session_id,
@@ -137,6 +142,7 @@ class DebugService:
                 await shell.stop()
             except Exception as e:
                 logger.warning("shell_stop_failed", session=session_id, error=str(e))
+        await self.writer.flush()
         self.sessions.pop(session_id, None)
         # 清理订阅者
         if session_id in self.subscribers:
@@ -212,7 +218,7 @@ class DebugService:
                 if len(session.log_buffer) > self.MAX_LOG_BUFFER:
                     session.log_buffer.pop(0)
                 session.touch()
-                await self.repo.save_log(session.id, entry, seq=seq)
+                self.writer.submit(session.id, seq, entry)
 
                 # 推送给 WebSocket 订阅者
                 await self._notify_subscribers(session.id, item)

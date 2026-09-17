@@ -453,6 +453,13 @@ class DebugRepository(Protocol):
         """
         ...
 
+    async def save_logs_bulk(self, rows: list[tuple]):
+        """
+        批量插入日志行（单事务）。rows 元素为 9 元组
+        (session_id, ts, level, pid, tid, tag, message, raw, seq)。
+        """
+        ...
+
     async def next_seq(self, session_id: str) -> int:
         """
         返回该会话下一条日志应使用的 seq（max(seq)+1，无记录为 0）。

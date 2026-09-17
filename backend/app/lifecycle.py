@@ -58,4 +58,7 @@ async def lifespan(app: FastAPI):
     # 停止日志清理任务
     await debug_service.stop_cleanup_task()
 
+    # 冲刷批量写入缓冲，避免退出时丢日志
+    await debug_service.writer.flush()
+
     logger.info("application_stopped")

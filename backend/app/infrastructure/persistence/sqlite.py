@@ -245,6 +245,16 @@ class SqliteDebugRepository(DebugRepository):
             )
             await conn.commit()
 
+    async def save_logs_bulk(self, rows: list[tuple]):
+        """批量插入日志行，单事务提交。rows 元素为 9 元组（与 debug_logs 列一致）。"""
+        if not rows:
+            return
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            await conn.executemany(
+                "INSERT INTO debug_logs VALUES (?,?,?,?,?,?,?,?,?)", rows)
+            await conn.commit()
+
     async def next_seq(self, session_id: str) -> int:
         """该会话下一条日志应使用的 seq（max(seq)+1，无记录为 0）。"""
         pool = await get_pool(self.db_path)
