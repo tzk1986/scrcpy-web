@@ -442,13 +442,20 @@ class DebugRepository(Protocol):
         """
         ...
 
-    async def save_log(self, session_id: str, entry: LogEntry):
+    async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0):
         """
         持久化单条日志条目。
 
         参数：
             session_id: 此日志所属的会话。
             entry: 解析后的日志条目。
+            seq: 会话内单调递增序列号（断线续传游标）。
+        """
+        ...
+
+    async def next_seq(self, session_id: str) -> int:
+        """
+        返回该会话下一条日志应使用的 seq（max(seq)+1，无记录为 0）。
         """
         ...
 

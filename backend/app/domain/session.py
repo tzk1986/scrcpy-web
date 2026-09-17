@@ -34,6 +34,7 @@ class DebugSession:
     last_active: float = field(default_factory=time.time)
     log_buffer: list[dict] = field(default_factory=list)
     shell_history: list[str] = field(default_factory=list)
+    seq_next: int = 0  # 下一条日志的序列号（断线续传游标）
     metadata: dict = field(default_factory=dict)
 
     def touch(self):

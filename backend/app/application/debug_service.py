@@ -203,16 +203,19 @@ class DebugService:
                         if entry_priority < 3:  # W=3
                             continue
 
-                # 通过过滤，存储和推送
-                session.log_buffer.append(entry.__dict__)
+                # 通过过滤，存储和推送（seq 为会话内单调递增的续传游标）
+                seq = session.seq_next
+                session.seq_next += 1
+                item = {**entry.__dict__, "seq": seq}
+                session.log_buffer.append(item)
                 # 环形缓冲区淘汰：超过容量时移除最旧的
                 if len(session.log_buffer) > self.MAX_LOG_BUFFER:
                     session.log_buffer.pop(0)
                 session.touch()
-                await self.repo.save_log(session.id, entry)
+                await self.repo.save_log(session.id, entry, seq=seq)
 
                 # 推送给 WebSocket 订阅者
-                await self._notify_subscribers(session.id, entry.__dict__)
+                await self._notify_subscribers(session.id, item)
         except asyncio.CancelledError:
             logger.info("logcat_collection_cancelled", session=session.id)
         except Exception as e:

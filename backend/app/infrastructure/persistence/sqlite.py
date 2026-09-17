@@ -155,6 +155,15 @@ class SqliteDebugRepository(DebugRepository):
                 );
             """
             )
+            # seq 列迁移（旧库兼容；无此列则 ALTER 补齐，历史数据不丢）
+            cursor = await conn.execute("PRAGMA table_info(debug_logs)")
+            cols = [row[1] for row in await cursor.fetchall()]
+            if "seq" not in cols:
+                await conn.execute("ALTER TABLE debug_logs ADD COLUMN seq INTEGER")
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logs_session_seq "
+                "ON debug_logs(session_id, seq)"
+            )
             await conn.commit()
 
     async def save_session(self, session: DebugSession):
@@ -209,18 +218,19 @@ class SqliteDebugRepository(DebugRepository):
                 metadata=json.loads(row[5]) if row[5] else {},
             )
 
-    async def save_log(self, session_id: str, entry: LogEntry):
+    async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0):
         """
         持久化单条日志条目。
 
         参数：
             session_id: 此日志所属的会话。
             entry: 要持久化的解析后日志条目。
+            seq: 会话内单调递增序列号（断线续传游标）。
         """
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO debug_logs VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO debug_logs VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     session_id,
                     entry.ts,
@@ -230,9 +240,21 @@ class SqliteDebugRepository(DebugRepository):
                     entry.tag,
                     entry.message,
                     entry.raw,
+                    seq,
                 ),
             )
             await conn.commit()
+
+    async def next_seq(self, session_id: str) -> int:
+        """该会话下一条日志应使用的 seq（max(seq)+1，无记录为 0）。"""
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM debug_logs WHERE session_id=?",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def query_logs(self, session_id: str, filter: LogFilter) -> list[LogEntry]:
         """
