@@ -58,6 +58,8 @@ class StreamService:
         # 自适应码率：决策器与待生效的码率（由 report_client_fps 写入，帧循环消费）
         self._advisors: dict[str, object] = {}
         self._pending_bitrate: dict[str, int] = {}
+        # 每次自适应重启 +1，供 WS 层检测轮次变化并重置 H.264 解析器
+        self._epoch: dict[str, int] = {}
 
     async def start_stream(self, device_id: str) -> AsyncIterator[bytes]:
         """
@@ -130,16 +132,27 @@ class StreamService:
                 if restart_bitrate is None:
                     break
                 current_bps = restart_bitrate
+                self._epoch[device_id] = self._epoch.get(device_id, 0) + 1
                 logger.info(
                     "adaptive_bitrate_restarting_encoder",
                     device=device_id,
                     bit_rate=current_bps,
+                    epoch=self._epoch[device_id],
                 )
         finally:
             self.active_streams.pop(device_id, None)
             self._advisors.pop(device_id, None)
             self._pending_bitrate.pop(device_id, None)
+            self._epoch.pop(device_id, None)
             logger.info("video_stream_stopped", device=device_id)
+
+    def get_stream_epoch(self, device_id: str) -> int:
+        """当前流的重启轮次（每次自适应码率重启 +1），WS 层据此重置解析器。"""
+        return self._epoch.get(device_id, 0)
+
+    def peek_pending_bitrate(self, device_id: str) -> int | None:
+        """查看待生效的码率切换（帧循环消费前可被 WS 层读到以通知客户端）。"""
+        return self._pending_bitrate.get(device_id)
 
     def report_client_fps(self, device_id: str, fps: float, now: float | None = None):
         """

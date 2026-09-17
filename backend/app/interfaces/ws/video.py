@@ -13,8 +13,11 @@
 协议格式：
     服务端 → 客户端：
         - 初始配置：JSON {"type": "config", "width": 1080, "height": 1920, "codec": "avc1.42E01E"}
+          （自适应码率重启后会重新下发一次 config，客户端应重建解码器）
         - 视频帧：二进制消息（H.264 NAL 单元，带起始码）
         - 错误：JSON {"type": "error", "message": "..."}
+        - 码率切换预告：JSON {"type": "restarting", "bit_rate": 2000000}
+          （编码器即将重启，客户端应暂停回退 watchdog 宽限若干秒）
     客户端 → 服务端：JSON 消息
         { "action": "touch", "x": 100, "y": 200 }
         { "action": "swipe", "x1": 100, "y1": 200, "x2": 300, "y2": 400, "duration": 300 }
@@ -69,13 +72,25 @@ async def video_stream(
     sps_data = None
     pps_data = None
     config_sent = False
+    seen_epoch = stream_service.get_stream_epoch(device_id)
 
     async def handle_input():
-        """并发处理客户端输入事件"""
+        """并发处理客户端输入事件；stats 上报喂自适应决策器，
+        检测到待生效码率切换时通知客户端进入重启宽限期。"""
         try:
+            last_notified = None
             while True:
                 data = await websocket.receive_json()
                 await _handle_input(device_id, data, stream_service)
+                pend = stream_service.peek_pending_bitrate(device_id)
+                if pend is not None and pend != last_notified:
+                    last_notified = pend
+                    try:
+                        await websocket.send_json({"type": "restarting", "bit_rate": pend})
+                        logger.info("notified_client_restarting",
+                                    device=device_id, bit_rate=pend)
+                    except Exception:
+                        pass
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -90,6 +105,17 @@ async def video_stream(
         chunk_count = 0
         async for chunk in stream_service.start_stream(device_id):
             chunk_count += 1
+
+            # 自适应码率重启：轮次变化时重置解析器，丢弃跨重启的半截 NALU，
+            # 并强制重新下发 config（客户端据此重建解码器）
+            epoch = stream_service.get_stream_epoch(device_id)
+            if epoch != seen_epoch:
+                seen_epoch = epoch
+                parser = H264Parser()
+                sps_data = None
+                pps_data = None
+                config_sent = False
+                logger.info("video_stream_epoch_reset", device=device_id, epoch=epoch)
             if chunk_count <= 3:
                 logger.info("video_chunk_received", device=device_id,
                             chunk_size=len(chunk), chunk_count=chunk_count)
@@ -227,7 +253,18 @@ async def _handle_input(device_id: str, data: dict, stream_service: StreamServic
         - swipe: 滑动事件（x1, y1, x2, y2, duration）
         - key: 按键事件（keycode）
         - text: 文本输入（text）
+
+    另外支持客户端 1Hz 帧率上报（用于自适应码率决策）：
+        { "op": "stats", "fps": 25 }
     """
+    if data.get("op") == "stats":
+        try:
+            fps = float(data.get("fps", 0))
+        except (TypeError, ValueError):
+            fps = 0.0
+        stream_service.report_client_fps(device_id, fps)
+        return
+
     logger.info("input_received", device=device_id, action=data.get("action"), data=data)
 
     encoder = stream_service.get_encoder(device_id)
