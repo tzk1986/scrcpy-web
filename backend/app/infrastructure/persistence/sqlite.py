@@ -14,8 +14,8 @@ SQLite 持久化实现
     devices:        设备信息（id, model, os_version, resolution, battery, status, ip, port）
 
 关键设计决策：
-    - 每次操作一个连接（通过 _get_conn()）。这很简单，
-      避免了连接池的复杂性。SQLite 的写锁对于单进程部署是可以接受的。
+    - 按 db_path 共享的 aiosqlite 连接池（DatabasePool/get_pool），
+      连接循环复用；PRAGMA WAL + busy_timeout 提升并发读写。
     - 表在启动时通过 init_db() 创建（从 lifespan.py 调用）。
     - DB 文件路径从配置读取（settings().database.path）。
     - 元数据存储为 JSON 文本（sqlite 没有原生的 JSON 类型）。
@@ -27,9 +27,11 @@ SQLite 持久化实现
     可能导致 SQLite 锁争用——对于预期的写入量来说是可以接受的。
 """
 
+import asyncio
 import json
 import sqlite3
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
@@ -41,6 +43,57 @@ from app.domain.ports import DebugRepository, DeviceRepository, LogEntry, LogFil
 from app.domain.session import DebugSession
 
 logger = get_logger(__name__)
+
+
+class DatabasePool:
+    """aiosqlite 连接池：initialize 后池内恒有 pool_size 条连接循环复用。"""
+
+    def __init__(self, db_path: str, pool_size: int = 5):
+        self.db_path = db_path
+        self.pool_size = max(1, pool_size)
+        self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=self.pool_size)
+        self._initialized = False
+
+    async def initialize(self):
+        if self._initialized:
+            return
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(self.pool_size):
+            conn = await aiosqlite.connect(self.db_path)
+            # WAL 提升读写并发；busy_timeout 防瞬时锁冲突报错
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA busy_timeout=5000")
+            await self._pool.put(conn)
+        self._initialized = True
+
+    @asynccontextmanager
+    async def connection(self):
+        if not self._initialized:
+            await self.initialize()
+        conn = await self._pool.get()
+        try:
+            yield conn
+        finally:
+            await self._pool.put(conn)
+
+    async def close(self):
+        while not self._pool.empty():
+            conn = await self._pool.get()
+            await conn.close()
+        self._initialized = False
+
+
+_POOLS: dict[str, DatabasePool] = {}
+
+
+async def get_pool(db_path: str) -> DatabasePool:
+    """按 db_path 返回共享连接池（首次调用创建并初始化）。"""
+    pool = _POOLS.get(db_path)
+    if pool is None:
+        pool = DatabasePool(db_path, settings().debug.db_pool_size)
+        await pool.initialize()
+        _POOLS[db_path] = pool
+    return pool
 
 
 class SqliteDebugRepository(DebugRepository):
@@ -57,17 +110,12 @@ class SqliteDebugRepository(DebugRepository):
         """
         self.db_path = db_path or settings().database.path
 
-    def _get_conn(self) -> aiosqlite.Connection:
-        """
-        打开新的 aiosqlite 连接。
-
-        如果父目录不存在则创建。
-
-        返回：
-            aiosqlite 连接协程（调用方负责 await 和关闭）。
-        """
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        return aiosqlite.connect(self.db_path)
+    async def close(self):
+        """释放本库文件共享的连接池（进程 shutdown 时调用）。"""
+        pool = _POOLS.get(self.db_path)
+        if pool:
+            await pool.close()
+            _POOLS.pop(self.db_path, None)
 
     async def init_db(self):
         """
@@ -76,7 +124,8 @@ class SqliteDebugRepository(DebugRepository):
         在应用启动时调用一次（lifespan.py → init_db()）。
         使用 CREATE TABLE IF NOT EXISTS 所以是幂等的。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS debug_sessions (
@@ -118,7 +167,8 @@ class SqliteDebugRepository(DebugRepository):
         参数：
             session: 要持久化的 DebugSession。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO debug_sessions VALUES (?,?,?,?,?,?)",
                 (
@@ -142,7 +192,8 @@ class SqliteDebugRepository(DebugRepository):
         返回：
             找到则返回 DebugSession，否则返回 None。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM debug_sessions WHERE id=?", (session_id,)
             )
@@ -166,7 +217,8 @@ class SqliteDebugRepository(DebugRepository):
             session_id: 此日志所属的会话。
             entry: 要持久化的解析后日志条目。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.execute(
                 "INSERT INTO debug_logs VALUES (?,?,?,?,?,?,?,?)",
                 (
@@ -213,7 +265,8 @@ class SqliteDebugRepository(DebugRepository):
         sql += " ORDER BY ts DESC LIMIT ?"
         params.append(filter.limit)
 
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute(sql, params)
             rows = await cursor.fetchall()
 
@@ -240,7 +293,8 @@ class SqliteDebugRepository(DebugRepository):
             command: shell 命令字符串。
             output: 命令的 stdout/stderr 输出。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.execute(
                 "INSERT INTO shell_history VALUES (?,?,?,?)",
                 (session_id, time.time(), command, output),
@@ -260,7 +314,8 @@ class SqliteDebugRepository(DebugRepository):
         返回：
             (命令, 输出) 元组列表，最旧在前。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute(
                 "SELECT command, output FROM shell_history WHERE session_id=? ORDER BY ts DESC LIMIT ?",
                 (session_id, limit),
@@ -279,7 +334,8 @@ class SqliteDebugRepository(DebugRepository):
             删除的日志条数。
         """
         cutoff_time = time.time() - retention_seconds
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute(
                 "DELETE FROM debug_logs WHERE ts < ?", (cutoff_time,)
             )
@@ -300,7 +356,8 @@ class SqliteDebugRepository(DebugRepository):
             删除的记录数。
         """
         cutoff_time = time.time() - retention_seconds
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute(
                 "DELETE FROM shell_history WHERE ts < ?", (cutoff_time,)
             )
@@ -320,7 +377,8 @@ class SqliteDebugRepository(DebugRepository):
         返回：
             删除的日志条数。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute(
                 "DELETE FROM debug_logs WHERE session_id=?", (session_id,)
             )
@@ -362,7 +420,8 @@ class SqliteDebugRepository(DebugRepository):
         total_deleted = 0
         # 批量删除，每次删除 1000 条
         batch_size = 1000
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             while True:
                 current_size = await self.get_db_size_bytes()
                 if current_size <= max_size_bytes:
@@ -398,7 +457,8 @@ class SqliteDebugRepository(DebugRepository):
 
         注意：这会重写整个数据库文件，可能需要较长时间。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.execute("VACUUM")
             await conn.commit()
         logger.info("database_vacuumed")
@@ -418,14 +478,17 @@ class SqliteDeviceRepository(DeviceRepository):
         """
         self.db_path = db_path or settings().database.path
 
-    def _get_conn(self) -> aiosqlite.Connection:
-        """打开新的 aiosqlite 连接（创建父目录）。"""
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        return aiosqlite.connect(self.db_path)
+    async def close(self):
+        """释放本库文件共享的连接池（进程 shutdown 时调用）。"""
+        pool = _POOLS.get(self.db_path)
+        if pool:
+            await pool.close()
+            _POOLS.pop(self.db_path, None)
 
     async def init_db(self):
         """创建 devices 表（如果不存在）。"""
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS devices (
@@ -452,7 +515,8 @@ class SqliteDeviceRepository(DeviceRepository):
         参数：
             device: 要持久化的 DeviceInfo。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?,?,?,?,?)",
                 (
@@ -479,7 +543,8 @@ class SqliteDeviceRepository(DeviceRepository):
         返回：
             找到则返回 DeviceInfo，否则返回 None。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute("SELECT * FROM devices WHERE id=?", (device_id,))
             row = await cursor.fetchone()
             if not row:
@@ -502,7 +567,8 @@ class SqliteDeviceRepository(DeviceRepository):
         返回：
             数据库中所有 DeviceInfo 对象的列表。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             cursor = await conn.execute("SELECT * FROM devices")
             rows = await cursor.fetchall()
         return [
@@ -526,7 +592,8 @@ class SqliteDeviceRepository(DeviceRepository):
         参数：
             device_id: 要删除的设备的 ADB 序列号。
         """
-        async with self._get_conn() as conn:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
             await conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
             await conn.commit()
 

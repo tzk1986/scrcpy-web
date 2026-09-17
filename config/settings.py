@@ -96,6 +96,7 @@ class DebugConfig(BaseSettings):
     cleanup_interval_hours: int = 1  # 自动清理间隔（小时）
     min_log_level: str = "I"  # 最低日志级别：V/D/I/W/E/F（生产环境建议 W）
     log_rate_limit: int = 100  # 每秒最大日志数，超过时自动丢弃低级别日志
+    db_pool_size: int = 5  # SQLite 连接池大小
 
 
 class SecurityConfig(BaseSettings):
