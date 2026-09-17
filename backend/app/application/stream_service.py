@@ -25,6 +25,7 @@
     可以同时为多个设备启动视频流。
 """
 
+import asyncio
 import time
 from typing import AsyncIterator
 
@@ -60,6 +61,8 @@ class StreamService:
         self._pending_bitrate: dict[str, int] = {}
         # 每次自适应重启 +1，供 WS 层检测轮次变化并重置 H.264 解析器
         self._epoch: dict[str, int] = {}
+        # 重启唤醒事件：pending 写入时 set，静止无帧也能立即切换
+        self._restart_events: dict[str, asyncio.Event] = {}
 
     async def start_stream(self, device_id: str) -> AsyncIterator[bytes]:
         """
@@ -106,6 +109,11 @@ class StreamService:
                 )
         self.active_streams[device_id] = True
 
+        # 码率重启事件：静止画面下 scrcpy 不出帧，仅靠"下一帧时消费 pending"
+        # 会无限挂起，因此取帧协程与本事件赛跑，事件先到也立即重启。
+        restart_event = asyncio.Event()
+        self._restart_events[device_id] = restart_event
+
         try:
             while self.active_streams.get(device_id):
                 encoder = self._encoder_factory()
@@ -117,16 +125,37 @@ class StreamService:
                     fps=s.stream.fps,
                 )
                 restart_bitrate = None
+                frame_task = None
+                event_task = None
                 try:
-                    async for frame in encoder.start(device_id, opts):
-                        if not self.active_streams.get(device_id):
-                            break
-                        pend = self._pending_bitrate.pop(device_id, None)
-                        if pend is not None and pend != current_bps:
+                    agen = encoder.start(device_id, opts)
+                    while self.active_streams.get(device_id):
+                        # pending 存在则事件必已置位（见 report_client_fps），
+                        # 不清除，让本回合立即走重启分支
+                        if self._pending_bitrate.get(device_id) is None:
+                            restart_event.clear()
+                        frame_task = asyncio.ensure_future(agen.__anext__())
+                        event_task = asyncio.ensure_future(restart_event.wait())
+                        done, _ = await asyncio.wait(
+                            {frame_task, event_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if frame_task in done:
+                            try:
+                                frame = frame_task.result()
+                            except StopAsyncIteration:
+                                break
+                            yield frame
+                        else:
+                            pend = self._pending_bitrate.pop(device_id, None)
+                            if pend is None or pend == current_bps:
+                                continue  # 伪唤醒（pending 已被消费），回到取帧
                             restart_bitrate = pend
                             break
-                        yield frame
                 finally:
+                    for t in (frame_task, event_task):
+                        if t is not None and not t.done():
+                            t.cancel()
                     await encoder.stop()
                     self.encoders.pop(device_id, None)
                 if restart_bitrate is None:
@@ -143,6 +172,7 @@ class StreamService:
             self.active_streams.pop(device_id, None)
             self._advisors.pop(device_id, None)
             self._pending_bitrate.pop(device_id, None)
+            self._restart_events.pop(device_id, None)
             self._epoch.pop(device_id, None)
             logger.info("video_stream_stopped", device=device_id)
 
@@ -170,6 +200,9 @@ class StreamService:
         new_bps = advisor.decide(now)
         if new_bps is not None:
             self._pending_bitrate[device_id] = new_bps
+            ev = self._restart_events.get(device_id)
+            if ev is not None:
+                ev.set()
             logger.info(
                 "adaptive_bitrate_switch_pending",
                 device=device_id,

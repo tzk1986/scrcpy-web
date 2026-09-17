@@ -75,7 +75,9 @@ async def test_low_fps_restarts_encoder_at_lower_tier(stream_settings):
     for i in range(8):
         svc.report_client_fps("dev1", 10, now=float(i))
 
-    assert await _wait_for(lambda: len(FakeEncoder.created) == 2)
+    assert await _wait_for(
+        lambda: len(FakeEncoder.created) == 2 and FakeEncoder.created[1].opts is not None
+    )
     assert parse_bit_rate(FakeEncoder.created[0].opts.bit_rate) == 4_000_000
     assert parse_bit_rate(FakeEncoder.created[1].opts.bit_rate) == 2_000_000
     assert FakeEncoder.created[0].stop_called is True
@@ -119,3 +121,53 @@ def test_report_without_stream_is_noop(stream_settings):
     svc = StreamService(encoder_factory=FakeEncoder)
     svc.report_client_fps("ghost", 10, now=0.0)
     assert svc._advisors == {}
+
+
+class FakeIdleEncoder(FakeEncoder):
+    """只产 1 帧后挂起——模拟静止画面下 scrcpy 不再出帧。"""
+
+    created: list["FakeIdleEncoder"] = []
+
+    def __init__(self):
+        self.opts = None
+        self.stop_called = False
+        self._never = asyncio.Event()
+        FakeIdleEncoder.created.append(self)
+
+    async def start(self, device_id, opts):
+        self.opts = opts
+        yield b"f0"
+        await self._never.wait()
+
+
+@pytest.mark.asyncio
+async def test_restart_applies_even_when_stream_idle(stream_settings):
+    """静止画面（无新帧）时也须立即应用码率切换，不能等下一帧。"""
+    FakeIdleEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeIdleEncoder)
+
+    async def consume():
+        async for _ in svc.start_stream("dev1"):
+            pass
+
+    task = asyncio.create_task(consume())
+    assert await _wait_for(lambda: len(FakeIdleEncoder.created) == 1)
+
+    for i in range(8):
+        svc.report_client_fps("dev1", 10, now=float(i))
+
+    # 帧循环此时阻塞在 __anext__，无新帧；事件驱动应仍完成重启
+    assert await _wait_for(
+        lambda: len(FakeIdleEncoder.created) == 2 and FakeIdleEncoder.created[1].opts is not None,
+        timeout=2.0,
+    )
+    assert parse_bit_rate(FakeIdleEncoder.created[1].opts.bit_rate) == 2_000_000
+    assert FakeIdleEncoder.created[0].stop_called is True
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: FakeIdleEncoder.created[1].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
