@@ -11,7 +11,11 @@ H264 帧解析器测试
     - NALU 类型识别
     - 起始码检测（3字节和4字节）
     - 缓冲区和重置功能
+    - 起始码回看修正（4 字节码吸收，方案 17 实施项 1a）
+    - 与现状算法的随机流对拍（语义回归守护）
 """
+
+import random
 
 import pytest
 
@@ -22,6 +26,41 @@ from app.scrcpy.constants import (
     NALU_TYPE_PPS,
     NALU_TYPE_SLICE,
 )
+
+
+class ReferenceParser:
+    """现状逐字节算法的独立备份（2026-09-18 重写前基线）。
+
+    仅用于对拍测试：随机流下断言重写后的 H264Parser 与本类产出
+    逐字节一致。重写后本类不再变化，作为语义回归的守护存在。
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+
+    def feed(self, data: bytes) -> list[bytes]:
+        self._buffer.extend(data)
+        nalus = []
+        while True:
+            start = self._find_start_code()
+            if start == -1:
+                break
+            next_start = self._find_start_code(start + 3)
+            if next_start == -1:
+                break
+            nalus.append(bytes(self._buffer[start:next_start]))
+            self._buffer = self._buffer[next_start:]
+        return nalus
+
+    def _find_start_code(self, start: int = 0) -> int:
+        buf = self._buffer
+        for i in range(start, len(buf) - 2):
+            if buf[i] == 0 and buf[i + 1] == 0 and buf[i + 2] == 1:
+                return i
+            if (i < len(buf) - 3 and buf[i] == 0 and buf[i + 1] == 0
+                    and buf[i + 2] == 0 and buf[i + 3] == 1):
+                return i
+        return -1
 
 
 # ---------------------------------------------------------------------------
@@ -333,3 +372,177 @@ class TestEdgeCases:
 
         assert len(nalus) == 1
         assert len(nalus[0]) > 1000000
+
+
+# ---------------------------------------------------------------------------
+# 起始码回看修正测试（方案 17 实施项 1a）
+# ---------------------------------------------------------------------------
+
+class TestLookbackCorrection:
+    """起始码回看修正测试：4 字节/3 字节码混用时，产出边界字节零漂移"""
+
+    def _feed_all(self, parser: H264Parser, data: bytes) -> list[bytes]:
+        """末尾补假起始码触发最后一个 NALU 输出，单块喂入。
+
+        假 NALU 无后继起始码不会被输出，因此无需剔除。
+        """
+        nalus = parser.feed(data)
+        nalus.extend(parser.feed(b'\x00\x00\x00\x01NEXT'))
+        return nalus
+
+    def test_consecutive_4_byte_codes(self):
+        """两个 4 字节起始码：前一 NALU 尾不残留多余零字节"""
+        data = (b'\x00\x00\x00\x01\x67\x01'      # SPS
+                + b'\x00\x00\x00\x01\x68\x02')   # PPS
+        parser = H264Parser()
+        nalus = self._feed_all(parser, data)
+
+        assert len(nalus) == 2
+        assert nalus[0] == b'\x00\x00\x00\x01\x67\x01'
+        assert nalus[1] == b'\x00\x00\x00\x01\x68\x02'
+
+    def test_3_byte_after_4_byte(self):
+        """4 字节码后接 3 字节码：第二 NALU 仍是完整 3 字节起始码"""
+        data = (b'\x00\x00\x00\x01\x67\x01'   # 4 字节码 SPS
+                + b'\x00\x00\x01\x68\x02')    # 3 字节码 PPS
+        parser = H264Parser()
+        nalus = self._feed_all(parser, data)
+
+        assert len(nalus) == 2
+        assert nalus[0] == b'\x00\x00\x00\x01\x67\x01'
+        assert nalus[1] == b'\x00\x00\x01\x68\x02'
+
+    def test_4_byte_after_3_byte(self):
+        """3 字节码后接 4 字节码：第二 NALU 起始码完整不残缺"""
+        data = (b'\x00\x00\x01\x67\x01'       # 3 字节码 SPS
+                + b'\x00\x00\x00\x01\x68\x02')  # 4 字节码 PPS
+        parser = H264Parser()
+        nalus = self._feed_all(parser, data)
+
+        assert len(nalus) == 2
+        assert nalus[0] == b'\x00\x00\x01\x67\x01'
+        assert nalus[1] == b'\x00\x00\x00\x01\x68\x02'
+
+    def test_data_body_trailing_zero_before_4_byte_code(self):
+        """NALU 数据尾部以 0x00 结尾时，起始码的 4 字节归属判定正确"""
+        # 前一 NALU 末尾字节 0x00，后接 4 字节起始码（共 5 个连续 0）
+        data = (b'\x00\x00\x01\x67\x00'       # 数据尾 0x00
+                + b'\x00\x00\x00\x01\x68\x02')
+        parser = H264Parser()
+        nalus = self._feed_all(parser, data)
+
+        assert len(nalus) == 2
+        # ref 算法：数据尾 1 个 0 保留在 NALU1 内，
+        # 4 字节码从其后开始，起始码完整
+        assert nalus[0] == b'\x00\x00\x01\x67\x00'
+        assert nalus[1] == b'\x00\x00\x00\x01\x68\x02'
+
+    def test_data_body_trailing_two_zeros_before_4_byte_code(self):
+        """NALU 数据尾部 2 个 0x00 + 4 字节起始码（6 个连续 0）"""
+        data = (b'\x00\x00\x01\x67\x00\x00'   # 数据尾 2 个 0
+                + b'\x00\x00\x00\x01\x68\x02')
+        parser = H264Parser()
+        nalus = self._feed_all(parser, data)
+
+        assert len(nalus) == 2
+        # ref 算法：数据尾 2 个 0 保留在 NALU1 内，
+        # 4 字节码从其后开始，起始码完整
+        assert nalus[0] == b'\x00\x00\x01\x67\x00\x00'
+        assert nalus[1] == b'\x00\x00\x00\x01\x68\x02'
+
+
+# ---------------------------------------------------------------------------
+# 与现状算法的随机流对拍（语义回归守护）
+# ---------------------------------------------------------------------------
+
+class TestDifferentialParity:
+    """随机流下 H264Parser 与现状逐字节算法 ReferenceParser 逐字节一致"""
+
+    LEGAL_TYPES = [0x67, 0x68, 0x65, 0x41, 0x06, 0x09]  # SPS/PPS/IDR/SLICE/SEI/AUD
+
+    @staticmethod
+    def _make_random_stream(rng: random.Random) -> bytes:
+        """构造随机 NALU 流：随机 3/4 字节起始码、随机长度、合法 NALU 类型"""
+        parts = []
+        for _ in range(rng.randint(3, 12)):
+            start = (b'\x00\x00\x01' if rng.random() < 0.5
+                     else b'\x00\x00\x00\x01')
+            nalu_type = rng.choice(TestDifferentialParity.LEGAL_TYPES)
+            body = bytes(rng.randrange(256) for _ in range(rng.randint(0, 60)))
+            parts.append(start + bytes([nalu_type]) + body)
+        return b''.join(parts)
+
+    @staticmethod
+    def _feed_chunks(parser: H264Parser, data: bytes, rng: random.Random) -> list[bytes]:
+        """随机大小分块喂入，收集全部产出"""
+        nalus: list[bytes] = []
+        pos = 0
+        while pos < len(data):
+            size = min(rng.randint(1, 37), len(data) - pos)
+            nalus.extend(parser.feed(data[pos:pos + size]))
+            pos += size
+        return nalus
+
+    def test_whole_feed_parity(self):
+        """整块喂入：200 组随机流对拍"""
+        rng = random.Random(20260918)
+        for _ in range(200):
+            data = self._make_random_stream(rng)
+            new_parser = H264Parser()
+            ref = ReferenceParser()
+            new_out = new_parser.feed(data)
+            ref_out = ref.feed(data)
+            assert new_out == ref_out
+
+    def test_chunked_feed_parity(self):
+        """随机分块喂入：200 组随机流对拍（含起始码跨块切分）"""
+        rng = random.Random(20260919)
+        for _ in range(200):
+            data = self._make_random_stream(rng)
+            new_parser = H264Parser()
+            ref = ReferenceParser()
+            new_out = self._feed_chunks(new_parser, data, rng)
+            ref_out = self._feed_chunks(ref, data, rng)
+            assert new_out == ref_out
+
+
+# ---------------------------------------------------------------------------
+# 大帧跨块测试
+# ---------------------------------------------------------------------------
+
+class TestLargeFrameAcrossChunks:
+    """大 NALU 跨多块解析（补充既有 1MB 单块测试的跨块场景）"""
+
+    def test_64kb_nalu_across_many_chunks(self):
+        """64KB NALU 按 1KB 分块喂入"""
+        parser = H264Parser()
+        sps = b'\x00\x00\x00\x01\x67' + b'\xab' * (64 * 1024)
+        pps = b'\x00\x00\x00\x01\x68\xce'
+
+        nalus: list[bytes] = []
+        data = sps + pps
+        for i in range(0, len(data), 1024):
+            nalus.extend(parser.feed(data[i:i + 1024]))
+
+        assert len(nalus) == 1
+        assert nalus[0] == sps
+
+    def test_large_nalu_parity_with_reference(self):
+        """128KB 大 NALU + 后续小 NALU，分块喂入对拍"""
+        rng = random.Random(20260920)
+        nalu1 = b'\x00\x00\x00\x01\x67' + bytes(rng.randrange(256) for _ in range(128 * 1024))
+        nalu2 = b'\x00\x00\x01\x68\xce\x38'
+        data = nalu1 + nalu2
+
+        new_parser = H264Parser()
+        ref = ReferenceParser()
+        new_out = self._feed_fixed_chunks(new_parser, data, 4096)
+        ref_out = self._feed_fixed_chunks(ref, data, 4096)
+        assert new_out == ref_out
+
+    @staticmethod
+    def _feed_fixed_chunks(parser: H264Parser, data: bytes, size: int) -> list[bytes]:
+        nalus: list[bytes] = []
+        for i in range(0, len(data), size):
+            nalus.extend(parser.feed(data[i:i + size]))
+        return nalus

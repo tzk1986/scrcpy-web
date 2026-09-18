@@ -72,71 +72,37 @@ class H264Parser:
 
         实现逻辑：
             1. 将新数据追加到缓冲区
-            2. 查找 NALU 起始码（0x00 0x00 0x01 或 0x00 0x00 0x00 0x01）
-            3. 如果找到两个起始码，提取第一个 NALU
-            4. 从缓冲区移除已提取的 NALU
+            2. 用 bytearray.find 定位 3 字节起始码（C 实现，远快于逐字节扫描）
+            3. 回看修正：若命中位置前一字节为 0x00，则该码实际是 4 字节
+               起始码（0x00 0x00 0x00 0x01）的尾部，吸收该零字节，
+               保证 3/4 字节码混用时 NALU 边界零漂移
+            4. 找到下一起始码后提取 NALU，del 收缩缓冲区
+               （起始码前的垃圾字节一并丢弃，与旧算法语义一致）
             5. 重复直到没有完整的 NALU
         """
         self._buffer.extend(data)
-        nalus = []
+        nalus: list[bytes] = []
+        buf = self._buffer
 
         while True:
-            # 查找第一个起始码
-            start = self._find_start_code()
-            if start == -1:
+            idx = buf.find(b'\x00\x00\x01')
+            if idx < 0:
                 # 没有找到起始码，等待更多数据
                 break
+            if idx >= 1 and buf[idx - 1] == 0x00:
+                idx -= 1
 
-            # 查找第二个起始码（当前 NALU 的结束位置）
-            # 从第一个起始码后 3-4 字节开始搜索
-            next_start = self._find_start_code(start + 3)
-            if next_start == -1:
-                # 没有第二个起始码，说明当前 NALU 不完整
-                # 等待更多数据
+            nxt = buf.find(b'\x00\x00\x01', idx + 3)
+            if nxt < 0:
+                # 没有第二个起始码，说明当前 NALU 不完整，等待更多数据
                 break
+            if nxt >= 1 and buf[nxt - 1] == 0x00:
+                nxt -= 1
 
-            # 提取完整的 NALU（从 start 到 next_start）
-            nalu = bytes(self._buffer[start:next_start])
-            nalus.append(nalu)
-
-            # 从缓冲区移除已处理的 NALU
-            self._buffer = self._buffer[next_start:]
+            nalus.append(bytes(buf[idx:nxt]))
+            del buf[:nxt]
 
         return nalus
-
-    def _find_start_code(self, start: int = 0) -> int:
-        """
-        查找 NALU 起始码的位置。
-
-        起始码格式：
-            - 3 字节：0x00 0x00 0x01
-            - 4 字节：0x00 0x00 0x00 0x01
-
-        参数：
-            start: 开始搜索的位置（默认为 0）。
-
-        返回：
-            起始码的位置，如果未找到返回 -1。
-
-        实现：
-            遍历缓冲区，检查连续的字节是否匹配起始码模式。
-        """
-        for i in range(start, len(self._buffer) - 2):
-            # 检查 3 字节起始码：0x00 0x00 0x01
-            if (self._buffer[i] == 0 and
-                self._buffer[i+1] == 0 and
-                self._buffer[i+2] == 1):
-                return i
-
-            # 检查 4 字节起始码：0x00 0x00 0x00 0x01
-            if (i < len(self._buffer) - 3 and
-                self._buffer[i] == 0 and
-                self._buffer[i+1] == 0 and
-                self._buffer[i+2] == 0 and
-                self._buffer[i+3] == 1):
-                return i
-
-        return -1
 
     def get_nalu_type(self, nalu: bytes) -> int:
         """
