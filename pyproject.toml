@@ -46,3 +46,13 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 strict = true
+mypy_path = "backend"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["yaml", "winpty", "structlog.*", "aiosqlite", "aiofiles"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["app.scrcpy.examples", "app.scrcpy.constants", "app.scrcpy.h264_parser"]
+ignore_errors = true
