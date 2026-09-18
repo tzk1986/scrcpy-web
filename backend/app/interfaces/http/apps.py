@@ -16,9 +16,11 @@
 参考方案文档：方案/14-调试面板其他标签完善.md
 """
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.application.app_service import AppService
+from app.application.app_service import AppInfo, AppService
 from app.deps import get_app_service
 from app.core.logging import get_logger
 
@@ -27,7 +29,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/apps", tags=["apps"])
 
 
-def _app_to_dict(app) -> dict:
+def _app_to_dict(app: AppInfo) -> dict[str, Any]:
     """将 AppInfo 转为字典。"""
     return {
         "package_name": app.package_name,
@@ -48,7 +50,7 @@ async def list_apps(
     device_id: str,
     include_system: bool = False,
     service: AppService = Depends(get_app_service),
-):
+) -> dict[str, Any]:
     """
     获取设备应用列表。
 
@@ -78,7 +80,7 @@ async def get_app_info(
     device_id: str,
     package: str,
     service: AppService = Depends(get_app_service),
-):
+) -> dict[str, Any]:
     """
     获取应用详情。
 
@@ -102,7 +104,7 @@ async def launch_app(
     device_id: str,
     package: str,
     service: AppService = Depends(get_app_service),
-):
+) -> dict[str, Any]:
     """
     启动应用。
 
@@ -126,7 +128,7 @@ async def stop_app(
     device_id: str,
     package: str,
     service: AppService = Depends(get_app_service),
-):
+) -> dict[str, Any]:
     """
     强制停止应用。
 
@@ -150,7 +152,7 @@ async def uninstall_app(
     device_id: str,
     package: str,
     service: AppService = Depends(get_app_service),
-):
+) -> dict[str, Any]:
     """
     卸载应用。
 
@@ -174,7 +176,7 @@ async def clear_app_data(
     device_id: str,
     package: str,
     service: AppService = Depends(get_app_service),
-):
+) -> dict[str, Any]:
     """
     清除应用数据。
 
@@ -198,7 +200,7 @@ async def get_app_memory(
     device_id: str,
     package: str,
     service: AppService = Depends(get_app_service),
-):
+) -> dict[str, Any]:
     """
     获取应用内存占用。
 

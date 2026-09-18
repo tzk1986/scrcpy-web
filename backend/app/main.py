@@ -77,8 +77,10 @@ def create_app() -> FastAPI:
 
     # --- 异常处理器 --------------------------------------------------------
     # 三层：领域异常 → HTTP 异常 → 兜底。
-    app.add_exception_handler(OpenScrcpyException, openscrcpy_exception_handler)
-    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    # Starlette 的类型签名只接受 (Request, Exception) 处理器；
+    # FastAPI 实际按异常类型精确分发，这里收窄的参数类型是安全的
+    app.add_exception_handler(OpenScrcpyException, openscrcpy_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, generic_exception_handler)
 
     # --- HTTP 路由（interfaces/http/）--------------------------------------
@@ -93,24 +95,24 @@ def create_app() -> FastAPI:
     # 每个 WS 端点委托给 interfaces/ws/ 中的处理器，
     # 那里包含实际的协议逻辑（帧中继、JSON 命令等）。
     @app.websocket("/ws/video/{device_id}")
-    async def video_ws(websocket: WebSocket, device_id: str):
+    async def video_ws(websocket: WebSocket, device_id: str) -> None:
         from app.deps import get_stream_service
         await ws_video.video_stream(websocket, device_id, get_stream_service())
 
     @app.websocket("/ws/debug/{session_id}")
-    async def debug_ws(websocket: WebSocket, session_id: str):
+    async def debug_ws(websocket: WebSocket, session_id: str) -> None:
         from app.deps import get_debug_service
         await ws_debug.debug_stream(websocket, session_id, get_debug_service())
 
     @app.websocket("/ws/perf/{device_id}")
-    async def perf_ws(websocket: WebSocket, device_id: str):
+    async def perf_ws(websocket: WebSocket, device_id: str) -> None:
         from app.deps import get_performance_service
         await ws_performance.stream_metrics(websocket, device_id, get_performance_service())
 
     # --- 健康检查 ---------------------------------------------------------
     # 供 Docker HEALTHCHECK 和容器编排器（k8s、compose）使用。
     @app.get("/health")
-    async def health():
+    async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     return app

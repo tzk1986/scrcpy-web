@@ -49,7 +49,7 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["debug"])
 
 
-async def debug_stream(websocket: WebSocket, session_id: str, debug_service: DebugService):
+async def debug_stream(websocket: WebSocket, session_id: str, debug_service: DebugService) -> None:
     """
     调试数据 WebSocket 处理函数。
 

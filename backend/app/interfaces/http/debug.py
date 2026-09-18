@@ -20,6 +20,7 @@
 import csv
 import io
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -35,7 +36,7 @@ async def create_session(
     device_id: str,
     user_id: str,
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     创建调试会话。
 
@@ -58,7 +59,7 @@ async def create_session(
 async def get_session(
     session_id: str,
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     获取调试会话信息。
 
@@ -87,7 +88,7 @@ async def get_logs(
     tag: str | None = None,
     limit: int = 1000,
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     查询调试日志。
 
@@ -112,7 +113,7 @@ async def export_logs(
     format: str = "json",
     limit: int = 50000,
     service: DebugService = Depends(get_debug_service),
-):
+) -> StreamingResponse:
     """
     导出调试日志为文件。
 
@@ -161,7 +162,7 @@ async def exec_shell(
     session_id: str,
     command: str,
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     在设备上执行 shell 命令。
 
@@ -183,7 +184,7 @@ async def exec_shell(
 async def close_session(
     session_id: str,
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     关闭调试会话。
 
@@ -204,7 +205,7 @@ async def close_session(
 @router.post("/cleanup")
 async def run_cleanup(
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     手动触发日志清理。
 
@@ -224,7 +225,7 @@ async def run_cleanup(
 async def cleanup_session_logs(
     session_id: str,
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     清理指定会话的所有日志。
 
@@ -241,7 +242,7 @@ async def cleanup_session_logs(
 @router.get("/stats")
 async def get_stats(
     service: DebugService = Depends(get_debug_service),
-):
+) -> dict[str, Any]:
     """
     获取调试系统统计信息。
 

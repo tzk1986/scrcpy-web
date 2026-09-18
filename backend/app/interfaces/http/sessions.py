@@ -17,6 +17,8 @@
 参与者角色：admin（管理员）或 viewer（观察者）。
 """
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 
 from app.application.session_service import SessionService
@@ -30,7 +32,7 @@ async def create_session(
     device_id: str,
     user_id: str,
     service: SessionService = Depends(get_session_service),
-):
+) -> dict[str, Any]:
     """
     创建协作会话。
 
@@ -49,7 +51,7 @@ async def create_session(
 async def get_session(
     session_id: str,
     service: SessionService = Depends(get_session_service),
-):
+) -> dict[str, Any]:
     """
     获取协作会话信息。
 
@@ -72,7 +74,7 @@ async def join_session(
     user_id: str,
     permission: str = "viewer",
     service: SessionService = Depends(get_session_service),
-):
+) -> dict[str, Any]:
     """
     加入协作会话。
 
@@ -93,7 +95,7 @@ async def leave_session(
     session_id: str,
     user_id: str,
     service: SessionService = Depends(get_session_service),
-):
+) -> dict[str, Any]:
     """
     离开协作会话。
 
@@ -117,7 +119,7 @@ async def transfer_control(
     from_user: str,
     to_user: str,
     service: SessionService = Depends(get_session_service),
-):
+) -> dict[str, Any]:
     """
     转移设备控制权。
 

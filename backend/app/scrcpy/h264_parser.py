@@ -56,7 +56,7 @@ class H264Parser:
     将连续的字节流解析为独立的 NALU 单元。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化解析器，创建空缓冲区。"""
         self._buffer = bytearray()
 
@@ -215,7 +215,7 @@ class H264Parser:
         """
         return self.get_nalu_type(nalu) == NALU_TYPE_PPS
 
-    def reset(self):
+    def reset(self) -> None:
         """
         重置解析器状态。
 

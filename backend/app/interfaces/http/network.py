@@ -12,6 +12,7 @@
 """
 
 import time
+from typing import Any
 
 from fastapi import APIRouter
 
@@ -53,7 +54,7 @@ def _get_sampler(device_id: str) -> NetworkSampler:
 
 
 @router.get("/{device_id}/stats")
-async def get_stats(device_id: str):
+async def get_stats(device_id: str) -> dict[str, Any]:
     """
     获取当前网络统计。
 
@@ -79,7 +80,7 @@ async def get_stats(device_id: str):
 
 
 @router.get("/{device_id}/connections")
-async def get_connections(device_id: str, protocol: str | None = None):
+async def get_connections(device_id: str, protocol: str | None = None) -> dict[str, Any]:
     """
     获取活跃连接列表。
 

@@ -30,6 +30,8 @@ SQLite 持久化实现
 import asyncio
 import json
 import time
+from collections.abc import AsyncIterator
+from typing import Any
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -53,7 +55,7 @@ class DatabasePool:
         self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=self.pool_size)
         self._initialized = False
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         if self._initialized:
             return
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -66,7 +68,7 @@ class DatabasePool:
         self._initialized = True
 
     @asynccontextmanager
-    async def connection(self):
+    async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
         if not self._initialized:
             await self.initialize()
         conn = await self._pool.get()
@@ -75,7 +77,7 @@ class DatabasePool:
         finally:
             await self._pool.put(conn)
 
-    async def close(self):
+    async def close(self) -> None:
         while not self._pool.empty():
             conn = await self._pool.get()
             await conn.close()
@@ -109,14 +111,14 @@ class SqliteDebugRepository(DebugRepository):
         """
         self.db_path = db_path or settings().database.path
 
-    async def close(self):
+    async def close(self) -> None:
         """释放本库文件共享的连接池（进程 shutdown 时调用）。"""
         pool = _POOLS.get(self.db_path)
         if pool:
             await pool.close()
             _POOLS.pop(self.db_path, None)
 
-    async def init_db(self):
+    async def init_db(self) -> None:
         """
         创建所有数据库表（如果不存在）。
 
@@ -165,7 +167,7 @@ class SqliteDebugRepository(DebugRepository):
             )
             await conn.commit()
 
-    async def save_session(self, session: DebugSession):
+    async def save_session(self, session: DebugSession) -> None:
         """
         插入或替换调试会话。
 
@@ -217,7 +219,7 @@ class SqliteDebugRepository(DebugRepository):
                 metadata=json.loads(row[5]) if row[5] else {},
             )
 
-    async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0):
+    async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0) -> None:
         """
         持久化单条日志条目。
 
@@ -253,7 +255,7 @@ class SqliteDebugRepository(DebugRepository):
                 "FROM debug_sessions WHERE last_active >= ? "
                 "ORDER BY last_active DESC LIMIT ?",
                 (since_ts, limit))
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
         out = []
         for r in rows:
             meta = json.loads(r[5]) if r[5] else {}
@@ -261,7 +263,7 @@ class SqliteDebugRepository(DebugRepository):
                                     created_at=r[3], last_active=r[4], metadata=meta))
         return out
 
-    async def save_logs_bulk(self, rows: list[tuple]):
+    async def save_logs_bulk(self, rows: list[tuple[Any, ...]]) -> None:
         """批量插入日志行，单事务提交。rows 元素为 9 元组（与 debug_logs 列一致）。"""
         if not rows:
             return
@@ -282,7 +284,7 @@ class SqliteDebugRepository(DebugRepository):
             row = await cursor.fetchone()
         return row[0] if row else 0
 
-    async def query_logs_since(self, session_id: str, from_seq: int, limit: int = 1000) -> list[dict]:
+    async def query_logs_since(self, session_id: str, from_seq: int, limit: int = 1000) -> list[dict[str, Any]]:
         """按 seq 增量查询（断线续传补发用），返回 dict 列表（含 seq），seq 升序。"""
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
@@ -290,7 +292,7 @@ class SqliteDebugRepository(DebugRepository):
                 "SELECT ts, level, pid, tid, tag, message, raw, seq FROM debug_logs "
                 "WHERE session_id=? AND seq>=? ORDER BY seq ASC LIMIT ?",
                 (session_id, from_seq, limit))
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
         return [
             {"ts": r[0], "level": r[1], "pid": r[2], "tid": r[3],
              "tag": r[4], "message": r[5], "raw": r[6], "seq": r[7]}
@@ -313,7 +315,7 @@ class SqliteDebugRepository(DebugRepository):
             匹配过滤条件的 LogEntry 对象列表，最旧在前。
         """
         sql = "SELECT * FROM debug_logs WHERE session_id=?"
-        params: list = [session_id]
+        params: list[Any] = [session_id]
 
         if filter.level:
             sql += " AND level=?"
@@ -331,7 +333,7 @@ class SqliteDebugRepository(DebugRepository):
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
             cursor = await conn.execute(sql, params)
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
 
         # 反转以返回最旧在前（查询获取最新在前以用于 LIMIT）
         return [
@@ -347,7 +349,7 @@ class SqliteDebugRepository(DebugRepository):
             for row in reversed(rows)
         ]
 
-    async def save_shell_history(self, session_id: str, command: str, output: str):
+    async def save_shell_history(self, session_id: str, command: str, output: str) -> None:
         """
         记录 shell 命令及其输出。
 
@@ -383,7 +385,7 @@ class SqliteDebugRepository(DebugRepository):
                 "SELECT command, output FROM shell_history WHERE session_id=? ORDER BY ts DESC LIMIT ?",
                 (session_id, limit),
             )
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
         return [(row[0], row[1]) for row in reversed(rows)]
 
     async def delete_old_logs(self, retention_seconds: float) -> int:
@@ -403,7 +405,7 @@ class SqliteDebugRepository(DebugRepository):
                 "DELETE FROM debug_logs WHERE ts < ?", (cutoff_time,)
             )
             await conn.commit()
-            deleted = cursor.rowcount
+            deleted: int = cursor.rowcount
         if deleted > 0:
             logger.info("old_logs_deleted", count=deleted, cutoff_time=cutoff_time)
         return deleted
@@ -425,7 +427,7 @@ class SqliteDebugRepository(DebugRepository):
                 "DELETE FROM shell_history WHERE ts < ?", (cutoff_time,)
             )
             await conn.commit()
-            deleted = cursor.rowcount
+            deleted: int = cursor.rowcount
         if deleted > 0:
             logger.info("old_shell_history_deleted", count=deleted)
         return deleted
@@ -449,7 +451,7 @@ class SqliteDebugRepository(DebugRepository):
                 "DELETE FROM shell_history WHERE session_id=?", (session_id,)
             )
             await conn.commit()
-            deleted = cursor.rowcount
+            deleted: int = cursor.rowcount
         if deleted > 0:
             logger.info("session_logs_deleted", session=session_id, count=deleted)
         return deleted
@@ -494,7 +496,7 @@ class SqliteDebugRepository(DebugRepository):
                 cursor = await conn.execute(
                     "SELECT ts FROM debug_logs ORDER BY ts ASC LIMIT ?", (batch_size,)
                 )
-                rows = await cursor.fetchall()
+                rows = list(await cursor.fetchall())
                 if not rows:
                     break
 
@@ -514,7 +516,7 @@ class SqliteDebugRepository(DebugRepository):
             )
         return total_deleted
 
-    async def vacuum(self):
+    async def vacuum(self) -> None:
         """
         执行 SQLite VACUUM 命令回收未使用的空间。
 
@@ -541,14 +543,14 @@ class SqliteDeviceRepository(DeviceRepository):
         """
         self.db_path = db_path or settings().database.path
 
-    async def close(self):
+    async def close(self) -> None:
         """释放本库文件共享的连接池（进程 shutdown 时调用）。"""
         pool = _POOLS.get(self.db_path)
         if pool:
             await pool.close()
             _POOLS.pop(self.db_path, None)
 
-    async def init_db(self):
+    async def init_db(self) -> None:
         """创建 devices 表（如果不存在）。"""
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
@@ -569,7 +571,7 @@ class SqliteDeviceRepository(DeviceRepository):
             )
             await conn.commit()
 
-    async def save(self, device: DeviceInfo):
+    async def save(self, device: DeviceInfo) -> None:
         """
         插入或替换设备信息（upsert）。
 
@@ -633,7 +635,7 @@ class SqliteDeviceRepository(DeviceRepository):
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
             cursor = await conn.execute("SELECT * FROM devices")
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
         return [
             DeviceInfo(
                 id=row[0],
@@ -648,7 +650,7 @@ class SqliteDeviceRepository(DeviceRepository):
             for row in rows
         ]
 
-    async def delete(self, device_id: str):
+    async def delete(self, device_id: str) -> None:
         """
         从数据库中删除设备。
 
@@ -661,7 +663,7 @@ class SqliteDeviceRepository(DeviceRepository):
             await conn.commit()
 
 
-async def init_db():
+async def init_db() -> None:
     """
     初始化所有数据库表。
 

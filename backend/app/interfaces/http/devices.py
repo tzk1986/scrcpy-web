@@ -20,6 +20,8 @@
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response, StreamingResponse
@@ -32,7 +34,7 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 
 @router.get("")
-async def list_devices(service: DeviceService = Depends(get_device_service)):
+async def list_devices(service: DeviceService = Depends(get_device_service)) -> list[DeviceInfo]:
     """
     列出所有通过 ADB 连接的设备。
 
@@ -43,7 +45,9 @@ async def list_devices(service: DeviceService = Depends(get_device_service)):
 
 
 @router.get("/{device_id}")
-async def get_device(device_id: str, service: DeviceService = Depends(get_device_service)):
+async def get_device(
+    device_id: str, service: DeviceService = Depends(get_device_service)
+) -> DeviceInfo | dict[str, Any]:
     """
     获取指定设备的详细信息。
 
@@ -64,7 +68,7 @@ async def install_apk(
     device_id: str,
     apk_path: str,
     service: DeviceService = Depends(get_device_service),
-):
+) -> dict[str, Any]:
     """
     在指定设备上安装 APK。
 
@@ -84,7 +88,7 @@ async def batch_install(
     device_ids: list[str],
     apk_path: str,
     service: DeviceService = Depends(get_device_service),
-):
+) -> dict[str, Any]:
     """
     在多个设备上批量安装同一个 APK。
 
@@ -100,7 +104,7 @@ async def batch_install(
 
 
 @router.get("/{device_id}/screenshot")
-async def screenshot(device_id: str, service: DeviceService = Depends(get_device_service)):
+async def screenshot(device_id: str, service: DeviceService = Depends(get_device_service)) -> Response:
     """
     截取设备屏幕截图。
 
@@ -119,7 +123,7 @@ async def connect_device(
     ip: str,
     port: int = 5555,
     service: DeviceService = Depends(get_device_service),
-):
+) -> dict[str, Any]:
     """
     通过 TCP/IP 连接到设备。
 
@@ -140,7 +144,7 @@ async def connect_device(
 async def disconnect_device(
     device_id: str,
     service: DeviceService = Depends(get_device_service),
-):
+) -> dict[str, Any]:
     """
     断开设备的 TCP/IP 连接。
 
@@ -160,7 +164,7 @@ async def disconnect_device(
 
 
 @router.get("/events")
-async def device_events(service: DeviceService = Depends(get_device_service)):
+async def device_events(service: DeviceService = Depends(get_device_service)) -> StreamingResponse:
     """
     设备变化事件流（Server-Sent Events）。
 
@@ -173,9 +177,9 @@ async def device_events(service: DeviceService = Depends(get_device_service)):
     返回：
         SSE 流（Content-Type: text/event-stream）。
     """
-    queue = asyncio.Queue()
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
-    async def on_connected(device: DeviceInfo):
+    async def on_connected(device: DeviceInfo) -> None:
         """设备连接回调"""
         await queue.put({
             "type": "connected",
@@ -189,7 +193,7 @@ async def device_events(service: DeviceService = Depends(get_device_service)):
             }
         })
 
-    async def on_disconnected(device_id: str):
+    async def on_disconnected(device_id: str) -> None:
         """设备断开回调"""
         await queue.put({"type": "disconnected", "device_id": device_id})
 
@@ -197,7 +201,7 @@ async def device_events(service: DeviceService = Depends(get_device_service)):
     service.on_device_connected(on_connected)
     service.on_device_disconnected(on_disconnected)
 
-    async def event_stream():
+    async def event_stream() -> AsyncIterator[str]:
         """生成 SSE 事件流"""
         try:
             while True:

@@ -12,6 +12,8 @@
 参考方案文档：方案/14-调试面板其他标签完善.md
 """
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.application.performance_service import PerformanceService
@@ -28,7 +30,7 @@ async def get_metrics(
     device_id: str,
     limit: int = 100,
     service: PerformanceService = Depends(get_performance_service),
-):
+) -> dict[str, Any]:
     """
     获取设备历史性能指标。
 
@@ -69,7 +71,7 @@ async def start_monitoring(
     device_id: str,
     interval: float = 1.0,
     service: PerformanceService = Depends(get_performance_service),
-):
+) -> dict[str, Any]:
     """
     启动设备性能监控。
 
@@ -94,7 +96,7 @@ async def start_monitoring(
 async def stop_monitoring(
     device_id: str,
     service: PerformanceService = Depends(get_performance_service),
-):
+) -> dict[str, Any]:
     """
     停止设备性能监控。
 

@@ -36,6 +36,7 @@ H.264 流处理：
 """
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 
@@ -55,7 +56,7 @@ async def video_stream(
     websocket: WebSocket,
     device_id: str,
     stream_service: StreamService = Depends(get_stream_service),
-):
+) -> None:
     """
     视频流 WebSocket 处理函数。
 
@@ -74,7 +75,7 @@ async def video_stream(
     config_sent = False
     seen_epoch = stream_service.get_stream_epoch(device_id)
 
-    async def handle_input():
+    async def handle_input() -> None:
         """并发处理客户端输入事件；stats 上报喂自适应决策器，
         检测到待生效码率切换时通知客户端进入重启宽限期。"""
         try:
@@ -181,7 +182,7 @@ async def video_stream(
         await stream_service.stop_stream(device_id)
 
 
-async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes, stream_service: StreamService, device_id: str):
+async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes, stream_service: StreamService, device_id: str) -> None:
     """
     发送编解码器配置（SPS/PPS）。
 
@@ -241,7 +242,7 @@ async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes, stream_serv
     })
 
 
-async def _handle_input(device_id: str, data: dict, stream_service: StreamService):
+async def _handle_input(device_id: str, data: dict[str, Any], stream_service: StreamService) -> None:
     """
     处理来自客户端的输入事件。
 

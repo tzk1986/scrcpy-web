@@ -17,7 +17,7 @@ from app.scrcpy import (
 from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 
 
-async def example_video_stream():
+async def example_video_stream() -> None:
     """
     示例 1：视频流传输。
 
@@ -57,7 +57,7 @@ async def example_video_stream():
         print("视频流已停止")
 
 
-async def example_low_latency_stream():
+async def example_low_latency_stream() -> None:
     """
     示例 2：低延迟视频流。
 
@@ -80,7 +80,7 @@ async def example_low_latency_stream():
     await encoder.stop()
 
 
-async def example_input_control():
+async def example_input_control() -> None:
     """
     示例 3：输入控制（通过 scrcpy 二进制协议）。
 
@@ -127,7 +127,7 @@ async def example_input_control():
     print("输入控制完成")
 
 
-async def example_server_management():
+async def example_server_management() -> None:
     """
     示例 4：Server 管理。
 
@@ -163,7 +163,7 @@ async def example_server_management():
     # print("Server 已删除")
 
 
-async def example_h264_parsing():
+async def example_h264_parsing() -> None:
     """
     示例 5：H264 解析。
 
@@ -196,7 +196,7 @@ async def example_h264_parsing():
             print("    -> IDR 关键帧")
 
 
-async def example_websocket_integration():
+async def example_websocket_integration() -> None:
     """
     示例 6：WebSocket 集成。
 
@@ -208,7 +208,7 @@ async def example_websocket_integration():
     # 这个示例展示了完整的 WebSocket 端点结构
     # 实际实现需要在 FastAPI 路由中使用
 
-    async def video_endpoint(websocket: WebSocket, device_id: str):
+    async def video_endpoint(websocket: WebSocket, device_id: str) -> None:
         """视频流 WebSocket 端点"""
         await websocket.accept()
 
@@ -242,7 +242,7 @@ async def example_websocket_integration():
     print("WebSocket 集成示例（伪代码）")
 
 
-async def main():
+async def main() -> None:
     """运行所有示例"""
     print("=" * 60)
     print("Scrcpy 模块使用示例")

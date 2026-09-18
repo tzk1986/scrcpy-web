@@ -52,7 +52,3 @@ explicit_package_bases = true
 [[tool.mypy.overrides]]
 module = ["yaml", "winpty", "structlog.*", "aiosqlite", "aiofiles"]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["app.scrcpy.examples", "app.scrcpy.constants", "app.scrcpy.h264_parser"]
-ignore_errors = true

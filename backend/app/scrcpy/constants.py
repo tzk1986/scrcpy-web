@@ -5,7 +5,8 @@ Scrcpy 常量定义
 定义 Android keycode、编码器默认参数、NALU 类型等常量。
 """
 
-from dataclasses import dataclass
+# EncoderOpts 以领域层定义为准（避免双份类型导致签名不兼容），此处仅重导出
+from app.domain.ports import EncoderOpts as EncoderOpts
 
 # ---------------------------------------------------------------------------
 # Android Keycode（常用）
@@ -105,23 +106,6 @@ NALU_TYPE_END_STREAM = 11     # 流结束
 # ---------------------------------------------------------------------------
 # 编码器默认参数
 # ---------------------------------------------------------------------------
-
-@dataclass
-class EncoderOpts:
-    """
-    编码器配置选项。
-
-    属性：
-        max_size: 最大帧尺寸（宽或高，取较大值）。
-        bit_rate: 目标码率（如 "4M" = 4 Mbps）。
-        codec: 视频编码名称（目前仅支持 "h264"）。
-        fps: 目标帧率。
-    """
-    max_size: int = 1080
-    bit_rate: str = "4M"
-    codec: str = "h264"
-    fps: int = 30
-
 
 # 预设配置
 DEFAULT_ENCODER_OPTS = EncoderOpts()                    # 1080p, 4Mbps, 30fps

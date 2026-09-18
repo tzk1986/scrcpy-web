@@ -10,6 +10,7 @@
 仅影响重启后的历史完整性）。
 """
 import asyncio
+from typing import Any
 
 from app.core.logging import get_logger
 from app.domain.ports import DebugRepository, LogEntry
@@ -22,15 +23,15 @@ class BatchLogWriter:
         self._repo = repo
         self._batch_size = max(1, batch_size)
         self._interval = flush_interval
-        self._buffer: list[tuple] = []
-        self._task: asyncio.Task | None = None
+        self._buffer: list[tuple[Any, ...]] = []
+        self._task: asyncio.Task[None] | None = None
         self._dropped = 0
 
-    async def start(self):
+    async def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
 
-    async def _loop(self):
+    async def _loop(self) -> None:
         try:
             while True:
                 await asyncio.sleep(self._interval)
@@ -38,7 +39,7 @@ class BatchLogWriter:
         except asyncio.CancelledError:
             pass
 
-    def submit(self, session_id: str, seq: int, entry: LogEntry):
+    def submit(self, session_id: str, seq: int, entry: LogEntry) -> None:
         self._buffer.append((
             session_id, entry.ts, entry.level, entry.pid, entry.tid,
             entry.tag, entry.message, entry.raw, seq,
@@ -47,7 +48,7 @@ class BatchLogWriter:
             # 事件循环内无法 await，交给后台 _loop 即时冲刷
             asyncio.create_task(self.flush())
 
-    async def flush(self):
+    async def flush(self) -> None:
         if not self._buffer:
             return
         batch, self._buffer = self._buffer[: self._batch_size * 10], self._buffer[self._batch_size * 10 :]
@@ -57,7 +58,7 @@ class BatchLogWriter:
             self._dropped += len(batch)
             logger.error("batch_log_flush_failed", count=len(batch), error=str(e))
 
-    async def stop(self):
+    async def stop(self) -> None:
         if self._task:
             self._task.cancel()
             try:

@@ -39,7 +39,7 @@ async def stream_metrics(
     websocket: WebSocket,
     device_id: str,
     service: PerformanceService = Depends(get_performance_service),
-):
+) -> None:
     """
     实时推送设备性能指标。
 
