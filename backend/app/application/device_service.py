@@ -68,7 +68,12 @@ class DeviceService:
         device_ids = await self.adb.list_devices()
         devices = []
         for device_id in device_ids:
-            info = await self.adb.get_device_info(device_id)
+            try:
+                info = await self.adb.get_device_info(device_id)
+            except Exception as e:
+                # 掉线未察觉的残留表项：跳过单台设备，不让整个列表接口失败
+                logger.warning("device_info_failed", device=device_id, error=str(e))
+                continue
             await self.repo.save(info)
             devices.append(info)
         return devices

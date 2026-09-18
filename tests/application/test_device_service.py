@@ -136,6 +136,18 @@ class TestListDevices:
 
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_list_devices_skips_broken_device(self, service, mock_adb, mock_repo):
+        """单台设备信息获取失败（掉线未察觉的残留表项）→ 跳过该设备，不拖垮整个列表"""
+        good = _make_device("device-good")
+        mock_adb.list_devices.return_value = ["device-good", "device-broken"]
+        mock_adb.get_device_info.side_effect = [good, AdbError("device offline")]
+
+        result = await service.list_devices()
+
+        assert [d.id for d in result] == ["device-good"]
+        mock_repo.save.assert_called_once_with(good)
+
 
 class TestGetDevice:
     """测试 get_device 方法"""
