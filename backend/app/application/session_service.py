@@ -24,7 +24,7 @@
     - get_session():      检索会话信息
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from app.core.logging import get_logger
 
@@ -34,13 +34,13 @@ logger = get_logger(__name__)
 class SessionService:
     """协作会话管理用例。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # 内存会话存储。键：session_id，值：会话字典。
         # 会话字典结构：
         #   { "id", "device_id", "owner", "participants": {user_id: role}, "active_controller" }
-        self.sessions: dict[str, dict] = {}
+        self.sessions: dict[str, dict[str, Any]] = {}
 
-    async def create_session(self, device_id: str, user_id: str) -> dict:
+    async def create_session(self, device_id: str, user_id: str) -> dict[str, Any]:
         """
         创建新的协作会话。
 
@@ -65,7 +65,7 @@ class SessionService:
         self.sessions[session_id] = session
         return session
 
-    async def join_session(self, session_id: str, user_id: str, permission: str = "viewer"):
+    async def join_session(self, session_id: str, user_id: str, permission: str = "viewer") -> None:
         """
         将参与者添加到现有会话。
 
@@ -82,7 +82,7 @@ class SessionService:
             raise ValueError("Session not found")
         session["participants"][user_id] = permission
 
-    async def leave_session(self, session_id: str, user_id: str):
+    async def leave_session(self, session_id: str, user_id: str) -> None:
         """
         从会话中移除参与者。
 
@@ -99,7 +99,7 @@ class SessionService:
         if not session["participants"]:
             del self.sessions[session_id]
 
-    async def transfer_control(self, session_id: str, from_user: str, to_user: str):
+    async def transfer_control(self, session_id: str, from_user: str, to_user: str) -> None:
         """
         将设备控制权从一个用户转移给另一个。
 
@@ -121,7 +121,7 @@ class SessionService:
             raise PermissionError("Only admin can transfer control")
         session["active_controller"] = to_user
 
-    async def get_session(self, session_id: str) -> Optional[dict]:
+    async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
         """
         检索会话信息。
 

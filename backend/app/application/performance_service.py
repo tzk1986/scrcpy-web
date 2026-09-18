@@ -14,7 +14,7 @@
 
 import asyncio
 from collections import deque
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
@@ -45,7 +45,7 @@ class PerformanceService:
     # 内存缓冲区大小（最多保存 1 小时数据，@1s 采样 = 3600 条）
     MAX_BUFFER_SIZE = 3600
 
-    def __init__(self, adb: AdbDriver):
+    def __init__(self, adb: AdbDriver) -> None:
         """
         初始化服务。
 
@@ -54,9 +54,9 @@ class PerformanceService:
         """
         self.adb = adb
         self._samplers: dict[str, PerformanceSampler] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
         self._buffers: dict[str, deque[PerformanceMetrics]] = {}
-        self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._subscribers: dict[str, list[asyncio.Queue[PerformanceMetrics | None]]] = {}
 
     async def start_monitoring(self, device_id: str, interval: float = 1.0) -> None:
         """
@@ -141,7 +141,7 @@ class PerformanceService:
 
         logger.info("performance_monitoring_stopped", device=device_id)
 
-    async def get_metrics(self, device_id: str, limit: int = 100) -> list[dict]:
+    async def get_metrics(self, device_id: str, limit: int = 100) -> list[dict[str, Any]]:
         """
         获取历史性能指标。
 
@@ -195,7 +195,7 @@ class PerformanceService:
                 except ValueError:
                     pass
 
-    def _metrics_to_dict(self, m: PerformanceMetrics) -> dict:
+    def _metrics_to_dict(self, m: PerformanceMetrics) -> dict[str, Any]:
         """将 PerformanceMetrics 转为字典（用于 JSON 序列化）。"""
         return {
             "ts": m.ts,

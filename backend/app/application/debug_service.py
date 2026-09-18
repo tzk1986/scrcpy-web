@@ -28,7 +28,7 @@
 
 import asyncio
 import time
-from typing import Optional
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import WebSocket
 
@@ -58,16 +58,16 @@ class DebugService:
         # 活跃会话，按 session_id 索引。内存中用于快速访问。
         self.sessions: dict[str, DebugSession] = {}
         # 后台 logcat 收集任务，按 session_id 索引。
-        self.logcat_tasks: dict[str, asyncio.Task] = {}
+        self.logcat_tasks: dict[str, asyncio.Task[None]] = {}
         # WebSocket 订阅者，按 session_id 索引。
         # 每个订阅者有自己的过滤条件：{session_id: {ws: {"level": ..., "tag": ...}}}
-        self.subscribers: dict[str, dict[WebSocket, dict]] = {}
+        self.subscribers: dict[str, dict[WebSocket, dict[str, Any]]] = {}
         # 定期清理任务
-        self.cleanup_task: asyncio.Task | None = None
+        self.cleanup_task: asyncio.Task[None] | None = None
         # 交互式 shell 会话，按 session_id 索引（PTY 模式）
         self.shell_sessions: dict[str, "ShellSession"] = {}
         # Shell 输出转发任务，按 session_id 索引
-        self.shell_output_forwarding_tasks: dict[str, asyncio.Task] = {}
+        self.shell_output_forwarding_tasks: dict[str, asyncio.Task[None]] = {}
         # 日志批量写入器（满批/定时 executemany 落库，摊薄逐条 commit 开销）
         from app.core.config import settings as get_settings
         self.writer = BatchLogWriter(repo, batch_size=get_settings().debug.log_batch_size)
@@ -119,7 +119,7 @@ class DebugService:
         """
         return self.sessions.get(session_id) or await self.repo.get_session(session_id)
 
-    async def close_session(self, session_id: str):
+    async def close_session(self, session_id: str) -> None:
         """
         关闭调试会话并停止 logcat 收集。
 
@@ -178,7 +178,7 @@ class DebugService:
             logger.info("sessions_restored", count=restored)
         return restored
 
-    async def _collect_logcat(self, session: DebugSession):
+    async def _collect_logcat(self, session: DebugSession) -> None:
         """
         后台任务：持续流式传输 logcat 并缓冲条目。
 
@@ -251,7 +251,7 @@ class DebugService:
         except Exception as e:
             logger.error("logcat_collection_error", session=session.id, error=str(e))
 
-    async def subscribe(self, session_id: str, websocket: WebSocket):
+    async def subscribe(self, session_id: str, websocket: WebSocket) -> None:
         """
         订阅会话的实时日志推送。
 
@@ -265,7 +265,7 @@ class DebugService:
         self.subscribers[session_id][websocket] = {"paused": True}
         logger.info("log_subscriber_added", session=session_id, count=len(self.subscribers[session_id]))
 
-    async def unsubscribe(self, session_id: str, websocket: WebSocket):
+    async def unsubscribe(self, session_id: str, websocket: WebSocket) -> None:
         """
         取消订阅会话的实时日志推送。
 
@@ -286,7 +286,7 @@ class DebugService:
         level: Optional[str] = None,
         tag: Optional[str] = None,
         paused: bool = False,
-    ):
+    ) -> None:
         """
         设置订阅者的日志过滤条件。
 
@@ -310,7 +310,7 @@ class DebugService:
                 paused=paused,
             )
 
-    async def _notify_subscribers(self, session_id: str, entry: dict):
+    async def _notify_subscribers(self, session_id: str, entry: dict[str, Any]) -> None:
         """
         向所有订阅者推送新日志条目（根据各自的过滤条件）。
 
@@ -388,7 +388,7 @@ class DebugService:
         level: Optional[str] = None,
         tag: Optional[str] = None,
         limit: int = 1000,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
         带可选过滤的日志条目查询。
 
@@ -420,7 +420,7 @@ class DebugService:
             return [e.__dict__ for e in entries]
 
     async def get_logs_since(self, session_id: str, from_seq: int,
-                             limit: int = 1000) -> tuple[list[dict], int]:
+                             limit: int = 1000) -> tuple[list[dict[str, Any]], int]:
         """
         增量拉取：返回 (seq >= from_seq 的日志, missing 条数)。
         活跃会话读内存缓冲；缓冲已被环形淘汰或会话已关闭则回退 DB。
@@ -463,7 +463,7 @@ class DebugService:
         session.touch()
         return output
 
-    async def get_or_create_shell(self, session_id: str) -> "ShellSession":
+    async def get_or_create_shell(self, session_id: str) -> ShellSession:
         """
         获取或创建交互式 shell 会话。
 
@@ -501,7 +501,7 @@ class DebugService:
 
         return shell
 
-    def _start_output_forwarding(self, session_id: str, shell: "ShellSession"):
+    def _start_output_forwarding(self, session_id: str, shell: ShellSession) -> None:
         """
         启动 shell 输出转发任务。
 
@@ -520,7 +520,7 @@ class DebugService:
                 return  # 已经在运行
             del self.shell_output_forwarding_tasks[session_id]
 
-        async def forward_loop():
+        async def forward_loop() -> None:
             try:
                 # 初始输出由 subscribe 处理器直接发送，此处只转发后续输出
                 logger.info("shell_output_forwarding_started", session=session_id)
@@ -538,7 +538,7 @@ class DebugService:
         self.shell_output_forwarding_tasks[session_id] = asyncio.create_task(forward_loop())
         logger.info("shell_output_forwarding_task_created", session=session_id)
 
-    async def _notify_shell_output(self, session_id: str, line: str):
+    async def _notify_shell_output(self, session_id: str, line: str) -> None:
         """
         将 shell 输出发送给所有订阅该会话的 WebSocket 客户端。
 
@@ -563,7 +563,7 @@ class DebugService:
         if not self.subscribers[session_id]:
             del self.subscribers[session_id]
 
-    async def stop_output_forwarding(self, session_id: str):
+    async def stop_output_forwarding(self, session_id: str) -> None:
         """
         停止 shell 输出转发任务。
 
@@ -580,7 +580,7 @@ class DebugService:
                 pass
             logger.debug("shell_output_forwarding_stopped", session=session_id)
 
-    async def exec_shell_stream(self, session_id: str, cmd: str):
+    async def exec_shell_stream(self, session_id: str, cmd: str) -> dict[str, Any]:
         """
         流式执行 shell 命令（使用 InteractiveShell 的 execute）。
 
@@ -620,7 +620,7 @@ class DebugService:
 
         return {"output": full_output, "success": success}
 
-    async def _exec_shell_stream_raw(self, session_id: str, cmd: str):
+    async def _exec_shell_stream_raw(self, session_id: str, cmd: str) -> AsyncIterator[str]:
         """
         流式执行 shell 命令，逐行产出输出（供 WebSocket 使用）。
 
@@ -659,7 +659,7 @@ class DebugService:
     # 日志清理
     # -------------------------------------------------------------------
 
-    async def start_cleanup_task(self):
+    async def start_cleanup_task(self) -> None:
         """
         启动定期日志清理任务。
 
@@ -676,7 +676,7 @@ class DebugService:
         self.cleanup_task = asyncio.create_task(self._cleanup_loop(interval_seconds))
         logger.info("cleanup_task_started", interval_hours=settings.debug.cleanup_interval_hours)
 
-    async def stop_cleanup_task(self):
+    async def stop_cleanup_task(self) -> None:
         """停止定期清理任务。"""
         if self.cleanup_task and not self.cleanup_task.done():
             self.cleanup_task.cancel()
@@ -686,7 +686,7 @@ class DebugService:
                 pass
         logger.info("cleanup_task_stopped")
 
-    async def _cleanup_loop(self, interval_seconds: float):
+    async def _cleanup_loop(self, interval_seconds: float) -> None:
         """
         后台清理循环。
 
@@ -702,7 +702,7 @@ class DebugService:
         except asyncio.CancelledError:
             logger.info("cleanup_loop_cancelled")
 
-    async def run_cleanup(self) -> dict:
+    async def run_cleanup(self) -> dict[str, Any]:
         """
         执行一次日志清理。
 
@@ -758,7 +758,7 @@ class DebugService:
         """
         return await self.repo.delete_session_logs(session_id)
 
-    async def get_db_stats(self) -> dict:
+    async def get_db_stats(self) -> dict[str, Any]:
         """
         获取数据库统计信息。
 

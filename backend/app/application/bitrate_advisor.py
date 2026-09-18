@@ -25,7 +25,7 @@ from collections import deque
 from dataclasses import dataclass
 
 
-def parse_bit_rate(value) -> int:
+def parse_bit_rate(value: str | int) -> int:
     """解析码率配置值："4M"→4000000、"512K"→512000、int 原样返回。"""
     if isinstance(value, int):
         return value
@@ -74,7 +74,7 @@ class BitrateAdvisor:
     def current_bps(self) -> int:
         return self._tiers[self._idx]
 
-    def add_sample(self, now: float, fps: float):
+    def add_sample(self, now: float, fps: float) -> None:
         self._samples.append(fps)
 
     def decide(self, now: float) -> int | None:

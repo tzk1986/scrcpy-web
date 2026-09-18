@@ -46,7 +46,7 @@ class DeviceService:
         """
         self.adb = adb
         self.repo = repo
-        self._refresh_task: asyncio.Task | None = None
+        self._refresh_task: asyncio.Task[None] | None = None
         self._refresh_interval = 5  # 刷新间隔（秒）
         self._previous_devices: set[str] = set()
         self._on_device_connected: list[Callable[[DeviceInfo], Awaitable[None]]] = []
@@ -167,7 +167,7 @@ class DeviceService:
         await self.repo.save(info)
         return device_id
 
-    async def disconnect_tcp(self, ip: str, port: int = 5555):
+    async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         """
         断开 TCP/IP 连接。
 
@@ -180,7 +180,7 @@ class DeviceService:
         # 从仓库中删除设备
         await self.repo.delete(device_id)
 
-    async def start(self):
+    async def start(self) -> None:
         """
         启动后台设备状态自动刷新。
 
@@ -194,7 +194,7 @@ class DeviceService:
         logger.info("starting_device_refresh")
         self._refresh_task = asyncio.create_task(self._refresh_loop())
 
-    async def stop(self):
+    async def stop(self) -> None:
         """
         停止后台设备状态刷新。
 
@@ -212,7 +212,7 @@ class DeviceService:
             pass
         self._refresh_task = None
 
-    async def _refresh_loop(self):
+    async def _refresh_loop(self) -> None:
         """
         后台设备刷新循环。
 
@@ -254,7 +254,7 @@ class DeviceService:
             logger.debug("device_refresh_cancelled")
             raise
 
-    def on_device_connected(self, callback: Callable[[DeviceInfo], Awaitable[None]]):
+    def on_device_connected(self, callback: Callable[[DeviceInfo], Awaitable[None]]) -> None:
         """
         注册设备连接回调。
 
@@ -266,7 +266,7 @@ class DeviceService:
         self._on_device_connected.append(callback)
         logger.debug("device_connected_callback_registered", callback=callback.__name__)
 
-    def on_device_disconnected(self, callback: Callable[[str], Awaitable[None]]):
+    def on_device_disconnected(self, callback: Callable[[str], Awaitable[None]]) -> None:
         """
         注册设备断开回调。
 
@@ -278,7 +278,7 @@ class DeviceService:
         self._on_device_disconnected.append(callback)
         logger.debug("device_disconnected_callback_registered", callback=callback.__name__)
 
-    async def _trigger_connected_callbacks(self, device: DeviceInfo):
+    async def _trigger_connected_callbacks(self, device: DeviceInfo) -> None:
         """触发所有设备连接回调"""
         for callback in self._on_device_connected:
             try:
@@ -291,7 +291,7 @@ class DeviceService:
                     error=str(e)
                 )
 
-    async def _trigger_disconnected_callbacks(self, device_id: str):
+    async def _trigger_disconnected_callbacks(self, device_id: str) -> None:
         """触发所有设备断开回调"""
         for callback in self._on_device_disconnected:
             try:

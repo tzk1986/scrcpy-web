@@ -141,7 +141,7 @@ def load_yaml_config(env: str = "base") -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deep merge two dictionaries"""
     result = base.copy()
     for key, value in override.items():

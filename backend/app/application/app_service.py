@@ -16,6 +16,7 @@
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
@@ -136,14 +137,14 @@ class AppService:
             logger.error("list_apps_failed", device=device_id, error=str(e))
             return []
 
-    def _parse_dumpsys_packages(self, output: str) -> dict[str, dict]:
+    def _parse_dumpsys_packages(self, output: str) -> dict[str, dict[str, Any]]:
         """
         从 `dumpsys package` 输出中批量解析所有包的信息。
 
         返回：
             {package_name: {version_name, version_code, install_time, update_time, is_system}}
         """
-        result: dict[str, dict] = {}
+        result: dict[str, dict[str, Any]] = {}
 
         # 按 "Package [" 分割，每个块是一个包的信息
         # 格式示例：
@@ -164,7 +165,7 @@ class AppService:
             if next_pkg >= 0:
                 block = block[:next_pkg]
 
-            info: dict = {}
+            info: dict[str, Any] = {}
 
             # 版本号
             vname = re.search(r"versionName=(\S+)", block)

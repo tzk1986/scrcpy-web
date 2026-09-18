@@ -21,6 +21,7 @@ DebugSession 跟踪：
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -32,12 +33,12 @@ class DebugSession:
     user_id: str
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
-    log_buffer: list[dict] = field(default_factory=list)
+    log_buffer: list[dict[str, Any]] = field(default_factory=list)
     shell_history: list[str] = field(default_factory=list)
     seq_next: int = 0  # 下一条日志的序列号（断线续传游标）
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def touch(self):
+    def touch(self) -> None:
         """标记会话为最近活跃（更新 last_active 时间戳）。"""
         self.last_active = time.time()
 

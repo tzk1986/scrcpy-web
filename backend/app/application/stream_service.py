@@ -27,7 +27,7 @@
 
 import asyncio
 import time
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor, parse_bit_rate
 from app.core.config import settings
@@ -41,7 +41,7 @@ logger = get_logger(__name__)
 class StreamService:
     """视频流用例。"""
 
-    def __init__(self, encoder_factory=None):
+    def __init__(self, encoder_factory: Callable[[], Any] | None = None) -> None:
         """
         初始化视频流服务。
 
@@ -57,7 +57,7 @@ class StreamService:
         self.encoders: dict[str, ScrcpyEncoder] = {}
         self._encoder_factory = encoder_factory or ScrcpyEncoder
         # 自适应码率：决策器与待生效的码率（由 report_client_fps 写入，帧循环消费）
-        self._advisors: dict[str, object] = {}
+        self._advisors: dict[str, BitrateAdvisor] = {}
         self._pending_bitrate: dict[str, int] = {}
         # 每次自适应重启 +1，供 WS 层检测轮次变化并重置 H.264 解析器
         self._epoch: dict[str, int] = {}
@@ -184,7 +184,7 @@ class StreamService:
         """查看待生效的码率切换（帧循环消费前可被 WS 层读到以通知客户端）。"""
         return self._pending_bitrate.get(device_id)
 
-    def report_client_fps(self, device_id: str, fps: float, now: float | None = None):
+    def report_client_fps(self, device_id: str, fps: float, now: float | None = None) -> None:
         """
         接收客户端上报的实测帧率，喂给自适应决策器。
 
@@ -210,7 +210,7 @@ class StreamService:
                 bit_rate=new_bps,
             )
 
-    async def stop_stream(self, device_id: str):
+    async def stop_stream(self, device_id: str) -> None:
         """
         通知编码器停止给定设备的流式传输。
 
@@ -223,7 +223,7 @@ class StreamService:
         logger.info("stopping_video_stream", device=device_id)
         self.active_streams[device_id] = False
 
-    async def stop_all_streams(self):
+    async def stop_all_streams(self) -> None:
         """
         停止所有活跃的视频流。
 

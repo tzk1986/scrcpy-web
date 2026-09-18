@@ -25,7 +25,7 @@
 """
 
 from dataclasses import dataclass
-from typing import AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from app.domain.device import DeviceInfo
 from app.domain.session import DebugSession
@@ -125,7 +125,11 @@ class ShellSession(Protocol):
         """
         ...
 
-    async def start(self, device_id: str, initial_output_callback=None):
+    async def start(
+        self,
+        device_id: str,
+        initial_output_callback: Callable[[str], None] | None = None,
+    ) -> None:
         """
         启动交互式 shell 会话。
 
@@ -138,7 +142,7 @@ class ShellSession(Protocol):
         """
         ...
 
-    async def execute(self, cmd: str) -> AsyncIterator[str]:
+    def execute(self, cmd: str) -> AsyncIterator[str]:
         """
         执行命令并流式返回输出（用于 HTTP API 降级）。
 
@@ -153,7 +157,7 @@ class ShellSession(Protocol):
         """
         ...
 
-    async def send_input(self, data: bytes):
+    async def send_input(self, data: bytes) -> None:
         """
         发送原始输入（按键）到 shell（用于 WebSocket 透传）。
 
@@ -185,7 +189,7 @@ class ShellSession(Protocol):
         """
         ...
 
-    async def stop(self):
+    async def stop(self) -> None:
         """
         安全关闭 shell 进程。
 
@@ -246,7 +250,7 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def shell_stream(self, device_id: str, cmd: str) -> AsyncIterator[str]:
+    def shell_stream(self, device_id: str, cmd: str) -> AsyncIterator[str]:
         """
         流式执行 shell 命令，逐行产出输出。
 
@@ -265,7 +269,7 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def stream_logcat(self, device_id: str) -> AsyncIterator[str]:
+    def stream_logcat(self, device_id: str) -> AsyncIterator[str]:
         """
         逐行流式输出 logcat（无限生成器）。
 
@@ -280,7 +284,7 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def push(self, device_id: str, local: str, remote: str):
+    async def push(self, device_id: str, local: str, remote: str) -> None:
         """
         将文件从主机推送到设备。
 
@@ -291,7 +295,7 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def pull(self, device_id: str, remote: str, local: str):
+    async def pull(self, device_id: str, remote: str, local: str) -> None:
         """
         将文件从设备拉到主机。
 
@@ -302,7 +306,7 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def install(self, device_id: str, apk_path: str):
+    async def install(self, device_id: str, apk_path: str) -> None:
         """
         在设备上安装 APK（如已存在则替换）。
 
@@ -325,6 +329,19 @@ class AdbDriver(Protocol):
         返回：
             PNG 图像数据。
         """
+        ...
+
+    async def connect_tcp(self, ip: str, port: int = 5555) -> str:
+        """
+        通过 TCP/IP 连接设备，返回 "ip:port" 形式的设备 ID。
+
+        异常：
+            AdbError: 连接失败时。
+        """
+        ...
+
+    async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
+        """断开 TCP/IP 连接（失败仅记警告，不抛出）。"""
         ...
 
     async def create_shell(self, device_id: str) -> "ShellSession":
@@ -369,7 +386,7 @@ class VideoEncoder(Protocol):
         """
         ...
 
-    async def stop(self):
+    async def stop(self) -> None:
         """停止编码并释放资源（子进程等）。"""
         ...
 
@@ -386,7 +403,7 @@ class Transport(Protocol):
     用于视频流管道，将编码器与网络层解耦。
     """
 
-    async def send(self, frame: bytes):
+    async def send(self, frame: bytes) -> None:
         """
         发送二进制帧给远端。
 
@@ -404,7 +421,7 @@ class Transport(Protocol):
         """
         ...
 
-    async def close(self):
+    async def close(self) -> None:
         """关闭传输连接。"""
         ...
 
@@ -421,7 +438,7 @@ class DebugRepository(Protocol):
     所有方法都是异步的，因为持久化涉及 I/O。
     """
 
-    async def save_session(self, session: DebugSession):
+    async def save_session(self, session: DebugSession) -> None:
         """
         保存或更新调试会话。
 
@@ -448,7 +465,7 @@ class DebugRepository(Protocol):
         """
         ...
 
-    async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0):
+    async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0) -> None:
         """
         持久化单条日志条目。
 
@@ -459,7 +476,7 @@ class DebugRepository(Protocol):
         """
         ...
 
-    async def save_logs_bulk(self, rows: list[tuple]):
+    async def save_logs_bulk(self, rows: list[tuple[Any, ...]]) -> None:
         """
         批量插入日志行（单事务）。rows 元素为 9 元组
         (session_id, ts, level, pid, tid, tag, message, raw, seq)。
@@ -472,7 +489,7 @@ class DebugRepository(Protocol):
         """
         ...
 
-    async def query_logs_since(self, session_id: str, from_seq: int, limit: int = 1000) -> list[dict]:
+    async def query_logs_since(self, session_id: str, from_seq: int, limit: int = 1000) -> list[dict[str, Any]]:
         """
         按 seq 增量查询（断线续传补发），返回 dict 列表（含 seq），seq 升序。
         """
@@ -491,7 +508,7 @@ class DebugRepository(Protocol):
         """
         ...
 
-    async def save_shell_history(self, session_id: str, command: str, output: str):
+    async def save_shell_history(self, session_id: str, command: str, output: str) -> None:
         """
         记录 shell 命令及其输出。
 
@@ -574,7 +591,7 @@ class DebugRepository(Protocol):
         """
         ...
 
-    async def vacuum(self):
+    async def vacuum(self) -> None:
         """
         执行 SQLite VACUUM 回收未使用空间。
         """
@@ -591,7 +608,7 @@ class DeviceRepository(Protocol):
         - 未来：PostgreSQL、内存（用于测试）
     """
 
-    async def save(self, device: DeviceInfo):
+    async def save(self, device: DeviceInfo) -> None:
         """
         保存或更新设备信息。
 
@@ -621,7 +638,7 @@ class DeviceRepository(Protocol):
         """
         ...
 
-    async def delete(self, device_id: str):
+    async def delete(self, device_id: str) -> None:
         """
         从仓库中删除设备。
 
