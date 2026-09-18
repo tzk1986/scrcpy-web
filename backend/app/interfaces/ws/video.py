@@ -14,7 +14,7 @@
     服务端 → 客户端：
         - 初始配置：JSON {"type": "config", "width": 1080, "height": 1920, "codec": "avc1.42E01E"}
           （自适应码率重启后会重新下发一次 config，客户端应重建解码器）
-        - 视频帧：二进制消息（H.264 NAL 单元，带起始码）
+        - 视频帧：二进制消息（H.264 Annex B Access Unit，按帧聚合，带起始码）
         - 错误：JSON {"type": "error", "message": "..."}
         - 码率切换预告：JSON {"type": "restarting", "bit_rate": 2000000}
           （编码器即将重启，客户端应暂停回退 watchdog 宽限若干秒）
@@ -43,6 +43,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from app.application.stream_service import StreamService
 from app.deps import get_stream_service
 from app.scrcpy.h264_parser import H264Parser
+from app.scrcpy.au_aggregator import aggregate_aus
 from app.scrcpy.constants import NALU_TYPE_SPS, NALU_TYPE_PPS
 from app.core.logging import get_logger
 
@@ -74,6 +75,8 @@ async def video_stream(
     pps_data = None
     config_sent = False
     seen_epoch = stream_service.get_stream_epoch(device_id)
+    # 跨 chunk 悬空前缀 NALU（SEI 等尚无 VCL 可挂靠），聚帧器交还后并入下一批
+    pending_aus: list[bytes] = []
 
     async def handle_input() -> None:
         """并发处理客户端输入事件；stats 上报喂自适应决策器，
@@ -116,6 +119,7 @@ async def video_stream(
                 sps_data = None
                 pps_data = None
                 config_sent = False
+                pending_aus = []
                 logger.info("video_stream_epoch_reset", device=device_id, epoch=epoch)
             if chunk_count <= 3:
                 logger.info("video_chunk_received", device=device_id,
@@ -127,6 +131,9 @@ async def video_stream(
 
             nalus = parser.feed(chunk)
 
+            # SPS/PPS 拦截用于 config 下发，不随帧流转发；
+            # 其余 NALU 经启发式聚帧（方案 17 实施项 1a 尾步骤）后整 AU 发送
+            forward_nalus: list[bytes] = []
             for nalu in nalus:
                 nalu_type = parser.get_nalu_type(nalu)
 
@@ -147,18 +154,21 @@ async def video_stream(
                         logger.info("config_sent", device=device_id)
 
                 else:
-                    if config_sent:
-                        await websocket.send_bytes(nalu)
-                        frame_count += 1
-                        if frame_count <= 5:
-                            logger.info("video_frame_sent", device=device_id,
-                                       frame_count=frame_count,
-                                       nalu_type=nalu_type,
-                                       nalu_size=len(nalu))
-                    else:
-                        if frame_count == 0:
-                            logger.info("frame_before_config", device=device_id,
-                                        nalu_type=nalu_type, nalu_size=len(nalu))
+                    forward_nalus.append(nalu)
+
+            aus, pending_aus = aggregate_aus(forward_nalus, pending_aus)
+            for au in aus:
+                if config_sent:
+                    await websocket.send_bytes(au)
+                    frame_count += 1
+                    if frame_count <= 5:
+                        logger.info("video_frame_sent", device=device_id,
+                                   frame_count=frame_count,
+                                   au_size=len(au))
+                else:
+                    if frame_count == 0:
+                        logger.info("frame_before_config", device=device_id,
+                                    au_size=len(au))
 
         logger.info("video_stream_ended", device=device_id,
                      chunks=chunk_count, frames=frame_count,
