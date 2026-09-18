@@ -100,9 +100,13 @@ class TestEnsureServer:
     """确保 server 就绪测试"""
 
     @pytest.mark.asyncio
-    async def test_ensure_server_already_exists(self, mock_device_id):
+    async def test_ensure_server_already_exists(self, mock_device_id, tmp_path):
         """测试 server 已存在时直接返回 True"""
         manager = ServerManager()
+        # ensure_server 首步检查本地 jar 存在（gitignore 的产物，CI 干净 checkout 无），
+        # 指向临时假 jar 以跨平台越过该守卫、真正执行被 mock 的就绪分支。
+        manager._jar_path = tmp_path / "scrcpy-server.jar"
+        manager._jar_path.write_bytes(b"dummy")
 
         # Mock _server_exists 返回 True
         with patch.object(manager, '_server_exists', return_value=True):
@@ -110,9 +114,12 @@ class TestEnsureServer:
             assert success is True
 
     @pytest.mark.asyncio
-    async def test_ensure_server_push_needed(self, mock_device_id):
+    async def test_ensure_server_push_needed(self, mock_device_id, tmp_path):
         """测试 server 不存在时推送"""
         manager = ServerManager()
+        # 同 already_exists：越过本地 jar 存在性守卫
+        manager._jar_path = tmp_path / "scrcpy-server.jar"
+        manager._jar_path.write_bytes(b"dummy")
 
         # 第一次调用 _server_exists 返回 False（不存在）
         # 第二次调用返回 True（推送后验证）
@@ -122,9 +129,13 @@ class TestEnsureServer:
                 assert success is True
 
     @pytest.mark.asyncio
-    async def test_ensure_server_push_failed(self, mock_device_id):
+    async def test_ensure_server_push_failed(self, mock_device_id, tmp_path):
         """测试推送失败"""
         manager = ServerManager()
+        # 越过本地 jar 守卫，确保 False 来自 push_server 失败分支而非 jar 缺失（否则在
+        # 无 jar 的环境下会因提前 return 而假绿）
+        manager._jar_path = tmp_path / "scrcpy-server.jar"
+        manager._jar_path.write_bytes(b"dummy")
 
         # Mock _server_exists 返回 False，push_server 也返回 False
         with patch.object(manager, '_server_exists', return_value=False):
