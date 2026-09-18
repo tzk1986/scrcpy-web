@@ -83,6 +83,7 @@
         <span class="stat-item">模式: {{ mode }}</span>
         <span class="stat-item">FPS: {{ fps }}</span>
         <span class="stat-item">帧: {{ frameCount }}</span>
+        <span v-if="mode === 'h264'" class="stat-item">丢帧: {{ droppedFrames }}</span>
         <span class="stat-item" :class="state">
           {{ stateLabel }}
         </span>
@@ -116,6 +117,7 @@ const canvasRef = ref<HTMLCanvasElement>()
 const state = ref<VideoStreamState | H264StreamState>('idle')
 const fps = ref(0)
 const frameCount = ref(0)
+const droppedFrames = ref(0)
 const error = ref<string | null>(null)
 const mode = ref<'h264' | 'screenshot'>('screenshot')
 
@@ -188,6 +190,7 @@ function attachH264Handlers() {
   h264Stream.setStatsUpdateHandler((stats) => {
     fps.value = stats.fps
     frameCount.value = stats.frameCount
+    droppedFrames.value = stats.droppedFrames
     checkH264Fallback()
   })
 }

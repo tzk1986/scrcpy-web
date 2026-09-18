@@ -44,8 +44,11 @@ export class WebSocketService {
     }
 
     this.ws.onmessage = (event) => {
+      // 视频帧为高频二进制消息，逐条日志是纯浪费；仅记录低频文本控制消息
       const isBinary = event.data instanceof ArrayBuffer || event.data instanceof Blob
-      console.log('[WS] Message received:', typeof event.data, isBinary ? `(${event.data instanceof ArrayBuffer ? (event.data as ArrayBuffer).byteLength : 'Blob'} bytes)` : event.data.substring(0, 100))
+      if (!isBinary) {
+        console.log('[WS] Text message:', (event.data as string).substring(0, 100))
+      }
       if (this.onMessage) {
         this.onMessage(event.data)
       }

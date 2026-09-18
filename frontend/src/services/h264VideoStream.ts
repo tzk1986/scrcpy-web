@@ -24,6 +24,13 @@
  */
 
 import type { WebSocketService } from './websocket'
+import {
+  extractNalus,
+  hasKeyFrame,
+  nalusToAvcc,
+  shouldDropFrame,
+  MAX_DECODE_QUEUE,
+} from './h264NalUtils'
 
 export type H264StreamState = 'idle' | 'configuring' | 'streaming' | 'error' | 'stopped'
 
@@ -35,6 +42,8 @@ export interface H264StreamStats {
   error: string | null
   width: number
   height: number
+  /** 因解码队列积压被丢弃的 delta 帧数 */
+  droppedFrames: number
 }
 
 export class H264VideoStream {
@@ -43,7 +52,7 @@ export class H264VideoStream {
   private decoder: VideoDecoder | null = null
   private _state: H264StreamState = 'idle'
   private _frameCount = 0
-  private _decodedCount = 0
+  private _droppedFrames = 0
   private _lastFrameTime = 0
   private _fps = 0
   private _fpsCounter = 0
@@ -89,6 +98,7 @@ export class H264VideoStream {
       error: this._error,
       width: this._width,
       height: this._height,
+      droppedFrames: this._droppedFrames,
     }
   }
 
@@ -130,7 +140,7 @@ export class H264VideoStream {
     this._state = 'configuring'
     this._error = null
     this._frameCount = 0
-    this._decodedCount = 0
+    this._droppedFrames = 0
     this._fpsCounter = 0
     this.onStateChange?.(this._state)
 
@@ -146,12 +156,12 @@ export class H264VideoStream {
     this.setBinaryType()
 
     // 注册消息处理器
+    // binaryType=arraybuffer 下 JSON 控制消息一律走 string 通道，
+    // 二进制帧为 ArrayBuffer；Blob 分支仅兜底 binaryType 未生效的异常环境
     this.ws.setMessageHandler((data: unknown) => {
       if (data instanceof ArrayBuffer) {
-        console.log('[H264] Binary frame received:', data.byteLength, 'bytes')
         this.handleBinaryFrame(new Uint8Array(data))
       } else if (typeof data === 'string') {
-        console.log('[H264] Text message received:', data.substring(0, 200))
         try {
           const msg = JSON.parse(data)
           this.handleJsonMessage(msg)
@@ -159,7 +169,6 @@ export class H264VideoStream {
           console.warn('[H264] Failed to parse text message:', data)
         }
       } else if (data instanceof Blob) {
-        console.log('[H264] Blob frame received:', data.size, 'bytes')
         data.arrayBuffer().then(buf => {
           this.handleBinaryFrame(new Uint8Array(buf))
         })
@@ -229,7 +238,7 @@ export class H264VideoStream {
     this._suspended = false
     this._error = null
     this._frameCount = 0
-    this._decodedCount = 0
+    this._droppedFrames = 0
     this._fpsCounter = 0
     this._lastFrameTime = 0
     this._probeFrameCount = 0
@@ -289,7 +298,7 @@ export class H264VideoStream {
         Array.from(annexBData.slice(0, 40)).map(b => b.toString(16).padStart(2, '0')).join(' '))
 
       // 提取 SPS 和 PPS NAL 单元
-      const nalus = this.extractNalus(annexBData)
+      const nalus = extractNalus(annexBData)
       console.log('[H264] Extracted NALUs:', nalus.length)
       for (const nalu of nalus) {
         const naluType = nalu.data[0] & 0x1F
@@ -358,21 +367,6 @@ export class H264VideoStream {
 
   /** 处理二进制视频帧 */
   private handleBinaryFrame(data: Uint8Array) {
-    // 先尝试解析为 JSON（config 消息可能被作为 ArrayBuffer 接收）
-    try {
-      const text = new TextDecoder().decode(data.slice(0, 100))
-      if (text.startsWith('{')) {
-        const msg = JSON.parse(text)
-        if (msg.type === 'config' || msg.type === 'error') {
-          console.log('[H264] JSON message from binary:', msg.type)
-          this.handleJsonMessage(msg)
-          return
-        }
-      }
-    } catch {
-      // 不是 JSON，当作二进制帧处理
-    }
-
     // suspend（截图回退）期间不解码，仅记录帧到达供回切判定
     if (this._suspended) {
       this._probeFrameCount++
@@ -388,30 +382,44 @@ export class H264VideoStream {
 
     this._frameCount++
 
-    // 将 Annex B 帧转换为 AVCC 格式
-    const avccData = this.annexBToAvcc(data)
+    // 单遍扫描：一次提取产出 NALU 列表，AVCC 转换与关键帧判定共用
+    const nalus = extractNalus(data)
+    const isKey = hasKeyFrame(nalus)
 
-    // 判断是否为关键帧：第一个 NAL 的类型为 IDR (5)
-    const isKeyFrame = this.isKeyFrame(data)
-
-    if (this._frameCount <= 3) {
-      const nalus = this.extractNalus(data)
+    if (this._frameCount <= 5) {
       console.log('[H264] Frame', this._frameCount, ':',
         'raw size:', data.length,
-        'avcc size:', avccData.byteLength,
-        'isKeyFrame:', isKeyFrame,
-        'NALUs:', nalus.map(n => `type=${n.data[0] & 0x1F},len=${n.data.length}`))
+        'isKeyFrame:', isKey,
+        'NALUs:', nalus.map(n => `type=${n.data[0] & 0x1f},len=${n.data.length}`))
     }
 
+    // 解码队列积压：丢 delta 帧保关键帧（保 key 理由见 h264NalUtils.shouldDropFrame）
+    if (shouldDropFrame(this.decoder.decodeQueueSize, isKey)) {
+      this._droppedFrames++
+      return
+    }
+
+    // 积压跨越一个 IDR 仍超阈值：重建解码器，以当前关键帧恢复
+    // （对应 ws-scrcpy「I 帧到达时清空积压帧跳新帧」的做法）
+    if (isKey && this.decoder.decodeQueueSize >= MAX_DECODE_QUEUE) {
+      console.warn('[H264] Decode queue overflow across IDR, rebuilding decoder. queue:',
+        this.decoder.decodeQueueSize)
+      if (this._lastCodec && this._lastAvccDesc) {
+        this.initDecoder(this._lastCodec, this._lastAvccDesc, this._lastWidth, this._lastHeight)
+      }
+    }
+
+    // 将 Annex B 帧转换为 AVCC 格式
+    const avccData = nalusToAvcc(nalus)
+
     const chunk = new EncodedVideoChunk({
-      type: isKeyFrame ? 'key' : 'delta',
+      type: isKey ? 'key' : 'delta',
       timestamp: 0,  // 服务端未提供 PTS，用 0 让解码器自动处理
       data: avccData,
     })
 
     try {
       this.decoder.decode(chunk)
-      this._decodedCount++
       this._fpsCounter++
       this._lastFrameTime = Date.now()
     } catch (e) {
@@ -442,11 +450,6 @@ export class H264VideoStream {
 
     this.decoder = new VideoDecoder({
       output: (frame: VideoFrame) => {
-        console.log('[H264] Decoder output frame:',
-          frame.displayWidth, 'x', frame.displayHeight,
-          'timestamp:', frame.timestamp,
-          'decoded count:', this._decodedCount)
-
         // canvas 尺寸已在 config 到达时设为设备分辨率（deviceW x deviceH）。
         // max_size=0 保证帧尺寸 == 设备分辨率，因此此处不再调整 canvas。
         // 若帧尺寸与 canvas 不同（异常情况），仅记录警告，不改变 canvas（保持坐标映射正确）。
@@ -505,54 +508,6 @@ export class H264VideoStream {
       bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16)
     }
     return bytes
-  }
-
-  /**
-   * 从 Annex B 字节流中提取所有 NAL 单元。
-   * 返回的每个 NALU 包含：
-   *   raw: 包含起始码的完整 NALU
-   *   data: 不含起始码但包含 NAL 头的 NALU（如 0x67 xx xx ... 或 0x65 xx xx ...）
-   */
-  private extractNalus(data: Uint8Array): Array<{ raw: Uint8Array; data: Uint8Array }> {
-    const nalus: Array<{ raw: Uint8Array; data: Uint8Array }> = []
-    let i = 0
-
-    while (i < data.length - 3) {
-      // 查找起始码
-      let startLen = 0
-      if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
-        startLen = 3
-      } else if (i < data.length - 3 && data[i] === 0 && data[i + 1] === 0 &&
-                 data[i + 2] === 0 && data[i + 3] === 1) {
-        startLen = 4
-      }
-
-      if (startLen === 0) {
-        i++
-        continue
-      }
-
-      const naluStart = i + startLen
-      // 查找下一个起始码
-      let naluEnd = data.length
-      for (let j = naluStart + 1; j < data.length - 2; j++) {
-        if (data[j] === 0 && data[j + 1] === 0) {
-          if (data[j + 2] === 1 || (j < data.length - 3 && data[j + 2] === 0 && data[j + 3] === 1)) {
-            naluEnd = j
-            break
-          }
-        }
-      }
-
-      nalus.push({
-        raw: data.slice(i, naluEnd),       // 包含起始码
-        data: data.slice(naluStart, naluEnd), // 不含起始码（含 NAL 头）
-      })
-
-      i = naluEnd
-    }
-
-    return nalus
   }
 
   /**
@@ -654,52 +609,5 @@ export class H264VideoStream {
     bytes.set(pps, offset)
 
     return buffer
-  }
-
-  /**
-   * 将 Annex B 帧转换为 AVCC 格式。
-   * Annex B: [start_code] NALU [start_code] NALU ...
-   * AVCC:    [4-byte length] NALU [4-byte length] NALU ...
-   *
-   * 注意：AVCC 格式的 NALU 包含 NAL 头字节（与 avcC description 不同）。
-   */
-  private annexBToAvcc(annexB: Uint8Array): ArrayBuffer {
-    const nalus = this.extractNalus(annexB)
-    if (nalus.length === 0) {
-      return new ArrayBuffer(0)
-    }
-
-    // 计算总大小：每个 NALU 加 4 字节长度前缀
-    let totalSize = 0
-    for (const nalu of nalus) {
-      totalSize += 4 + nalu.data.length
-    }
-
-    const buffer = new ArrayBuffer(totalSize)
-    const view = new DataView(buffer)
-    const bytes = new Uint8Array(buffer)
-    let offset = 0
-
-    for (const nalu of nalus) {
-      view.setUint32(offset, nalu.data.length)
-      offset += 4
-      bytes.set(nalu.data, offset)
-      offset += nalu.data.length
-    }
-
-    return buffer
-  }
-
-  /** 判断 Annex B 帧是否为关键帧（包含 IDR NALU） */
-  private isKeyFrame(annexB: Uint8Array): boolean {
-    const nalus = this.extractNalus(annexB)
-    for (const nalu of nalus) {
-      const naluType = nalu.data[0] & 0x1F
-      if (naluType === 5) {
-        // IDR
-        return true
-      }
-    }
-    return false
   }
 }
