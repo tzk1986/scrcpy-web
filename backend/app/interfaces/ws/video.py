@@ -48,6 +48,7 @@ from app.scrcpy.h264_parser import H264Parser
 from app.scrcpy.au_aggregator import aggregate_aus
 from app.scrcpy.constants import NALU_TYPE_SPS, NALU_TYPE_PPS
 from app.core.logging import get_logger
+from app.interfaces.ws.socket_opts import enable_tcp_nodelay
 
 logger = get_logger(__name__)
 
@@ -71,6 +72,10 @@ async def video_stream(
         5. 断开时停止视频流
     """
     await websocket.accept()
+
+    # TCP_NODELAY 顺手项（方案 17 实施项 4）：浏览器在局域网远端时减少
+    # 视频小包的 Nagle 延迟；best-effort，失败不影响连接
+    enable_tcp_nodelay(websocket)
 
     parser = H264Parser()
     sps_data = None
