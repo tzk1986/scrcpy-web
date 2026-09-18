@@ -58,7 +58,8 @@ export const useDebugStore = defineStore('debug', () => {
   })
   const connected = ref(false)
   const wsConnected = ref(false)
-  /** 是否正在录制（接收）新日志。默认开启。 */
+  /** 是否正在录制（接收）新日志。默认暂停：日志页打开不采集，
+   *  用户点「开始」才连 WS、启动后端 logcat（方案 17 实施项 5）。 */
   const isRecording = ref(false)
 
   let debugWs: WebSocketService | null = null
@@ -177,10 +178,11 @@ export const useDebugStore = defineStore('debug', () => {
       console.log('[DebugStore] WebSocket closed')
       wsConnected.value = false
       debugWs = null
-      // 意外断线（非主动断开）且会话仍存活时自动重连，按 from_seq 补发缺口日志
-      if (!manualClose && sessionId.value) {
+      // 意外断线（非主动断开）且录制开启时才自动重连，按 from_seq 补发缺口日志；
+      // 未录制时无需重连（也不再重启后端采集，实施项 5）
+      if (!manualClose && isRecording.value && sessionId.value) {
         setTimeout(() => {
-          if (!debugWs && sessionId.value) connectWebSocket()
+          if (!debugWs && isRecording.value && sessionId.value) connectWebSocket()
         }, 2000)
       }
     })

@@ -193,14 +193,10 @@ const filteredLogs = computed(() => {
   return logs.filter((l) => l.level === level)
 })
 
-// 组件挂载时加载日志并建立 WebSocket 连接
-onMounted(async () => {
-  await debugStore.connectWebSocket()
-  await debugStore.fetchLogs()
-  // 初始加载后滚动到底部：nextTick 等待 Vue DOM 更新
-  await nextTick()
-  scrollToBottom()
-  await loadDbStats()
+// 挂载时不发起任何网络请求（实施项 5）：isRecording=false，
+// 开启录制时才连接 WS、拉历史并发起后端采集
+onMounted(() => {
+  // 保留空挂载钩子：未来的 DOM 初始化逻辑放这里
 })
 
 // 监听过滤条件变化，通过 store 的 setFilter 同步到服务端
@@ -226,15 +222,19 @@ watch(() => debugStore.logs.length, async () => {
   }
 })
 
-// 监听录制状态变化，开始时重新加载日志
+// 监听录制状态变化：开启时连接 WS 并拉历史（触发后端惰性启动采集），
+// 关闭时彻底断开 WS（省连接、停采集，实施项 5）
 watch(() => debugStore.isRecording, async (recording) => {
   if (recording) {
-    // 开始录制时，从后端拉取最新日志（填补暂停期间的缺口）
+    await debugStore.connectWebSocket()
     await debugStore.fetchLogs()
     if (autoScroll.value) {
       await nextTick()
       scrollToBottom()
     }
+    await loadDbStats()
+  } else {
+    await debugStore.disconnectWebSocket()
   }
 })
 
