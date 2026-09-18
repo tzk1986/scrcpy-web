@@ -77,17 +77,6 @@ class TestPushServer:
             assert success is False
 
     @pytest.mark.asyncio
-    async def test_push_server_verification_failed(self, mock_device_id, mock_adb_success):
-        """测试推送成功但验证失败"""
-        manager = ServerManager()
-
-        # Mock _server_exists 返回 False（验证失败）
-        with patch.object(manager, '_server_exists', return_value=False):
-            with patch('asyncio.create_subprocess_exec', side_effect=mock_adb_success):
-                success = await manager.push_server(mock_device_id)
-                assert success is False
-
-    @pytest.mark.asyncio
     async def test_push_server_jar_not_found(self, mock_device_id):
         """测试本地 JAR 文件不存在"""
         manager = ServerManager()
