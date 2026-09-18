@@ -44,10 +44,8 @@ scrcpy-server 视频编码器
 """
 
 import asyncio
-import struct
 from typing import AsyncIterator
 
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import EncoderOpts
 from app.scrcpy.server_manager import ServerManager
@@ -56,7 +54,6 @@ from app.scrcpy.constants import (
     SCRCPY_SERVER_REMOTE_PATH,
     SCRCPY_SERVER_CLASS,
     SCRCPY_SERVER_VERSION,
-    SCRCPY_SOCKET_NAME_TEMPLATE,
     VIDEO_STREAM_FRAME_SIZE,
     ADB_TIMEOUT_SECONDS,
 )

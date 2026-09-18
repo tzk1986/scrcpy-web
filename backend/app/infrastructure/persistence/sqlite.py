@@ -29,7 +29,6 @@ SQLite 持久化实现
 
 import asyncio
 import json
-import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path

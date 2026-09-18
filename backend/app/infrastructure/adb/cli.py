@@ -25,14 +25,13 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 """
 
 import asyncio
-import tempfile
-from pathlib import Path
 from typing import AsyncIterator
 
 from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
+from app.domain.ports import ShellSession
 
 logger = get_logger(__name__)
 

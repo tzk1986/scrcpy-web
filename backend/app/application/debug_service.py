@@ -33,7 +33,7 @@ from typing import Optional
 from fastapi import WebSocket
 
 from app.core.logging import get_logger
-from app.domain.ports import AdbDriver, DebugRepository, LogEntry, LogFilter
+from app.domain.ports import AdbDriver, DebugRepository, LogEntry, LogFilter, ShellSession
 from app.domain.session import DebugSession
 from app.infrastructure.persistence.batch_writer import BatchLogWriter
 

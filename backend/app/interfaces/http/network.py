@@ -16,7 +16,6 @@ import time
 from fastapi import APIRouter
 
 from app.core.logging import get_logger
-from app.domain.ports import AdbDriver
 from app.infrastructure.network.sampler import NetworkSampler
 
 logger = get_logger(__name__)

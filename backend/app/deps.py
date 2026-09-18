@@ -33,10 +33,9 @@ from app.application.device_service import DeviceService
 from app.application.performance_service import PerformanceService
 from app.application.session_service import SessionService
 from app.application.stream_service import StreamService
-from app.domain.ports import AdbDriver, DebugRepository, DeviceRepository, VideoEncoder
+from app.domain.ports import AdbDriver, DebugRepository, DeviceRepository
 from app.infrastructure.adb.cli import AdbCliDriver
 from app.infrastructure.persistence.sqlite import SqliteDebugRepository, SqliteDeviceRepository
-from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 
 
 # ---------------------------------------------------------------------------

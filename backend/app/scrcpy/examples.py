@@ -7,9 +7,7 @@ Scrcpy 模块使用示例
 
 import asyncio
 from app.scrcpy import (
-    EncoderOpts,
     H264Parser,
-    ControlSender,
     ServerManager,
     KEYCODE_HOME,
     KEYCODE_BACK,
@@ -42,6 +40,7 @@ async def example_video_stream():
             # 可以在这里解析 NALU 类型
             parser = H264Parser()
             nalu_type = parser.get_nalu_type(nalu)
+            print(f"  NALU type: {nalu_type}")
             if parser.is_key_frame(nalu):
                 print("  -> 关键帧 (IDR)")
             elif parser.is_sps(nalu):
@@ -94,8 +93,10 @@ async def example_input_control():
 
     print(f"开始输入控制: {device_id}")
 
-    # 启动编码器（建立控制 socket）
+    # 启动编码器（建立控制 socket）：start 是异步生成器，
+    # 必须消费第一帧才完成握手、建立控制通道
     stream = encoder.start(device_id, opts)
+    await stream.__anext__()
 
     # 触摸点击 (100, 200)
     await encoder.send_input({"action": "touch", "x": 100, "y": 200})

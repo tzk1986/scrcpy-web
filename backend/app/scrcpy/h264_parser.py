@@ -44,7 +44,6 @@ from .constants import (
     NALU_TYPE_IDR,
     NALU_TYPE_SPS,
     NALU_TYPE_PPS,
-    NALU_TYPE_SLICE,
 )
 
 logger = get_logger(__name__)

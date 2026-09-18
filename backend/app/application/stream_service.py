@@ -32,7 +32,7 @@ from typing import AsyncIterator
 from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor, parse_bit_rate
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.domain.ports import EncoderOpts, VideoEncoder
+from app.domain.ports import EncoderOpts
 from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 
 logger = get_logger(__name__)
