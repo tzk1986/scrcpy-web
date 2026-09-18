@@ -18,7 +18,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.infrastructure.adb.cli import AdbCliDriver
-from app.core.exceptions import AdbError
+from app.core.exceptions import AdbError, DeviceUnreachableError
 from app.domain.device import DeviceInfo
 
 
@@ -206,7 +206,10 @@ class TestTcpConnection:
             ))
             return proc
 
-        with patch('asyncio.create_subprocess_exec', side_effect=mock_proc):
+        with (
+            patch('asyncio.create_subprocess_exec', side_effect=mock_proc),
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+        ):
             driver = AdbCliDriver()
             device_id = await driver.connect_tcp("192.168.1.5", 5555)
             assert device_id == "192.168.1.5:5555"
@@ -214,7 +217,10 @@ class TestTcpConnection:
     @pytest.mark.asyncio
     async def test_connect_tcp_failure(self, mock_adb_failure):
         """测试 TCP/IP 连接失败"""
-        with patch('asyncio.create_subprocess_exec', side_effect=mock_adb_failure):
+        with (
+            patch('asyncio.create_subprocess_exec', side_effect=mock_adb_failure),
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+        ):
             driver = AdbCliDriver()
             with pytest.raises(AdbError):
                 await driver.connect_tcp("192.168.1.5", 5555)
@@ -222,10 +228,40 @@ class TestTcpConnection:
     @pytest.mark.asyncio
     async def test_disconnect_tcp(self, mock_adb_success):
         """测试断开 TCP/IP 连接"""
-        with patch('asyncio.create_subprocess_exec', side_effect=mock_adb_success):
+        with (
+            patch('asyncio.create_subprocess_exec', side_effect=mock_adb_success),
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+        ):
             driver = AdbCliDriver()
             # 不应该抛出异常
             await driver.disconnect_tcp("192.168.1.5", 5555)
+
+    @pytest.mark.asyncio
+    async def test_connect_tcp_unreachable_fast_fail(self):
+        """预检不可达 → 直接抛 DeviceUnreachableError，不创建 adb 子进程"""
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp',
+                  new=AsyncMock(side_effect=DeviceUnreachableError(
+                      "192.168.1.5", 5555, "1.5 秒内无响应（连接超时）"))),
+            patch('asyncio.create_subprocess_exec') as exec_mock,
+        ):
+            driver = AdbCliDriver()
+            with pytest.raises(DeviceUnreachableError):
+                await driver.connect_tcp("192.168.1.5", 5555)
+            exec_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_tcp_unreachable_skips_adb(self):
+        """预检不可达 → 跳过 adb disconnect 正常返回，不创建 adb 子进程"""
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp',
+                  new=AsyncMock(side_effect=DeviceUnreachableError(
+                      "192.168.1.5", 5555, "连接被拒绝"))),
+            patch('asyncio.create_subprocess_exec') as exec_mock,
+        ):
+            driver = AdbCliDriver()
+            await driver.disconnect_tcp("192.168.1.5", 5555)
+            exec_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

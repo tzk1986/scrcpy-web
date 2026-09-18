@@ -28,10 +28,11 @@ import asyncio
 from typing import AsyncIterator, Callable
 
 from app.core.config import settings
-from app.core.exceptions import AdbError
+from app.core.exceptions import AdbError, DeviceUnreachableError
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
 from app.domain.ports import ShellSession
+from app.infrastructure.adb.reachability import probe_tcp
 
 logger = get_logger(__name__)
 
@@ -285,10 +286,14 @@ class AdbCliDriver:
             设备 ID（格式为 "ip:port"）。
 
         异常：
+            DeviceUnreachableError: TCP 预检不可达时（不进入 adb 子进程）。
             AdbError: 连接失败时。
         """
         device_id = f"{ip}:{port}"
         logger.info("connecting_tcp", ip=ip, port=port)
+
+        # 预检：不可达直接快速失败，避免 adb connect 等待 SYN 重传 + 30s 命令超时
+        await probe_tcp(ip, port, settings().adb.probe_timeout)
 
         try:
             output = await self._run("connect", device_id)
@@ -308,9 +313,18 @@ class AdbCliDriver:
         参数：
             ip: 设备的 IP 地址。
             port: ADB 端口（默认 5555）。
+
+        目标不可达时跳过 adb 调用直接返回（幂等语义，无实际清理收益）。
         """
         device_id = f"{ip}:{port}"
         logger.info("disconnecting_tcp", ip=ip, port=port)
+
+        # 预检：目标不可达时 adb disconnect 会阻塞在失效 transport 清理上且无实际收益，跳过
+        try:
+            await probe_tcp(ip, port, settings().adb.probe_timeout)
+        except DeviceUnreachableError as e:
+            logger.info("tcp_disconnect_skipped_unreachable", device=device_id, reason=e.message)
+            return
 
         try:
             await self._run("disconnect", device_id)
