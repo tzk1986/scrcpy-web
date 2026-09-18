@@ -1,4 +1,8 @@
-"""服务重启后 restore_sessions 续跑 logcat 的测试（mock adb/repo）。"""
+"""服务重启后 restore_sessions 恢复会话的测试（mock adb/repo）。
+
+方案 17 实施项 5 起 logcat 采集改为订阅者开启录制才启动，
+restore 仅重建会话对象与 seq 游标，不再自动续跑采集。
+"""
 import asyncio
 import time
 
@@ -43,8 +47,9 @@ def make_session(sid, last_active=None):
 
 
 @pytest.mark.asyncio
-async def test_restore_sessions_restarts_logcat():
-    """模拟进程重启：会话在 DB、内存为空 → 恢复对象并续跑采集，seq 从 DB 续接。"""
+async def test_restore_sessions_recovers_sessions_without_logcat():
+    """模拟进程重启：会话在 DB、内存为空 → 恢复对象并续接 seq；
+    采集惰性化后无人订阅不再启动 logcat（实施项 5）。"""
     repo = Repo(sessions={"s1": make_session("s1", time.time())}, max_seq=5)
     adb = Adb()
     svc_new = DebugService(adb=adb, repo=repo)
@@ -52,9 +57,9 @@ async def test_restore_sessions_restarts_logcat():
     assert count == 1
     assert "s1" in svc_new.sessions
     assert svc_new.sessions["s1"].seq_next == 5          # 从 next_seq 续接，保证单调
-    await asyncio.sleep(0.2)                              # 让采集任务开始消费 FakeAdb 的行
-    assert adb.devices_seen == ["dev1"]                   # logcat 采集已重启
-    assert svc_new.sessions["s1"].log_buffer[0]["seq"] == 5  # 新日志 seq 从 5 起
+    assert svc_new.logcat_tasks == {}                    # 无订阅者，不再自动续跑采集
+    await asyncio.sleep(0.1)
+    assert adb.devices_seen == []                        # 采集确实未启动
     await svc_new.close_session("s1")
     await svc_new.writer.stop()
 

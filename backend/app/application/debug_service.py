@@ -46,6 +46,9 @@ class DebugService:
     # 每个会话在内存中保留的最大日志条目数。
     # 超过限制时旧条目按 FIFO 顺序淘汰。数据库保留所有记录。
     MAX_LOG_BUFFER = 50_000
+    # 停采宽限（秒）：全部订阅者暂停后延迟这么久再取消采集，
+    # 防录制开关抖动导致 logcat 子进程频繁启停（方案 17 实施项 5）
+    LOGCOLLECT_STOP_GRACE = 0.5
 
     def __init__(self, adb: AdbDriver, repo: DebugRepository):
         """
@@ -74,10 +77,11 @@ class DebugService:
 
     async def create_session(self, device_id: str, user_id: str) -> DebugSession:
         """
-        创建新的调试会话并启动 logcat 收集。
+        创建新的调试会话。
 
         会话 ID 生成为 "{device_id}_{user_id}_{timestamp}"。
-        启动后台 asyncio 任务持续从设备收集 logcat 输出。
+        logcat 采集不再随会话创建启动：订阅者发 paused=False
+        （开启录制）时才惰性启动（方案 17 实施项 5）。
 
         参数：
             device_id: 目标设备的 ADB 序列号。
@@ -96,11 +100,6 @@ class DebugService:
         )
         self.sessions[session_id] = session
         await self.repo.save_session(session)
-
-        # 启动后台 logcat 收集
-        self.logcat_tasks[session_id] = asyncio.create_task(
-            self._collect_logcat(session)
-        )
 
         return session
 
@@ -156,9 +155,10 @@ class DebugService:
 
     async def restore_sessions(self) -> int:
         """
-        服务启动时恢复近期活跃会话：重建内存对象并续跑 logcat 采集。
+        服务启动时恢复近期活跃会话：重建内存对象并续接 seq 游标。
         仅恢复 last_active 在 session_ttl_days 内、且数量 <= restore_max_sessions 的会话。
         seq_next 从 DB 的 next_seq 续接，保证序列号单调。
+        logcat 采集不随恢复启动，等订阅者开启录制才惰性启动（实施项 5）。
         """
         from app.core.config import settings as get_settings
         cfg = get_settings().debug
@@ -171,8 +171,6 @@ class DebugService:
             session.seq_next = await self.repo.next_seq(session.id)
             self.sessions[session.id] = session
             await self.writer.start()
-            self.logcat_tasks[session.id] = asyncio.create_task(
-                self._collect_logcat(session))
             restored += 1
         if restored:
             logger.info("sessions_restored", count=restored)
@@ -251,6 +249,45 @@ class DebugService:
         except Exception as e:
             logger.error("logcat_collection_error", session=session.id, error=str(e))
 
+    def _ensure_logcat_task(self, session: DebugSession) -> None:
+        """
+        幂等启动 logcat 采集任务（订阅者开启录制时惰性调用）。
+
+        已有存活任务时不动；任务已结束（cancel/设备断流）则重建。
+        任务结束时通过 done_callback 移除自身入口，避免 close 二次取消。
+        """
+        task = self.logcat_tasks.get(session.id)
+        if task is not None and not task.done():
+            return
+        task = asyncio.create_task(self._collect_logcat(session))
+        self.logcat_tasks[session.id] = task
+
+        def _self_remove(done_task: asyncio.Task[None]) -> None:
+            if self.logcat_tasks.get(session.id) is done_task:
+                self.logcat_tasks.pop(session.id, None)
+
+        task.add_done_callback(_self_remove)
+
+    def _schedule_logcat_stop(self, session_id: str) -> None:
+        """
+        宽限后停采：等 LOGCOLLECT_STOP_GRACE 秒复查，若仍无任何
+        非暂停订阅者则取消采集任务。宽限期内有订阅者恢复录制则不停止
+        （防录制开关抖动导致 logcat 子进程频繁启停）。
+        """
+        async def stop_after_grace() -> None:
+            await asyncio.sleep(self.LOGCOLLECT_STOP_GRACE)
+            if session_id not in self.logcat_tasks:
+                return
+            subs = self.subscribers.get(session_id, {})
+            if any(not f.get("paused", True) for f in subs.values()):
+                return  # 宽限期内有订阅者恢复录制
+            task = self.logcat_tasks.pop(session_id, None)
+            if task is not None and not task.done():
+                task.cancel()
+            logger.info("logcat_collection_stopped_idle", session=session_id)
+
+        asyncio.create_task(stop_after_grace())
+
     async def subscribe(self, session_id: str, websocket: WebSocket) -> None:
         """
         订阅会话的实时日志推送。
@@ -278,6 +315,10 @@ class DebugService:
             if not self.subscribers[session_id]:
                 del self.subscribers[session_id]
             logger.info("log_subscriber_removed", session=session_id, count=len(self.subscribers.get(session_id, {})))
+        # 订阅者断开后若已无任何非暂停订阅者，宽限后停采
+        remaining = self.subscribers.get(session_id, {}).values()
+        if not any(not f.get("paused", True) for f in remaining):
+            self._schedule_logcat_stop(session_id)
 
     async def set_subscriber_filter(
         self,
@@ -309,6 +350,16 @@ class DebugService:
                 tag=tag,
                 paused=paused,
             )
+            if not paused:
+                # 开启录制：惰性启动采集（幂等）
+                session = self.sessions.get(session_id)
+                if session is not None:
+                    self._ensure_logcat_task(session)
+            else:
+                # 暂停后若已无任何非暂停订阅者，宽限后停采
+                subs = self.subscribers[session_id]
+                if not any(not f.get("paused", True) for f in subs.values()):
+                    self._schedule_logcat_stop(session_id)
 
     async def _notify_subscribers(self, session_id: str, entry: dict[str, Any]) -> None:
         """
