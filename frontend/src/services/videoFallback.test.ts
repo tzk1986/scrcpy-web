@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateH264Fallback, FALLBACK_THRESHOLDS } from './videoFallback'
+import {
+  evaluateH264Fallback,
+  evaluateH264Recovery,
+  FALLBACK_THRESHOLDS,
+  RECOVERY_THRESHOLDS,
+  type RecoverySample,
+} from './videoFallback'
 
 const T = FALLBACK_THRESHOLDS
 
@@ -84,5 +90,62 @@ describe('evaluateH264Fallback', () => {
   it('阈值配置：STALL 最短、HARD 最长', () => {
     expect(T.STALL_MS).toBeLessThan(T.NO_STREAM_MS)
     expect(T.NO_STREAM_MS).toBeLessThan(T.HARD_TIMEOUT_MS)
+  })
+})
+
+describe('evaluateH264Recovery', () => {
+  const R = RECOVERY_THRESHOLDS
+
+  function sample(frames: number, at: number): RecoverySample {
+    return { frames, at }
+  }
+
+  it('采样不足 3 个 → 不回切', () => {
+    const now = 10_000
+    const samples = [
+      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
+      sample(R.MIN_FRAMES, now - R.WINDOW_MS),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(false)
+  })
+
+  it('任一窗口帧数不足 → 不回切', () => {
+    const now = 10_000
+    const samples = [
+      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
+      sample(R.MIN_FRAMES - 1, now - R.WINDOW_MS),
+      sample(R.MIN_FRAMES, now),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(false)
+  })
+
+  it('最新采样过期（流又停了）→ 不回切', () => {
+    const now = 10_000
+    const samples = [
+      sample(R.MIN_FRAMES, now - R.FRESH_MS - R.WINDOW_MS),
+      sample(R.MIN_FRAMES, now - R.FRESH_MS - 1),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(false)
+  })
+
+  it('连续 3 窗口达标且新鲜 → 回切', () => {
+    const now = 10_000
+    const samples = [
+      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
+      sample(R.MIN_FRAMES + 1, now - R.WINDOW_MS),
+      sample(R.MIN_FRAMES, now),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(true)
+  })
+
+  it('早期低帧窗口被滑出窗口外 → 仍可回切', () => {
+    const now = 10_000
+    const samples = [
+      sample(0, now - 5 * R.WINDOW_MS),
+      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
+      sample(R.MIN_FRAMES, now - R.WINDOW_MS),
+      sample(R.MIN_FRAMES, now),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(true)
   })
 })

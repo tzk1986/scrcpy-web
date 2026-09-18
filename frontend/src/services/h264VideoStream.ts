@@ -58,6 +58,16 @@ export class H264VideoStream {
   private ppsData: Uint8Array | null = null
   // 服务端自适应码率重启的宽限截止时间戳（暂停回退 watchdog 与 stats 上报）
   private _restartGraceUntil = 0
+  // 截图回退期间进入 suspend：保留 ws 消息处理器、只计数不解码，
+  // 作为「码流是否恢复」的探测器；resume() 退出
+  private _suspended = false
+  private _probeFrameCount = 0
+  private _probeLastFrameTime = 0
+  // 最近一次 config 的解析结果（suspend 期间新到的 config 暂存于此，resume 时复用）
+  private _lastCodec: string | null = null
+  private _lastAvccDesc: ArrayBuffer | null = null
+  private _lastWidth = 0
+  private _lastHeight = 0
 
   constructor(ws: WebSocketService, canvas: HTMLCanvasElement) {
     this.ws = ws
@@ -95,6 +105,19 @@ export class H264VideoStream {
   /** 码率重启宽限截止时间戳（ms）。未处于宽限期为 0。 */
   get restartGraceUntil(): number {
     return this._restartGraceUntil
+  }
+
+  /** 是否处于 suspend（截图回退探测）状态 */
+  get suspended(): boolean {
+    return this._suspended
+  }
+
+  /**
+   * suspend 期间经 ws 到达的帧探测计数。
+   * frameCount 为累计值，调用方自行计算窗口差值。
+   */
+  get probeStats(): { frameCount: number; lastFrameTime: number } {
+    return { frameCount: this._probeFrameCount, lastFrameTime: this._probeLastFrameTime }
   }
 
   /**
@@ -150,6 +173,7 @@ export class H264VideoStream {
 
   /** 停止视频流，释放解码器资源 */
   stop() {
+    this._suspended = false
     if (this._fpsTimer !== null) {
       clearInterval(this._fpsTimer)
       this._fpsTimer = null
@@ -168,6 +192,61 @@ export class H264VideoStream {
     this.ppsData = null
     this._state = 'stopped'
     this.onStateChange?.(this._state)
+  }
+
+  /**
+   * 暂停解码进入探测模式（截图回退时调用）。
+   *
+   * 与 stop() 的区别：保留 ws 消息处理器与 SPS/PPS/config 暂存，
+   * 后续到达的二进制帧只计数不解码（probeStats），供回切判定使用。
+   */
+  suspend() {
+    if (this._suspended) return
+    if (this._fpsTimer !== null) {
+      clearInterval(this._fpsTimer)
+      this._fpsTimer = null
+    }
+    if (this.decoder) {
+      try {
+        this.decoder.close()
+      } catch {
+        // 忽略关闭错误
+      }
+      this.decoder = null
+    }
+    this._suspended = true
+    this._state = 'stopped'
+    this.onStateChange?.(this._state)
+  }
+
+  /**
+   * 退出探测模式恢复解码（码流恢复回切时调用）。
+   * 若 suspend 期间收到过新 config，直接用它重建解码器；
+   * 否则使用 suspend 前最后一次 config 的解析结果。
+   */
+  resume() {
+    if (!this._suspended) return
+    this._suspended = false
+    this._error = null
+    this._frameCount = 0
+    this._decodedCount = 0
+    this._fpsCounter = 0
+    this._lastFrameTime = 0
+    this._probeFrameCount = 0
+    this._probeLastFrameTime = 0
+    this._restartGraceUntil = 0
+    this._state = 'configuring'
+    if (this._fpsTimer === null) {
+      this._fpsTimer = window.setInterval(() => {
+        this._fps = this._fpsCounter
+        this._fpsCounter = 0
+        this.onStatsUpdate?.(this.stats)
+      }, 1000)
+    }
+    this.onStateChange?.(this._state)
+    if (this._lastCodec && this._lastAvccDesc) {
+      this.initDecoder(this._lastCodec, this._lastAvccDesc, this._lastWidth, this._lastHeight)
+    }
   }
 
   /** 设置 WebSocket 的 binaryType 为 arraybuffer */
@@ -253,6 +332,17 @@ export class H264VideoStream {
         console.log('[H264] Canvas buffer initialized to device resolution:', width, 'x', height)
       }
 
+      // 暂存 config 解析结果（suspend 期间仅暂存；resume 时复用重建解码器）
+      this._lastCodec = codec
+      this._lastAvccDesc = avccDescription
+      this._lastWidth = width
+      this._lastHeight = height
+
+      if (this._suspended) {
+        console.log('[H264] Config stored while suspended, decoder init deferred')
+        return
+      }
+
       // 初始化 VideoDecoder
       this.initDecoder(codec, avccDescription, width, height)
 
@@ -281,6 +371,13 @@ export class H264VideoStream {
       }
     } catch {
       // 不是 JSON，当作二进制帧处理
+    }
+
+    // suspend（截图回退）期间不解码，仅记录帧到达供回切判定
+    if (this._suspended) {
+      this._probeFrameCount++
+      this._probeLastFrameTime = Date.now()
+      return
     }
 
     if (!this.decoder || this.decoder.state !== 'configured') {

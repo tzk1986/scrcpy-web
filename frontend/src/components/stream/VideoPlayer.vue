@@ -51,6 +51,11 @@
         </div>
         <div v-if="state === 'stopped'" class="status-text">已断开</div>
       </div>
+
+      <!-- 截图模式只读提示徽标 -->
+      <div v-if="mode === 'screenshot' && state === 'streaming'" class="readonly-badge">
+        只读预览 · 输入不可用
+      </div>
     </div>
 
     <!-- 控制栏 -->
@@ -91,7 +96,12 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { WebSocketService } from '@/services/websocket'
 import { VideoStream, type VideoStreamState } from '@/services/videoStream'
 import { H264VideoStream, type H264StreamState } from '@/services/h264VideoStream'
-import { evaluateH264Fallback } from '@/services/videoFallback'
+import {
+  evaluateH264Fallback,
+  evaluateH264Recovery,
+  RECOVERY_THRESHOLDS,
+  type RecoverySample,
+} from '@/services/videoFallback'
 import { InputController, KeyCode } from '@/services/inputController'
 
 const props = defineProps<{
@@ -126,6 +136,125 @@ let h264Stream: H264VideoStream | null = null
 let inputController: InputController | null = null
 /** 停止 H264 stats 上报定时器（onMounted 内赋值，onUnmounted 调用） */
 let stopStatsTimer: (() => void) | null = null
+
+// ===== H264 回退/回切状态机（顶层，供 onMounted/onUnmounted 共用） =====
+
+/** H264 启动时间戳（每次回切重置，用于 hard-timeout 判定） */
+let h264StartedAt = 0
+/** 是否已执行过回退（回切时复位） */
+let h264FallbackDone = false
+/** 自适应码率 fps 上报定时器 */
+let h264StatsTimer: number | null = null
+/** 截图模式下 H264 恢复探测定时器 */
+let probeTimer: number | null = null
+/** 恢复探测的帧计数基准（计算窗口帧数差值） */
+let lastProbeFrameCount = 0
+/** 恢复探测采样序列 */
+const recoverySamples: RecoverySample[] = []
+/** 回切后防横跳冷却截止时间：冷却期内不再发起回切 */
+let resumeCooldownUntil = 0
+
+function stopH264Stats() {
+  if (h264StatsTimer !== null) {
+    clearInterval(h264StatsTimer)
+    h264StatsTimer = null
+  }
+}
+
+/** 每 2s 向服务端上报实测帧率（自适应码率决策）。码率重启宽限期内暂停。 */
+function startH264StatsReporting() {
+  stopH264Stats()
+  h264StatsTimer = window.setInterval(() => {
+    if (!h264Stream || !ws) return
+    if (Date.now() < h264Stream.restartGraceUntil) return
+    // 静止画面下几乎不出帧，实测 fps≈0 与拥塞同签名；仅 fps≥1 时上报
+    const measured = h264Stream.stats.fps
+    if (measured < 1) return
+    ws.send({ op: 'stats', fps: measured })
+  }, 2000)
+}
+
+/** 将组件 state/fps/frameCount 绑定到 h264 流（初次启动与回切后重挂） */
+function attachH264Handlers() {
+  if (!h264Stream) return
+  h264Stream.setStateChangeHandler((newState) => {
+    console.log('[VideoPlayer] H264 stream state changed:', newState)
+    state.value = newState
+    if (newState === 'error') {
+      error.value = h264Stream?.stats.error || 'Unknown error'
+    }
+    checkH264Fallback()
+  })
+  h264Stream.setStatsUpdateHandler((stats) => {
+    fps.value = stats.fps
+    frameCount.value = stats.frameCount
+    checkH264Fallback()
+  })
+}
+
+/** H264 自动回退 watchdog（判据见 services/videoFallback.ts） */
+function checkH264Fallback() {
+  if (!h264Stream || h264FallbackDone) return
+  // 码率重启宽限期内（服务端预告 restarting）黑屏 1-3s 属预期，暂停判定
+  if (Date.now() < h264Stream.restartGraceUntil) return
+  const s = h264Stream.stats
+  const r = evaluateH264Fallback({
+    state: s.state,
+    frameCount: s.frameCount,
+    lastFrameTime: s.lastFrameTime,
+    startedAt: h264StartedAt,
+    now: Date.now(),
+  })
+  if (!r.fallback) return
+  h264FallbackDone = true
+  console.warn('[VideoPlayer] H264 fallback triggered:', r.reason,
+    'state:', s.state, 'frameCount:', s.frameCount, 'error:', s.error)
+  stopH264Stats()
+  // 保留实例与 ws 消息处理器，进入探测模式观察码流是否恢复
+  h264Stream.suspend()
+  startScreenshotMode()
+  startRecoveryProbe()
+}
+
+function stopRecoveryProbe() {
+  if (probeTimer !== null) {
+    clearInterval(probeTimer)
+    probeTimer = null
+  }
+  recoverySamples.length = 0
+  lastProbeFrameCount = 0
+}
+
+/**
+ * 截图模式下周期性探测 H264 码流恢复情况。
+ * 连续多个窗口（RECOVERY_THRESHOLDS）帧数达标才回切，防止
+ * 「恢复几秒又卡死」的横跳；回切后设 30s 冷却，冷却内再次
+ * 回退则本轮不再自动回切。
+ */
+function startRecoveryProbe() {
+  stopRecoveryProbe()
+  probeTimer = window.setInterval(() => {
+    if (!h264Stream || mode.value !== 'screenshot') return
+    if (Date.now() < resumeCooldownUntil) return
+    const ps = h264Stream.probeStats
+    recoverySamples.push({ frames: ps.frameCount - lastProbeFrameCount, at: Date.now() })
+    lastProbeFrameCount = ps.frameCount
+    if (recoverySamples.length > RECOVERY_THRESHOLDS.WINDOWS + 3) recoverySamples.shift()
+    if (!evaluateH264Recovery(recoverySamples, Date.now())) return
+
+    console.warn('[VideoPlayer] H264 stream recovered, switching back from screenshot mode')
+    stopRecoveryProbe()
+    videoStream?.stop()
+    videoStream = null
+    h264FallbackDone = false
+    h264StartedAt = Date.now()
+    resumeCooldownUntil = Date.now() + 30_000
+    attachH264Handlers()
+    h264Stream.resume()
+    startH264StatsReporting()
+    mode.value = 'h264'
+  }, RECOVERY_THRESHOLDS.WINDOW_MS)
+}
 
 /** 检测浏览器是否支持 WebCodecs VideoDecoder */
 function isWebCodecsSupported(): boolean {
@@ -194,74 +323,17 @@ onMounted(async () => {
     console.log('[VideoPlayer] Using H264 video stream mode')
     mode.value = 'h264'
     h264Stream = new H264VideoStream(ws, canvasRef.value)
-
-    // H264 自动回退 watchdog：编码器崩溃不上报错误（如 RK3288 OMX
-    // 崩溃后 socket 保持打开、码流停止），按帧到达时间戳等信号判定。
-    // 判据见 services/videoFallback.ts；error 即时检查，其余由
-    // H264VideoStream 的 1Hz stats 心跳驱动。
-    const h264StartedAt = Date.now()
-    let h264FallbackDone = false
-    let h264StatsTimer: number | null = null
-    const stopH264Stats = () => {
-      if (h264StatsTimer !== null) {
-        clearInterval(h264StatsTimer)
-        h264StatsTimer = null
-      }
-    }
-    const checkH264Fallback = () => {
-      if (!h264Stream || h264FallbackDone) return
-      // 码率重启宽限期内（服务端预告 restarting）黑屏 1-3s 属预期，暂停判定
-      if (Date.now() < h264Stream.restartGraceUntil) return
-      const s = h264Stream.stats
-      const r = evaluateH264Fallback({
-        state: s.state,
-        frameCount: s.frameCount,
-        lastFrameTime: s.lastFrameTime,
-        startedAt: h264StartedAt,
-        now: Date.now(),
-      })
-      if (!r.fallback) return
-      h264FallbackDone = true
-      console.warn('[VideoPlayer] H264 fallback triggered:', r.reason,
-        'state:', s.state, 'frameCount:', s.frameCount, 'error:', s.error)
-      stopH264Stats()
-      h264Stream.stop()
-      h264Stream = null
-      startScreenshotMode()
-    }
-
-    h264Stream.setStateChangeHandler((newState) => {
-      console.log('[VideoPlayer] H264 stream state changed:', newState)
-      state.value = newState
-      if (newState === 'error') {
-        error.value = h264Stream?.stats.error || 'Unknown error'
-      }
-      checkH264Fallback()
-    })
-
-    h264Stream.setStatsUpdateHandler((stats) => {
-      fps.value = stats.fps
-      frameCount.value = stats.frameCount
-      checkH264Fallback()
-    })
+    h264StartedAt = Date.now()
+    h264FallbackDone = false
+    resumeCooldownUntil = 0
 
     // 重要：先注册消息处理器，再建立 WebSocket 连接
     // 避免 config 消息在处理器注册前到达被丢弃
+    attachH264Handlers()
     h264Stream.start()
     ws.connect()
 
-    // 自适应码率：每 2s 向服务端上报实测帧率（服务端 1Hz 采样足够）。
-    // 码率重启宽限期内暂停上报，避免重启间隙 fps≈0 污染决策窗口。
-    h264StatsTimer = window.setInterval(() => {
-      if (!h264Stream || !ws) return
-      if (Date.now() < h264Stream.restartGraceUntil) return
-      // 静止画面下 scrcpy 几乎不出帧，实测 fps≈0 与"码率过高拥塞"同签名。
-      // 仅在 fps≥1（有流但偏慢=疑似拥塞）时上报，避免无谓降档重启黑屏；
-      // fps<1 交由 #4 watchdog 的 stall 判据处理（真崩溃才回退截图）。
-      const measured = h264Stream.stats.fps
-      if (measured < 1) return
-      ws.send({ op: 'stats', fps: measured })
-    }, 2000)
+    startH264StatsReporting()
     stopStatsTimer = () => stopH264Stats()
   } else {
     console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
@@ -271,6 +343,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopStatsTimer?.()
+  stopRecoveryProbe()
   h264Stream?.stop()
   videoStream?.stop()
   ws?.close()
@@ -379,6 +452,20 @@ async function reconnect() {
 
 .status-text.error {
   color: #f56c6c;
+}
+
+.readonly-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #e6a23c;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(230, 162, 60, 0.5);
+  border-radius: 4px;
+  z-index: 5;
+  pointer-events: none;
 }
 
 .controls {

@@ -44,6 +44,42 @@ export const FALLBACK_THRESHOLDS = {
 
 const NO_FALLBACK: FallbackResult = { fallback: false, reason: null }
 
+/**
+ * 截图模式下的一次 H264 帧探测采样。
+ * frames 为该窗口（WINDOW_MS）内经 WebSocket 到达的视频帧数，
+ * at 为采样结束时间戳（Date.now()）。
+ */
+export interface RecoverySample {
+  frames: number
+  at: number
+}
+
+export const RECOVERY_THRESHOLDS = {
+  WINDOWS: 3,
+  MIN_FRAMES: 4,
+  WINDOW_MS: 2000,
+  FRESH_MS: 3000,
+}
+
+/**
+ * 判定截图模式期间 H264 码流是否已恢复，可以回切。
+ *
+ * 设备端编码器（如 Rockchip）可能卡死后自行恢复：ws 仍未断、后端持续
+ * 转发帧，但前端已回退截图模式。截图模式下 h264 实例转入 suspend（只
+ * 计数不解码），每次采样记录窗口内帧数。连续 WINDOWS 个窗口帧数均
+ * ≥ MIN_FRAMES（约合 2fps 下限，排除 0.x fps 的伪恢复）且最新采样还
+ * 在 FRESH_MS 内，才允许回切——防止「恢复几秒又卡死」的来回横跳。
+ */
+export function evaluateH264Recovery(samples: RecoverySample[], now: number): boolean {
+  if (samples.length < RECOVERY_THRESHOLDS.WINDOWS) return false
+
+  const recent = samples.slice(-RECOVERY_THRESHOLDS.WINDOWS)
+  const latest = recent[recent.length - 1]
+  if (now - latest.at > RECOVERY_THRESHOLDS.FRESH_MS) return false
+
+  return recent.every(s => s.frames >= RECOVERY_THRESHOLDS.MIN_FRAMES)
+}
+
 export function evaluateH264Fallback(input: FallbackInput): FallbackResult {
   const { state, lastFrameTime, startedAt, now } = input
 
