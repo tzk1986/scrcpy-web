@@ -12,7 +12,8 @@
     OpenScrcpyException          — 基类；始终返回 HTTP 400
     ├── DeviceNotFoundError      — 特定设备 ID 未连接
     ├── SessionNotFoundError     — 调试会话 ID 无效/过期
-    └── AdbError                 — ADB 子进程返回非零退出码
+    ├── AdbError                 — ADB 子进程返回非零退出码
+    └── DeviceUnreachableError   — TCP 可达性预检失败（connect/disconnect 前置）
 
 所有异常都携带一个机器可读的 ``code`` 字段（如 "DEVICE_NOT_FOUND"）
 以及一个人可读的 ``message``。这让前端可以根据 ``error.code`` 进行
@@ -63,6 +64,13 @@ class AdbError(OpenScrcpyException):
 
     def __init__(self, message: str):
         super().__init__(message, code="ADB_ERROR")
+
+
+class DeviceUnreachableError(OpenScrcpyException):
+    """TCP 可达性预检失败：目标 host:port 无法建立连接。"""
+
+    def __init__(self, host: str, port: int, reason: str):
+        super().__init__(f"设备 {host}:{port} 不可达：{reason}", code="DEVICE_UNREACHABLE")
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ database:
 adb:
   path: adb
   timeout: 30
+  probe_timeout: 1.5   # TCP 可达性预检超时（秒），仅用于 connect/disconnect 前置探测
   reconnect_interval: 5
 
 stream:
