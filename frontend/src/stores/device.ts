@@ -99,6 +99,9 @@ export const useDeviceStore = defineStore('device', () => {
     try {
       const result = await api.disconnectDevice(deviceId)
       if (result.success) {
+        // 不可达断开是「跳过 adb 清理」路径，adb 侧表项可能短暂残留；
+        // 先本地移除保证立即生效，再拉取列表重同步
+        devices.value = devices.value.filter(d => d.id !== deviceId)
         await fetchDevices()
       }
       return result

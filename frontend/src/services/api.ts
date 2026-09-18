@@ -65,6 +65,7 @@ export const api = {
   async connectDevice(ip: string, port = 5555) {
     const res = await client.post('/devices/connect', null, {
       params: { ip, port },
+      timeout: 40000, // 大于后端 adb.timeout(30s)，保证结构化错误先返回
     })
     return res.data as { success: boolean; device_id: string }
   },
@@ -74,7 +75,9 @@ export const api = {
    * 对应：POST /api/devices/{deviceId}/disconnect
    */
   async disconnectDevice(deviceId: string) {
-    const res = await client.post(`/devices/${encodeURIComponent(deviceId)}/disconnect`)
+    const res = await client.post(`/devices/${encodeURIComponent(deviceId)}/disconnect`, null, {
+      timeout: 40000, // 大于后端 adb.timeout(30s)，保证结构化错误先返回
+    })
     return res.data as { success: boolean }
   },
 

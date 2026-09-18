@@ -205,6 +205,13 @@ function resetDialog() {
   formRef.value?.resetFields()
 }
 
+/** 提取后端结构化错误（{"error":{"code","message"}}）的消息，回退到 Error.message */
+function extractApiError(e: unknown, fallback: string): string {
+  const body = (e as { response?: { data?: { error?: { message?: string } } } })
+    .response?.data?.error
+  return body?.message || (e as Error).message || fallback
+}
+
 /** 处理连接设备 */
 async function handleConnect() {
   if (!formRef.value) return
@@ -218,8 +225,7 @@ async function handleConnect() {
     ElMessage.success(`已连接到 ${form.ip}:${form.port}`)
     dialogVisible.value = false
   } catch (e) {
-    const errMsg = (e as Error).message || '连接失败'
-    ElMessage.error(`连接失败: ${errMsg}`)
+    ElMessage.error(`连接失败: ${extractApiError(e, '未知错误')}`)
   } finally {
     connecting.value = false
   }
@@ -232,8 +238,7 @@ async function handleDisconnect(deviceId: string) {
     await store.disconnectDevice(deviceId)
     ElMessage.success(`已断开 ${deviceId}`)
   } catch (e) {
-    const errMsg = (e as Error).message || '断开失败'
-    ElMessage.error(`断开失败: ${errMsg}`)
+    ElMessage.error(`断开失败: ${extractApiError(e, '未知错误')}`)
   } finally {
     disconnectingId.value = null
   }
