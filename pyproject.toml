@@ -20,12 +20,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# 门禁工具锁定到本地实测版本，保证 CI == 本地、可复现；上游新版可能扩大规则集导致误红。
+# 升级这些 pin 时需在本地重跑 ruff/mypy/pytest 三件套后再同步。
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
+    "pytest==9.0.3",
+    "pytest-asyncio==1.4.0",
     "httpx>=0.27.0",
-    "ruff>=0.3.0",
-    "mypy>=1.8.0",
+    "ruff==0.7.4",
+    "mypy==1.20.2",
 ]
 
 [build-system]
