@@ -394,7 +394,7 @@ async function refreshDetail() {
     const index = apps.value.findIndex(app => app.package_name === selectedApp.value?.package_name)
     if (index !== -1) {
       // 保留列表中的 is_running 状态，只更新其他字段
-      const { is_running, ...detailWithoutStatus } = detail
+      const { is_running: _is_running, ...detailWithoutStatus } = detail
       apps.value[index] = { ...apps.value[index], ...detailWithoutStatus }
       // selectedApp 也保留原有的 is_running 状态
       selectedApp.value = { ...selectedApp.value, ...detailWithoutStatus }

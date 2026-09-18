@@ -21,7 +21,6 @@
  */
 
 export class WebTransportService {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private transport: any = null
   private url: string
 

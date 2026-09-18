@@ -116,6 +116,7 @@ const stateLabel = computed(() => {
     case 'streaming': return '直播中'
     case 'error': return '错误'
     case 'stopped': return '已停止'
+    default: return '未知'
   }
 })
 
