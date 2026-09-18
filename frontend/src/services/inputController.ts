@@ -51,6 +51,8 @@ export class InputController {
   private longPressTimer: number | null = null
   private readonly LONG_PRESS_THRESHOLD = 500  // ms
   private readonly MOVE_THRESHOLD = 20         // px
+  /** 是否启用输入处理（Page Visibility 隐藏时停用，方案 17 实施项 4） */
+  private enabled = true
 
   /**
    * @param ws - WebSocket 连接
@@ -64,6 +66,15 @@ export class InputController {
   /** 更新设备分辨率（保留用于向后兼容） */
   setDeviceResolution(_width: number, _height: number) {
     // 坐标映射现在基于 canvas 的实际像素尺寸，无需保存设备分辨率
+  }
+
+  /**
+   * 启用/停用输入处理（Page Visibility 降载，方案 17 实施项 4）。
+   * 停用期间指针事件处理函数直接返回，并取消挂起的长按定时器。
+   */
+  setEnabled(value: boolean) {
+    this.enabled = value
+    if (!value) this.cancelLongPress()
   }
 
   /**
@@ -130,6 +141,7 @@ export class InputController {
 
   /** 鼠标按下 */
   handleMouseDown(e: MouseEvent, canvas: HTMLCanvasElement) {
+    if (!this.enabled) return
     e.preventDefault()
     const { x, y } = this.mapToScreen(e.clientX, e.clientY, canvas)
 
@@ -156,6 +168,7 @@ export class InputController {
 
   /** 鼠标移动 */
   handleMouseMove(e: MouseEvent, canvas: HTMLCanvasElement) {
+    if (!this.enabled) return
     if (!this.touchState || !this.touchState.isTracking) return
     e.preventDefault()
 
@@ -174,6 +187,7 @@ export class InputController {
 
   /** 鼠标释放 */
   handleMouseUp(e: MouseEvent, canvas: HTMLCanvasElement) {
+    if (!this.enabled) return
     if (!this.touchState || !this.touchState.isTracking) return
     e.preventDefault()
 
@@ -203,6 +217,7 @@ export class InputController {
 
   /** 触摸开始 */
   handleTouchStart(e: TouchEvent, canvas: HTMLCanvasElement) {
+    if (!this.enabled) return
     e.preventDefault()
     if (e.touches.length !== 1) return
 
@@ -231,6 +246,7 @@ export class InputController {
 
   /** 触摸移动 */
   handleTouchMove(e: TouchEvent, canvas: HTMLCanvasElement) {
+    if (!this.enabled) return
     if (!this.touchState || !this.touchState.isTracking) return
     e.preventDefault()
     if (e.touches.length !== 1) return
@@ -250,6 +266,7 @@ export class InputController {
 
   /** 触摸结束 */
   handleTouchEnd(e: TouchEvent, canvas: HTMLCanvasElement) {
+    if (!this.enabled) return
     if (!this.touchState || !this.touchState.isTracking) return
     e.preventDefault()
 

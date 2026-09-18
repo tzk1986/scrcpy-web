@@ -34,6 +34,16 @@ import {
 
 export type H264StreamState = 'idle' | 'configuring' | 'streaming' | 'error' | 'stopped'
 
+export interface H264StreamOptions {
+  /**
+   * 解码硬件加速偏好（实验开关，方案 17 实施项 4）。
+   * .18（Rockchip）花屏/解码报错时可传 'prefer-software'，
+   * 验证是否能规避 Chromium 硬解与 Rockchip 码流的兼容问题。
+   * 不传则使用浏览器默认。
+   */
+  hardwareAcceleration?: HardwareAcceleration
+}
+
 export interface H264StreamStats {
   frameCount: number
   fps: number
@@ -77,10 +87,13 @@ export class H264VideoStream {
   private _lastAvccDesc: ArrayBuffer | null = null
   private _lastWidth = 0
   private _lastHeight = 0
+  // 解码硬件加速偏好（实验开关，方案 17 实施项 4）
+  private _hardwareAcceleration?: HardwareAcceleration
 
-  constructor(ws: WebSocketService, canvas: HTMLCanvasElement) {
+  constructor(ws: WebSocketService, canvas: HTMLCanvasElement, options?: H264StreamOptions) {
     this.ws = ws
     this.canvas = canvas
+    this._hardwareAcceleration = options?.hardwareAcceleration
   }
 
   /** 当前状态 */
@@ -476,12 +489,18 @@ export class H264VideoStream {
     })
 
     try {
-      this.decoder.configure({
+      const config: VideoDecoderConfig = {
         codec: codec,
         description: description,
         optimizeForLatency: true,
-      })
-      console.log('[H264] Decoder state after configure:', this.decoder.state)
+      }
+      // 实验开关：仅在显式指定时传入（方案 17 实施项 4），默认走浏览器选择
+      if (this._hardwareAcceleration) {
+        config.hardwareAcceleration = this._hardwareAcceleration
+      }
+      this.decoder.configure(config)
+      console.log('[H264] Decoder state after configure:', this.decoder.state,
+        this._hardwareAcceleration ? `(hardwareAcceleration: ${this._hardwareAcceleration})` : '')
       if (this.decoder.state !== 'configured') {
         this.setError(`VideoDecoder configure failed, state: ${this.decoder.state}`)
       }

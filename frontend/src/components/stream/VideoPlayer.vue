@@ -20,6 +20,8 @@
     - 鼠标/触摸输入（点击、滑动、长按）
     - Android 导航键（返回、主页、菜单）
     - 实时 FPS 和帧数统计
+    - Page Visibility 降载：tab 隐藏时停 fps 上报与输入处理（方案 17 实施项 4）
+    - 实验开关：URL ?swdecode=1 强制软解，诊断 Rockchip 硬解花屏
 
   生命周期：
     onMounted: 初始化 WebSocket + VideoStream + InputController
@@ -96,7 +98,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { WebSocketService } from '@/services/websocket'
 import { VideoStream, type VideoStreamState } from '@/services/videoStream'
-import { H264VideoStream, type H264StreamState } from '@/services/h264VideoStream'
+import { H264VideoStream, type H264StreamOptions, type H264StreamState } from '@/services/h264VideoStream'
 import {
   evaluateH264Fallback,
   evaluateH264Recovery,
@@ -264,6 +266,33 @@ function isWebCodecsSupported(): boolean {
   return typeof VideoDecoder !== 'undefined' && typeof EncodedVideoChunk !== 'undefined'
 }
 
+/**
+ * 读取解码硬件加速偏好（实验开关，方案 17 实施项 4）。
+ * URL 加 ?swdecode=1 强制软解，用于诊断 .18（Rockchip）硬解花屏；
+ * 不设置则返回 undefined，走浏览器默认。
+ */
+function readHardwareAcceleration(): HardwareAcceleration | undefined {
+  return new URLSearchParams(window.location.search).get('swdecode') === '1'
+    ? 'prefer-software'
+    : undefined
+}
+
+/**
+ * Page Visibility 降载（方案 17 实施项 4）。
+ * tab 隐藏时：停 fps 上报（后台定时器被浏览器节流，上报数据失真会干扰
+ * 服务端自适应码率决策）+ 停用输入处理；解码保留（继续收流）。
+ * 恢复可见时重启 fps 上报并重新启用输入。
+ */
+function onVisibilityChange() {
+  const hidden = document.hidden
+  if (hidden) {
+    stopH264Stats()
+  } else if (h264Stream && !h264Stream.suspended) {
+    startH264StatsReporting()
+  }
+  inputController?.setEnabled(!hidden)
+}
+
 /** 启动截图回退模式 */
 function startScreenshotMode() {
   console.log('[VideoPlayer] Starting screenshot fallback mode')
@@ -301,6 +330,9 @@ onMounted(async () => {
   canvasRef.value.width = initWidth
   canvasRef.value.height = initHeight
 
+  // Page Visibility 降载（方案 17 实施项 4）
+  document.addEventListener('visibilitychange', onVisibilityChange)
+
   // 初始化 WebSocket（用于视频流和输入事件）
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/video/${props.deviceId}`
   console.log('[VideoPlayer] Creating WebSocket:', wsUrl)
@@ -325,7 +357,12 @@ onMounted(async () => {
   if (isWebCodecsSupported()) {
     console.log('[VideoPlayer] Using H264 video stream mode')
     mode.value = 'h264'
-    h264Stream = new H264VideoStream(ws, canvasRef.value)
+    const hwAccel = readHardwareAcceleration()
+    if (hwAccel) {
+      console.warn('[VideoPlayer] swdecode=1: forcing software decode:', hwAccel)
+    }
+    const streamOpts: H264StreamOptions = { hardwareAcceleration: hwAccel }
+    h264Stream = new H264VideoStream(ws, canvasRef.value, streamOpts)
     h264StartedAt = Date.now()
     h264FallbackDone = false
     resumeCooldownUntil = 0
@@ -345,6 +382,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   stopStatsTimer?.()
   stopRecoveryProbe()
   h264Stream?.stop()
