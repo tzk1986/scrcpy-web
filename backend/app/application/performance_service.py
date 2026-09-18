@@ -114,6 +114,14 @@ class PerformanceService:
         finally:
             self._tasks.pop(device_id, None)
             self._samplers.pop(device_id, None)
+            # 设备失联自动停采（sample() 自然结束，非 cancel 路径）时，
+            # 通知订阅者结束；stop_monitoring 的 cancel 路径会先 pop 订阅者，
+            # 此处为空表不重复通知
+            for queue in self._subscribers.pop(device_id, []):
+                try:
+                    queue.put_nowait(None)
+                except Exception:
+                    pass
 
     async def stop_monitoring(self, device_id: str) -> None:
         """

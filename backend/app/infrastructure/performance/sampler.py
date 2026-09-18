@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import AsyncIterator
 
+from app.core.exceptions import AdbError
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
 
@@ -48,11 +49,22 @@ class PerformanceSampler:
     通过 ADB 命令周期性采集设备的 CPU、内存、帧率等指标。
     使用 async generator 模式，支持流式数据输出。
 
+    采样治理（方案 17 实施项 3）：
+        - activity/cpu/mem 并发采集（一轮耗时 = max(单命令) 而非 sum）
+        - gfxinfo 最重，每 GFXINFO_INTERVAL 轮采集一次，中间轮沿用 _last_fps
+        - 连续 MAX_FAILURES 次采样失败（AdbError/超时）视为设备失联，
+          sample() 结束 → 上层监控任务自动清理
+        - shell 单命令 SHELL_TIMEOUT 总超时兜底，防 dumpsys 挂起拖死循环
+
     使用示例：
         sampler = PerformanceSampler(adb, "192.168.1.100")
         async for metrics in sampler.sample(interval=1.0):
             print(f"CPU: {metrics.cpu_percent}%")
     """
+
+    SHELL_TIMEOUT = 8.0       # shell 单命令超时兜底（秒）
+    MAX_FAILURES = 5          # 连续采样失败上限，达到后停止该设备采样
+    GFXINFO_INTERVAL = 5      # gfxinfo 降频间隔：每 N 轮采集一次
 
     def __init__(self, adb: AdbDriver, device_id: str):
         """
@@ -64,16 +76,20 @@ class PerformanceSampler:
         """
         self.adb = adb
         self.device_id = device_id
+        self._round = 0                    # 采样轮次（gfxinfo 降频用）
         self._prev_cpu_times: tuple[int, int] | None = None  # (total, idle)
         self._prev_frames: int | None = None  # 上次采样的累计帧数
         self._prev_jank: int = 0              # 上次采样的累计卡顿帧数
         self._prev_ts: float | None = None    # 上次采样时间戳
         self._prev_package: str = ""          # 上次采样的应用包名
-        self._last_fps: float = 0.0           # 上次有效的 FPS 值（用于过渡显示）
+        self._last_fps: float | None = None   # 上次有效的 FPS 值（降频轮沿用）
 
     async def sample(self, interval: float = 1.0) -> AsyncIterator[PerformanceMetrics]:
         """
         周期性采集性能指标。
+
+        连续 MAX_FAILURES 次采样失败（设备失联）后结束生成器，
+        上层监控任务随之自动清理。成功采样会重置失败计数。
 
         参数：
             interval: 采样间隔（秒），默认 1 秒。
@@ -81,22 +97,42 @@ class PerformanceSampler:
         产出：
             PerformanceMetrics 对象，包含所有性能指标。
         """
+        failures = 0
         while True:
             try:
                 metrics = await self._collect_once()
-                yield metrics
             except Exception as e:
-                logger.error("performance_sample_failed", device=self.device_id, error=str(e))
+                # getter 已吞解析类异常，到达这里的只有 shell 层失败
+                # （AdbError / 超时），或未预期的 bug 异常——统一计数
+                failures += 1
+                logger.warning("performance_sample_failed", device=self.device_id,
+                               error=str(e), failures=failures)
+                if failures >= self.MAX_FAILURES:
+                    logger.warning("performance_sampling_stopped_device_unreachable",
+                                   device=self.device_id, failures=failures)
+                    return
+            else:
+                failures = 0
+                yield metrics
 
             await asyncio.sleep(interval)
 
     async def _collect_once(self) -> PerformanceMetrics:
         """采集一次完整的性能指标。"""
         now = time.time()
-        cpu = await self._get_cpu_usage()
-        mem_total, mem_used = await self._get_memory_usage()
-        fps, jank = await self._get_fps_and_jank(now)
-        activity, package = await self._get_current_activity()
+        self._round += 1
+
+        # activity/cpu/mem 互不依赖，并发采集；fps 依赖 activity 的 package，
+        # 且 gfxinfo 最重按轮次降频
+        (activity, package), cpu, (mem_total, mem_used) = await asyncio.gather(
+            self._get_current_activity(),
+            self._get_cpu_usage(),
+            self._get_memory_usage(),
+        )
+        if self._round % self.GFXINFO_INTERVAL == 1:
+            fps, jank = await self._get_fps_and_jank(now, package)
+        else:
+            fps, jank = self._last_fps, 0
 
         return PerformanceMetrics(
             ts=now,
@@ -107,6 +143,12 @@ class PerformanceSampler:
             jank_count=jank,
             current_activity=activity,
             top_package=package,
+        )
+
+    async def _shell(self, cmd: str) -> str:
+        """shell 调用统一入口：施加总超时兜底，防单命令挂起拖死采样循环。"""
+        return await asyncio.wait_for(
+            self.adb.shell(self.device_id, cmd), timeout=self.SHELL_TIMEOUT
         )
 
     async def _get_cpu_usage(self) -> float:
@@ -124,7 +166,7 @@ class PerformanceSampler:
             CPU 使用率百分比（0-100）。
         """
         try:
-            output = await self.adb.shell(self.device_id, "cat /proc/stat")
+            output = await self._shell("cat /proc/stat")
 
             # 解析第一行：cpu  user nice system idle ...
             match = re.search(r"^cpu\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", output, re.MULTILINE)
@@ -151,6 +193,8 @@ class PerformanceSampler:
             cpu_percent = (total_diff - idle_diff) / total_diff * 100
             return round(cpu_percent, 1)
 
+        except (AdbError, asyncio.TimeoutError):
+            raise  # 通信失败向上传播，由 sample() 统一计数停采
         except Exception as e:
             logger.warning("get_cpu_usage_failed", device=self.device_id, error=str(e))
             return 0.0
@@ -165,7 +209,7 @@ class PerformanceSampler:
             (total_mb, used_mb) 元组，单位 MB。
         """
         try:
-            output = await self.adb.shell(self.device_id, "cat /proc/meminfo")
+            output = await self._shell("cat /proc/meminfo")
 
             total_kb = 0
             available_kb = 0
@@ -185,11 +229,13 @@ class PerformanceSampler:
 
             return round(total_mb, 1), round(used_mb, 1)
 
+        except (AdbError, asyncio.TimeoutError):
+            raise  # 通信失败向上传播，由 sample() 统一计数停采
         except Exception as e:
             logger.warning("get_memory_usage_failed", device=self.device_id, error=str(e))
             return 0.0, 0.0
 
-    async def _get_fps_and_jank(self, now: float) -> tuple[float | None, int]:
+    async def _get_fps_and_jank(self, now: float, package: str) -> tuple[float | None, int]:
         """
         获取帧率和卡顿帧数。
 
@@ -198,6 +244,7 @@ class PerformanceSampler:
 
         参数：
             now: 当前时间戳（秒）。
+            package: 当前前台应用包名（由 _collect_once 消除重复查询后传入）。
 
         返回：
             (fps, jank_delta) 元组。
@@ -205,16 +252,11 @@ class PerformanceSampler:
             jank_delta 是本周期内的卡顿帧增量。
         """
         try:
-            # 先获取当前前台 Activity
-            _, package = await self._get_current_activity()
             if not package:
                 return None, 0
 
-            # 获取该 Activity 的 gfxinfo（不用 grep，避免二进制输出问题）
-            output = await self.adb.shell(
-                self.device_id,
-                f"dumpsys gfxinfo {package}"
-            )
+            # 获取该应用 gfxinfo（不用 grep，避免二进制输出问题）
+            output = await self._shell(f"dumpsys gfxinfo {package}")
 
             # 解析累计帧数
             frames_match = re.search(r"Total frames rendered:\s*(\d+)", output)
@@ -252,6 +294,8 @@ class PerformanceSampler:
 
             return fps, jank_delta
 
+        except (AdbError, asyncio.TimeoutError):
+            raise  # 通信失败向上传播，由 sample() 统一计数停采
         except Exception as e:
             logger.warning("get_fps_failed", device=self.device_id, error=str(e))
             return None, 0
@@ -266,8 +310,7 @@ class PerformanceSampler:
             (activity_name, package_name) 元组。
         """
         try:
-            output = await self.adb.shell(
-                self.device_id,
+            output = await self._shell(
                 "dumpsys activity activities | grep mResumedActivity"
             )
 
@@ -281,6 +324,8 @@ class PerformanceSampler:
 
             return "", ""
 
+        except (AdbError, asyncio.TimeoutError):
+            raise  # 通信失败向上传播，由 sample() 统一计数停采
         except Exception as e:
             logger.warning("get_current_activity_failed", device=self.device_id, error=str(e))
             return "", ""
