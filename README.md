@@ -27,31 +27,30 @@
 ### 开发模式
 
 ```bash
-# 克隆项目
-cd D:\tangzk\py\scrcpy-web
-
-# 安装后端依赖
+# 安装后端依赖（含 dev 工具链：pytest/ruff/mypy）
 pip install -e ".[dev]"
 
 # 安装前端依赖
 cd frontend && npm ci
+cd ..
 
-# 启动开发服务器
+# 启动开发服务器（后端 8765 + 前端 8080）
 make dev
 ```
 
 访问：
-- 前端：http://localhost:5173
-- 后端：http://localhost:8000
-- API 文档：http://localhost:8000/docs
+- 前端：http://localhost:8080
+- 后端：http://localhost:8765
+- API 文档：http://localhost:8765/docs
 
-### Docker 部署
+> 后端端口默认 8765，可用环境变量 `BACKEND_PORT`（或仓库根 `.env`）覆盖，
+> 前端代理与 E2E 自动跟随。详见 [部署指南](docs/部署指南.md)。
 
-```bash
-docker compose up -d
-```
+### Docker 部署（开发参考，未验证）
 
-访问：http://localhost
+Docker/Linux 配置仅作服务器化方向的骨架，**未在 Linux 容器实测**（后端依赖
+ConPTY/pywinpty、scrcpy.exe、ProactorEventLoop 等 Windows 专属组件）。当前受支持
+的运行方式为 **Windows 本地运行**，详见 [部署指南](docs/部署指南.md)。
 
 ## 📖 文档
 
@@ -61,6 +60,7 @@ docker compose up -d
 - [架构设计](docs/architecture.md) - 分层架构、核心模块、设计原则
 - [API 文档](docs/api.md) - REST API 和 WebSocket 接口
 - [调试功能](docs/debug-features.md) - 无限调试功能详解
+- [部署指南](docs/部署指南.md) - 运行方式、端口配置、本地 E2E、CI、已知限制
 
 ### 实施方案
 
@@ -83,41 +83,42 @@ docker compose up -d
 | Week 5-6 | 远程 Shell | [07-远程Shell.md](方案/07-远程Shell.md) | ⏳ 20% |
 | Week 5-6 | 性能监控 | [08-性能监控.md](方案/08-性能监控.md) | ⏳ 0% |
 | Week 7-8 | 前端调试面板 | [09-前端调试面板.md](方案/09-前端调试面板.md) | ⏳ 40% |
-| Week 7-8 | 集成测试与部署 | [10-集成测试与部署.md](方案/10-集成测试与部署.md) | ⏳ 0% |
+| Week 7-8 | 集成测试与部署 | [10-集成测试与部署.md](方案/10-集成测试与部署.md) | ✅ 测试治理/CI/文档完成；exe 打包另跟进 |
 
 ## 🏗️ 项目结构
 
 ```
 scrcpy-web/
 ├── backend/                 # Python 后端
-│   ├── app/
-│   │   ├── core/           # 横切关注点（配置、日志、异常）
-│   │   ├── domain/         # 领域层（纯业务逻辑）
-│   │   ├── application/    # 应用层（用例编排）
-│   │   ├── infrastructure/ # 基础设施层（具体实现）
-│   │   ├── interfaces/     # 接口层（HTTP/WebSocket）
-│   │   ├── deps.py         # 依赖注入
-│   │   ├── lifecycle.py    # 生命周期管理
-│   │   └── main.py         # 应用工厂
-│   └── tests/              # 测试
+│   └── app/
+│       ├── core/           # 横切关注点（配置、日志、异常）
+│       ├── domain/         # 领域层（纯业务逻辑）
+│       ├── application/    # 应用层（用例编排）
+│       ├── infrastructure/ # 基础设施层（具体实现）
+│       ├── interfaces/     # 接口层（HTTP/WebSocket）
+│       ├── scrcpy/         # scrcpy 协议/编解码/常量
+│       ├── deps.py         # 依赖注入
+│       ├── lifecycle.py    # 生命周期管理
+│       └── main.py         # 应用工厂
 ├── frontend/                # Vue 3 前端
-│   ├── src/
-│   │   ├── components/     # 组件
-│   │   ├── views/          # 页面
-│   │   ├── stores/         # Pinia 状态管理
-│   │   ├── services/       # API 服务
-│   │   └── router/         # 路由
-│   └── tests/              # 测试
+│   └── src/
+│       ├── components/     # 组件
+│       ├── views/          # 页面
+│       ├── stores/         # Pinia 状态管理
+│       ├── services/       # API 服务
+│       └── router/         # 路由
+├── tests/                   # 全部测试（unit/integration/e2e/scrcpy 等）
 ├── config/                  # 配置文件
 │   ├── base.yaml           # 默认配置
 │   ├── dev.yaml            # 开发环境
 │   └── prod.yaml           # 生产环境
-├── docker/                  # Docker 配置
-├── docs/                    # 文档
+├── docker/                  # Docker 配置（开发参考，未验证）
+├── docs/                    # 技术文档（含部署指南）
 ├── scripts/                 # 工具脚本
 ├── 方案/                    # 实施方案文档
+├── .github/workflows/       # CI 流水线
 ├── Makefile                 # 开发命令
-├── docker-compose.yml       # Docker 编排
+├── docker-compose.yml       # Docker 编排（开发参考，未验证）
 └── pyproject.toml          # Python 项目配置
 ```
 
@@ -193,19 +194,23 @@ scrcpy-web/
 
 ## 🧪 测试
 
+所有测试位于仓库根 `tests/` 目录（禁止放在 `backend/` 或项目根下）：
+
 ```bash
-# 后端单元测试
-pytest backend/tests/unit
+# 后端测试（默认套件，排除需真机的 e2e）
+PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -v
 
-# 后端集成测试
-pytest backend/tests/integration
+# 前端单元测试
+cd frontend && npx vitest run
 
-# 前端测试
-cd frontend && npm run test
+# 端到端测试（需连接 Android 设备，在仓库根运行）
+npm run test:e2e
 
-# E2E 测试
-cd frontend && npm run test:e2e
+# 本地 CI 门禁（等价于 GitHub Actions）
+make ci
 ```
+
+CI：push/PR 到 `master` 触发 `.github/workflows/ci.yml`（E2E 不进 CI，仅本地跑）。
 
 ## 📝 开发指南
 
@@ -246,6 +251,6 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 **项目状态**：🚧 积极开发中
 
-**最新版本**：v0.1.0 (2026-09-08)
+**最新版本**：v0.1.0 (2026-09-18)
 
-**下一步**：完成设备管理服务 → 视频流集成 → 无限调试功能
+**下一步**：Windows 绿色免安装 exe 打包（见 `方案/15`）

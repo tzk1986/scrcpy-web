@@ -1,3 +1,7 @@
+# [注意] 开发参考：此 Docker 配置未在 Linux 容器实测，仅作服务器化方向的骨架。
+# 前端构建/运行本身跨平台，但与后端联调依赖 Windows 专属组件，未端到端验证。
+# 当前受支持运行方式见 docs/部署指南.md。
+
 FROM node:20-alpine as builder
 
 WORKDIR /app

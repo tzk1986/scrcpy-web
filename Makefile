@@ -1,17 +1,18 @@
-.PHONY: dev test build clean lint format help install install-backend install-frontend docker-up docker-down db-init
+.PHONY: dev test build clean lint ci format help install install-backend install-frontend docker-up docker-down db-init
 
 help:
 	@echo "OpenScrcpy Development Commands:"
 	@echo ""
 	@echo "  make dev            - Start development servers (backend + frontend)"
-	@echo "  make test           - Run all tests (pytest + vitest)"
+	@echo "  make test           - Run unit/integration tests (pytest + vitest, 排除 e2e)"
 	@echo "  make lint           - Run linters (ruff + mypy + eslint)"
+	@echo "  make ci             - 本地 CI 门禁 (ruff+mypy+pytest / eslint+vitest+build)"
 	@echo "  make format         - Format code (ruff + eslint)"
 	@echo "  make build          - Build for production"
 	@echo "  make clean          - Clean build artifacts"
 	@echo "  make install        - Install all dependencies"
-	@echo "  make docker-up      - Start Docker containers"
-	@echo "  make docker-down    - Stop Docker containers"
+	@echo "  make docker-up      - [可选/未验证] Start Docker containers"
+	@echo "  make docker-down    - [可选/未验证] Stop Docker containers"
 	@echo "  make db-init        - Initialize database"
 	@echo ""
 
@@ -20,15 +21,23 @@ dev:
 
 test:
 	@echo "Running backend tests..."
-	python -m pytest backend/tests -v
+	PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -v
 	@echo "Running frontend tests..."
-	cd frontend && npm run test
+	cd frontend && npx vitest run
 
 lint:
 	@echo "Running backend linters..."
-	ruff check backend/app
+	python -m ruff check backend/app
+	python -m mypy backend/app
 	@echo "Running frontend linters..."
 	cd frontend && npm run lint
+
+# 本地等价 CI 门禁：与 .github/workflows/ci.yml 步骤一致
+ci:
+	python -m ruff check backend/app
+	python -m mypy backend/app
+	PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -q
+	cd frontend && npm run lint && npx vitest run && npm run build
 
 format:
 	@echo "Formatting backend..."

@@ -1,3 +1,6 @@
+# [注意] 开发参考：本项目依赖 Windows 专属组件(ConPTY/pywinpty、scrcpy.exe、ProactorEventLoop)，
+# 此 Docker 编排未在 Linux 容器实测，仅作服务器化方向的骨架。当前受支持运行方式见 docs/部署指南.md。
+
 version: '3.8'
 
 services:
