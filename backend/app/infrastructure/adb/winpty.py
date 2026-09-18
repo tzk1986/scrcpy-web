@@ -136,7 +136,9 @@ class ConPtyProcess:
             subprocess.run(
                 ["taskkill", "/PID", str(self.pty.pid), "/T", "/F"],
                 capture_output=True, timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                # CREATE_NO_WINDOW 仅在 Windows typeshed 定义，直引会让 Linux CI 的
+                # mypy 报 attr-defined。此路径运行时恒在 Windows，getattr 兜底仅为跨平台静态检查。
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception as e:
             logger.warning("conpty_kill_failed", error=str(e))
