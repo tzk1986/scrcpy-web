@@ -90,6 +90,9 @@ class StreamConfig(BaseSettings):
     # 自适应码率：scrcpy 协议无运行中改码率消息，通过按档重启编码器实现（每次切换约 1-3s 黑屏）
     adaptive_bitrate: bool = True
     bitrate_tiers: str = "8M,4M,2M,1M"  # 降序档位阶梯，起始档取不超过 bit_rate 的最大档
+    # 视频流协议兜底开关：False（默认）走 12 字节包头协议（方案 17 实施项 1b）；
+    # 真机验证失败时置 True 回退 raw_stream 裸流 + 启发式解析（实施项 1a/1a 尾步骤路径）
+    raw_stream_fallback: bool = False
 
 
 class DebugConfig(BaseSettings):

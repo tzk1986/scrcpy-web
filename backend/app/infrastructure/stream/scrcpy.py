@@ -11,41 +11,36 @@ scrcpy-server 视频编码器
     2. 使用 adb forward 建立端口转发：tcp:PORT → localabstract:scrcpy
     3. 通过 adb shell 启动 scrcpy-server（tunnel_forward=true 模式）
     4. Python 作为 TCP 客户端连接到 127.0.0.1:PORT → adb 隧道 → 设备端 server 接受
-    5. 建立双连接：视频 socket + 控制 socket
-    6. 协议握手：读取 dummy byte (0x00) + 设备名 (64字节) + 分辨率 (4字节)
-    7. 从视频 socket 读取原始 H.264 字节流
-    8. yield 原始字节给上层（video.py 中 H264Parser 负责解析为 NALU）
-    9. 停止时 kill 进程并清理端口转发
+    5. 建立双连接：视频 socket + 控制 socket（server 待两者就绪才开流）
+    6. 视频 socket 按 12 字节头协议切包（stream_protocol.read_packets），
+       yield 完整包载荷给上层（video.py 中 H264Parser 负责解析为 NALU）
+    7. 停止时 kill 进程并清理端口转发
 
 控制输入：
     - 通过控制 socket 发送二进制控制消息（scrcpy 协议）
     - 延迟 <5ms（对比 adb shell input 的 50-200ms）
     - 控制 socket 不可用时自动回退到 adb shell input
 
-关键细节（参考 py-scrcpy-client 实现）：
-    - 使用 scrcpy-server v2.4
-    - socket 名称固定为 "scrcpy"（v2.x 协议）
-    - 必须建立双连接（视频 + 控制），即使不使用控制功能
-    - 必须指定 video_encoder 和 video_codec 参数
-    - tunnel_forward=true：server 在设备端监听（LocalServerSocket），等待连接
-    - adb forward：Python 连接本地端口 → adb 隧道 → 设备端 server 接受
-
-协议握手流程（scrcpy v2.4）：
-    1. 服务器发送 1 字节 dummy byte (0x00)
-    2. 服务器发送 64 字节设备名（UTF-8，null 填充）
-    3. 服务器发送 4 字节 codec 名称（ASCII 字符串，如 "h264"）
-    4. 服务器发送 4 字节宽度（uint32，大端序）
-    5. 服务器发送 4 字节高度（uint32，大端序）
-    6. 之后开始发送 H.264 视频数据
+视频流协议（scrcpy-server v4.1，官方源码 fa57d7c6 逐字段核对）：
+    - 默认 send_stream_meta/send_frame_meta/send_device_meta/send_dummy_byte
+      均开启（服务端点 Options/Streamer.java）
+    - 建连后客户端先收 1B dummy byte + 64B 设备名
+    - 随后 4B codec id（大端，"h264" = 0x68323634；0=禁用流、1=配置错误）
+    - 12B session 包：bit63 置位 + 宽高（大端 uint32）；编码器重启时再现
+    - 媒体/配置包：12B 头 = 8B PTS/flags（bit62=config、bit61=关键帧）
+      + 4B 载荷长度（大端）+ 载荷；config 包载荷为 Annex B SPS/PPS
+    - 分辨率取自 session 包，不再依赖 adb shell wm size 子进程
+    - 兜底：stream.raw_stream_fallback=true 时回退 raw_stream 裸流
+      （64KB 块读 + 上层启发式解析，方案 17 实施项 1a 路径）
 
 参考：
-    - py-scrcpy-client: https://github.com/leng-yue/py-scrcpy-client
     - scrcpy 官方源码: https://github.com/Genymobile/scrcpy
 """
 
 import asyncio
 from typing import Any, AsyncIterator
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import EncoderOpts
 from app.scrcpy.server_manager import ServerManager
@@ -56,6 +51,13 @@ from app.scrcpy.constants import (
     SCRCPY_SERVER_VERSION,
     VIDEO_STREAM_FRAME_SIZE,
     ADB_TIMEOUT_SECONDS,
+)
+from app.scrcpy.stream_protocol import (
+    SessionEvent,
+    StreamConfigError,
+    StreamDisabled,
+    UnsupportedCodecError,
+    read_packets,
 )
 
 logger = get_logger(__name__)
@@ -176,6 +178,12 @@ class ScrcpyEncoder:
             raise RuntimeError(f"adb forward failed: {error_msg}")
 
         # 5. 构建 scrcpy-server 启动命令
+        # 12 字节头协议（方案 17 实施项 1b）：恢复默认 send_stream_meta/
+        # send_frame_meta/send_device_meta/send_dummy_byte（全 true），
+        # 由服务端按 size 字段切帧、config/keyframe 标志随包携带。
+        # 兜底（stream.raw_stream_fallback=true）：raw_stream 裸流 +
+        # 上层启发式解析（实施项 1a 路径）。
+        raw_fallback = settings().stream.raw_stream_fallback
         cmd = [
             "adb", "-s", device_id, "shell",
             f"CLASSPATH={SCRCPY_SERVER_REMOTE_PATH}",
@@ -188,8 +196,6 @@ class ScrcpyEncoder:
             f"video_bit_rate={bit_rate_value}",
             "video_codec=h264",
             "tunnel_forward=true",
-            "send_frame_meta=false",
-            "raw_stream=true",       # 禁用 dummy byte + device meta + codec header，直接输出原始 H264
             "control=true",
             "audio=false",
             "show_touches=false",
@@ -197,6 +203,11 @@ class ScrcpyEncoder:
             "power_off_on_close=false",
             "clipboard_autosync=false",
         ]
+        if raw_fallback:
+            cmd += [
+                "send_frame_meta=false",
+                "raw_stream=true",   # 禁用 dummy byte + device meta + codec header，直接输出原始 H264
+            ]
 
         logger.info("starting_scrcpy_server", device=device_id)
 
@@ -304,36 +315,41 @@ class ScrcpyEncoder:
 
         logger.info("connected_to_scrcpy_server", device=device_id)
 
-        # 9. 获取设备分辨率（通过 adb，因为 raw_stream=true 跳过协议握手）
-        # raw_stream=true 禁用了 dummy byte / device meta / codec header，
-        # 视频 socket 直接输出原始 H264 数据，无需读取协议字段。
-        try:
-            resolution_proc = await asyncio.create_subprocess_exec(
-                "adb", "-s", device_id, "shell", "wm", "size",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(resolution_proc.communicate(), timeout=5.0)
-            # 解析输出，如 "Physical size: 1080x1920"
-            output = stdout.decode().strip()
-            for size_line in output.splitlines():
-                if "size" in size_line.lower():
-                    # 提取 "1080x1920" 部分
-                    parts = size_line.split(":")
-                    if len(parts) >= 2:
-                        size_str = parts[-1].strip()
-                        if "x" in size_str:
-                            w, h = size_str.split("x")
-                            self._resolution = (int(w), int(h))
-                            logger.info("scrcpy_resolution",
-                                       device=device_id,
-                                       width=self._resolution[0],
-                                       height=self._resolution[1])
-                            break
-        except Exception as e:
-            logger.warning("resolution_adb_error", device=device_id, error=str(e))
+        # 9. 获取设备分辨率
+        # 12B 头协议：分辨率由流内 session 包提供（read_socket 中解析），
+        # 此步骤跳过，不再依赖 adb shell wm size 子进程。
+        # raw_stream 兜底模式保留 adb wm size 路径。
+        if raw_fallback:
+            try:
+                resolution_proc = await asyncio.create_subprocess_exec(
+                    "adb", "-s", device_id, "shell", "wm", "size",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(resolution_proc.communicate(), timeout=5.0)
+                # 解析输出，如 "Physical size: 1080x1920"
+                output = stdout.decode().strip()
+                for size_line in output.splitlines():
+                    if "size" in size_line.lower():
+                        # 提取 "1080x1920" 部分
+                        parts = size_line.split(":")
+                        if len(parts) >= 2:
+                            size_str = parts[-1].strip()
+                            if "x" in size_str:
+                                w, h = size_str.split("x")
+                                self._resolution = (int(w), int(h))
+                                logger.info("scrcpy_resolution",
+                                           device=device_id,
+                                           width=self._resolution[0],
+                                           height=self._resolution[1])
+                                break
+            except Exception as e:
+                logger.warning("resolution_adb_error", device=device_id, error=str(e))
 
-        # 10. 建立控制 socket 并创建 ControlSender
+        # 10. 建立控制 socket
+        # ControlSender 需要分辨率：12B 协议下分辨率来自流内 session 包，
+        # 由 read_socket 在收到首个 session 时创建；raw 兜底模式分辨率
+        # 已在上一步由 adb 获取，直接创建。
         logger.info("establishing_control_connection", device=device_id)
         try:
             _, control_writer = await asyncio.wait_for(
@@ -342,37 +358,68 @@ class ScrcpyEncoder:
             )
             self._control_writer = control_writer
 
-            # 创建控制消息发送器（需要分辨率）
-            if self._resolution != (0, 0):
-                self._control_sender = ControlSender(
-                    self._control_writer, self._resolution)
-                logger.info("control_sender_created",
-                           device=device_id,
-                           resolution=self._resolution)
-            else:
-                logger.warning("resolution_unknown_control_sender_not_created",
-                              device=device_id)
+            if raw_fallback:
+                # 创建控制消息发送器（需要分辨率）
+                if self._resolution != (0, 0):
+                    self._control_sender = ControlSender(
+                        self._control_writer, self._resolution)
+                    logger.info("control_sender_created",
+                               device=device_id,
+                               resolution=self._resolution)
+                else:
+                    logger.warning("resolution_unknown_control_sender_not_created",
+                                  device=device_id)
 
         except Exception as e:
             logger.warning("control_connection_failed", device=device_id, error=str(e))
             # 控制连接失败不是致命的，会回退到 adb shell input
 
         # 11. 后台任务：从 socket 读取数据到队列
+        # 12B 头协议：按包切分（stream_protocol.read_packets），一包一
+        # yield；config/session 包永不丢，媒体包队列满时丢整包保时延
+        # （包边界对齐，丢包不产生半帧损坏）。
         async def read_socket() -> None:
             try:
-                while self._running and self._reader:
-                    chunk = await self._reader.read(VIDEO_STREAM_FRAME_SIZE)
-                    if not chunk:
-                        logger.info("socket_closed", device=device_id)
-                        break
-                    try:
-                        await asyncio.wait_for(
-                            self._data_queue.put(chunk),
-                            timeout=1.0,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("socket_queue_full_dropping_chunk",
-                                       device=device_id, chunk_size=len(chunk))
+                if raw_fallback:
+                    while self._running and self._reader:
+                        chunk = await self._reader.read(VIDEO_STREAM_FRAME_SIZE)
+                        if not chunk:
+                            logger.info("socket_closed", device=device_id)
+                            break
+                        try:
+                            await asyncio.wait_for(
+                                self._data_queue.put(chunk),
+                                timeout=1.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("socket_queue_full_dropping_chunk",
+                                           device=device_id, chunk_size=len(chunk))
+                else:
+                    assert self._reader is not None
+                    async for event in read_packets(self._reader):
+                        if isinstance(event, SessionEvent):
+                            self._handle_session_event(device_id, event)
+                        elif event.is_config:
+                            # config 包（SPS/PPS）是解码前提，宁可阻塞也不丢
+                            await self._data_queue.put(event.payload)
+                        else:
+                            try:
+                                await asyncio.wait_for(
+                                    self._data_queue.put(event.payload),
+                                    timeout=1.0,
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "socket_queue_full_dropping_packet",
+                                    device=device_id,
+                                    packet_size=len(event.payload))
+            except StreamDisabled:
+                logger.warning("video_stream_disabled_by_device", device=device_id)
+            except StreamConfigError:
+                logger.error("video_stream_config_error_on_device", device=device_id)
+            except UnsupportedCodecError as e:
+                logger.error("video_stream_unsupported_codec",
+                             device=device_id, error=str(e))
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -419,6 +466,30 @@ class ScrcpyEncoder:
             except asyncio.CancelledError:
                 pass
             await self.stop()
+
+    # =========================================================================
+    # 协议事件处理
+    # =========================================================================
+
+    def _handle_session_event(self, device_id: str, event: SessionEvent) -> None:
+        """
+        处理 12B 协议 session 包：更新分辨率并（首包时）创建 ControlSender。
+
+        session 包出现于流起始与编码器重启（resize/码率切换），
+        分辨率以此为准（替代 adb shell wm size）。
+        """
+        self._resolution = (event.width, event.height)
+        logger.info("session_meta_received", device=device_id,
+                    width=event.width, height=event.height,
+                    client_resized=event.client_resized)
+
+        if self._control_sender is not None:
+            self._control_sender.update_resolution(self._resolution)
+        elif self._control_writer is not None:
+            self._control_sender = ControlSender(
+                self._control_writer, self._resolution)
+            logger.info("control_sender_created",
+                       device=device_id, resolution=self._resolution)
 
     # =========================================================================
     # 控制输入方法

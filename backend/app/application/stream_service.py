@@ -180,6 +180,17 @@ class StreamService:
         """当前流的重启轮次（每次自适应码率重启 +1），WS 层据此重置解析器。"""
         return self._epoch.get(device_id, 0)
 
+    def use_packet_protocol(self) -> bool:
+        """
+        当前推流是否走 12 字节包头协议（方案 17 实施项 1b）。
+
+        False 表示 stream.raw_stream_fallback 兜底模式（裸流 +
+        启发式解析）。WS 层据此决定帧聚合策略：协议模式下每次
+        yield 恰为服务端一个完整包（= 一个 AU），包内 NALU 直接
+        合并发送；兜底模式下沿用 AU 启发式聚合（实施项 1a 尾步骤）。
+        """
+        return not settings().stream.raw_stream_fallback
+
     def peek_pending_bitrate(self, device_id: str) -> int | None:
         """查看待生效的码率切换（帧循环消费前可被 WS 层读到以通知客户端）。"""
         return self._pending_bitrate.get(device_id)

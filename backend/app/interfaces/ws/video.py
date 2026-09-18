@@ -25,9 +25,11 @@
         { "action": "text", "text": "hello" }
 
 H.264 流处理：
-    - 使用 H264Parser 解析 MP4 容器中的 H.264 NAL 单元
-    - 发送 SPS/PPS 作为配置信息
-    - 发送 IDR 帧和 P/B 帧作为二进制数据
+    - 输入为 scrcpy-server 12B 包头协议切分后的完整包载荷
+      （Annex B，实施项 1b），或 raw_stream 兜底裸流（实施项 1a）
+    - 使用 H264Parser 提取 NAL 单元，拦截 SPS/PPS 下发 config
+    - 帧聚合：包头协议按包边界直接合并（一包 = 一 AU），
+      兜底模式走 AU 启发式聚帧（实施项 1a 尾步骤）
     - 客户端使用 WebCodecs VideoDecoder 解码
 
 连接生命周期：
@@ -75,6 +77,9 @@ async def video_stream(
     pps_data = None
     config_sent = False
     seen_epoch = stream_service.get_stream_epoch(device_id)
+    # 12B 包头协议（实施项 1b）：每次 yield 恰为服务端一个完整包（= 一个 AU），
+    # 包边界即帧边界；False 为 raw_stream 兜底（实施项 1a 路径），走启发式聚帧
+    packet_mode = stream_service.use_packet_protocol()
     # 跨 chunk 悬空前缀 NALU（SEI 等尚无 VCL 可挂靠），聚帧器交还后并入下一批
     pending_aus: list[bytes] = []
 
@@ -132,7 +137,7 @@ async def video_stream(
             nalus = parser.feed(chunk)
 
             # SPS/PPS 拦截用于 config 下发，不随帧流转发；
-            # 其余 NALU 经启发式聚帧（方案 17 实施项 1a 尾步骤）后整 AU 发送
+            # 其余 NALU：包头协议按包合并 / 兜底模式启发式聚帧后整 AU 发送
             forward_nalus: list[bytes] = []
             for nalu in nalus:
                 nalu_type = parser.get_nalu_type(nalu)
@@ -155,6 +160,22 @@ async def video_stream(
 
                 else:
                     forward_nalus.append(nalu)
+
+            if packet_mode:
+                # 包头协议：本 chunk 即完整包（= 一个 AU），包内 NALU
+                # 合并单 AU 发送（多 slice 编码器也不会被误切）
+                if forward_nalus and config_sent:
+                    au = b''.join(forward_nalus)
+                    await websocket.send_bytes(au)
+                    frame_count += 1
+                    if frame_count <= 5:
+                        logger.info("video_frame_sent", device=device_id,
+                                   frame_count=frame_count,
+                                   au_size=len(au))
+                elif forward_nalus and frame_count == 0:
+                    logger.info("frame_before_config", device=device_id,
+                                au_size=len(forward_nalus[0]))
+                continue
 
             aus, pending_aus = aggregate_aus(forward_nalus, pending_aus)
             for au in aus:
