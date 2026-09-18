@@ -20,6 +20,6 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def setup_telemetry():
+def setup_telemetry() -> None:
     """配置 OpenTelemetry 追踪和指标（尚未实现）。"""
     logger.info("telemetry_setup_skipped")

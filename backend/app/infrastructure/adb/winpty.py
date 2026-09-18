@@ -35,7 +35,7 @@ import signal
 import subprocess
 import sys
 from shutil import which
-from typing import Sequence
+from typing import Any, Sequence, cast
 
 from app.core.logging import get_logger
 
@@ -62,12 +62,12 @@ def conpty_supported() -> bool:
 class _ConPtyStdout:
     """asyncio 风格 stdout：read(n) 返回 bytes，进程退出且无数据时返回 b''（EOF）。"""
 
-    def __init__(self, proc: "ConPtyProcess"):
+    def __init__(self, proc: "ConPtyProcess") -> None:
         self._proc = proc
 
     def _read_nb(self) -> str:
         # PTY.read 第一个位置参数是 blocking
-        return self._proc.pty.read(False)
+        return cast(str, self._proc.pty.read(False))
 
     async def read(self, n: int = 4096) -> bytes:
         # ConPTY 非阻塞读一次返回全部可用数据，忽略 n 上限
@@ -92,30 +92,30 @@ class _ConPtyStdout:
 class _ConPtyStdin:
     """asyncio 风格 stdin：write(bytes)。ConPTY 无 EOF，close 为 no-op。"""
 
-    def __init__(self, proc: "ConPtyProcess"):
+    def __init__(self, proc: "ConPtyProcess") -> None:
         self._proc = proc
 
-    def write(self, data: bytes):
+    def write(self, data: bytes) -> None:
         self._proc.pty.write(data.decode("utf-8", errors="replace"))
 
-    async def drain(self):
+    async def drain(self) -> None:
         pass  # pywinpty.write 为同步写入
 
-    def close(self):
+    def close(self) -> None:
         pass  # ConPTY 无 stdin EOF 语义；终止由 kill/terminate 负责
 
 
 class ConPtyProcess:
     """伪控制台子进程，最小实现 asyncio.subprocess.Process 所需接口。"""
 
-    def __init__(self, pty):
+    def __init__(self, pty: Any) -> None:
         self.pty = pty
         self.stdin = _ConPtyStdin(self)
         self.stdout = _ConPtyStdout(self)
 
     @property
     def pid(self) -> int:
-        return self.pty.pid
+        return cast(int, self.pty.pid)
 
     @property
     def returncode(self) -> int | None:
@@ -127,9 +127,10 @@ class ConPtyProcess:
     async def wait(self) -> int:
         while self.pty.isalive():
             await asyncio.sleep(0.05)
-        return self.returncode
+        rc = self.returncode
+        return rc if rc is not None else -1
 
-    def kill(self):
+    def kill(self) -> None:
         # 实际进程树为 cmd.exe → 目标命令，须连坐整棵树，否则目标进程成孤儿
         try:
             subprocess.run(
@@ -144,7 +145,7 @@ class ConPtyProcess:
             except Exception:
                 pass
 
-    def terminate(self):
+    def terminate(self) -> None:
         # Windows 无优雅终止语义，与 kill 等价（TerminateProcess）
         self.kill()
 

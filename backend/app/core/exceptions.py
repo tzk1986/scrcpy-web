@@ -69,7 +69,7 @@ class AdbError(OpenScrcpyException):
 # FastAPI 异常处理器
 # ---------------------------------------------------------------------------
 
-async def openscrcpy_exception_handler(request: Request, exc: OpenScrcpyException):
+async def openscrcpy_exception_handler(request: Request, exc: OpenScrcpyException) -> JSONResponse:
     """将领域异常转换为标准化的 400 JSON 响应。"""
     return JSONResponse(
         status_code=400,
@@ -77,7 +77,7 @@ async def openscrcpy_exception_handler(request: Request, exc: OpenScrcpyExceptio
     )
 
 
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     """将 HTTP 异常（404、422 等）转换为 JSON 格式。"""
     return JSONResponse(
         status_code=exc.status_code,
@@ -85,7 +85,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     )
 
 
-async def generic_exception_handler(request: Request, exc: Exception):
+async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """
     未预期错误的兜底处理器。
 

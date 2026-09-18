@@ -38,11 +38,11 @@ class WebTransportTransport:
     实现 domain.ports.Transport 协议。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化时记录警告日志。"""
         logger.warning("WebTransport not yet fully implemented")
 
-    async def send(self, frame: bytes):
+    async def send(self, frame: bytes) -> None:
         """
         发送二进制帧。
 
@@ -58,6 +58,6 @@ class WebTransportTransport:
         """
         raise NotImplementedError("WebTransport not yet implemented")
 
-    async def close(self):
+    async def close(self) -> None:
         """关闭传输连接（当前为空操作）。"""
         pass

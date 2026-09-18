@@ -25,7 +25,7 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 """
 
 import asyncio
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from app.core.config import settings
 from app.core.exceptions import AdbError
@@ -43,7 +43,7 @@ class AdbCliDriver:
     实现 domain.ports.AdbDriver 协议。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """从配置初始化 ADB 二进制路径。"""
         self.adb_path = settings().adb.path
 
@@ -231,6 +231,7 @@ class AdbCliDriver:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        assert proc.stdout is not None and proc.stderr is not None
         # 备用：启动后台任务消费 stderr（防止极端情况）
         stderr_task = asyncio.create_task(self._consume_stderr(proc.stderr))
 
@@ -300,7 +301,7 @@ class AdbCliDriver:
             logger.error("tcp_connect_failed", ip=ip, port=port, error=str(e))
             raise
 
-    async def disconnect_tcp(self, ip: str, port: int = 5555):
+    async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         """
         断开 TCP/IP 连接。
 
@@ -344,6 +345,7 @@ class AdbCliDriver:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        assert proc.stdout is not None and proc.stderr is not None
         # 新增：启动后台任务消费 stderr，防止管道缓冲区满导致死锁
         stderr_task = asyncio.create_task(self._consume_stderr(proc.stderr))
 
@@ -357,7 +359,7 @@ class AdbCliDriver:
             stderr_task.cancel()
             proc.kill()
 
-    async def push(self, device_id: str, local: str, remote: str):
+    async def push(self, device_id: str, local: str, remote: str) -> None:
         """
         将文件从主机推送到设备。
 
@@ -368,7 +370,7 @@ class AdbCliDriver:
         """
         await self._run_serial(device_id, "push", local, remote)
 
-    async def pull(self, device_id: str, remote: str, local: str):
+    async def pull(self, device_id: str, remote: str, local: str) -> None:
         """
         将文件从设备拉到主机。
 
@@ -379,7 +381,7 @@ class AdbCliDriver:
         """
         await self._run_serial(device_id, "pull", remote, local)
 
-    async def install(self, device_id: str, apk_path: str):
+    async def install(self, device_id: str, apk_path: str) -> None:
         """
         在设备上安装 APK（使用 -r 参数替换已存在的）。
 
@@ -418,7 +420,7 @@ class AdbCliDriver:
 
         return stdout
 
-    async def _consume_stderr(self, stderr):
+    async def _consume_stderr(self, stderr: asyncio.StreamReader) -> None:
         """
         消费 stderr 防止管道缓冲区满导致死锁。
 
@@ -438,7 +440,11 @@ class AdbCliDriver:
         except (asyncio.CancelledError, Exception):
             pass
 
-    async def create_shell(self, device_id: str, initial_output_callback=None) -> "ShellSession":
+    async def create_shell(
+        self,
+        device_id: str,
+        initial_output_callback: Callable[[str], None] | None = None,
+    ) -> "ShellSession":
         """
         创建交互式 shell 会话（PTY 模式）。
 

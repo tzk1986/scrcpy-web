@@ -25,13 +25,14 @@ setup_logging() 在应用启动时由 lifespan.py 调用一次。
 """
 
 import logging
+from typing import cast
 
 import structlog
 
 from app.core.config import settings
 
 
-def setup_logging():
+def setup_logging() -> None:
     """
     配置 structlog 处理器和输出格式。
 
@@ -72,4 +73,4 @@ def get_logger(name: str | None = None) -> structlog.BoundLogger:
         一个 structlog BoundLogger，支持关键字参数日志：
         ``logger.info("event_name", key=value)``。
     """
-    return structlog.get_logger(name)
+    return cast(structlog.BoundLogger, structlog.get_logger(name))

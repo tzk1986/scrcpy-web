@@ -55,7 +55,7 @@ class ServerManager:
     负责将 server 文件推送到 Android 设备并验证。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化 ServerManager。
 

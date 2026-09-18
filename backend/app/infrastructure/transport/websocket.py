@@ -37,7 +37,7 @@ class WebSocketTransport:
         """
         self.ws = ws
 
-    async def send(self, frame: bytes):
+    async def send(self, frame: bytes) -> None:
         """
         发送二进制帧。
 
@@ -55,6 +55,6 @@ class WebSocketTransport:
         """
         return await self.ws.receive_bytes()
 
-    async def close(self):
+    async def close(self) -> None:
         """关闭 WebSocket 连接。"""
         await self.ws.close()

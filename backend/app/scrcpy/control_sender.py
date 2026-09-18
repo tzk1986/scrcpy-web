@@ -68,7 +68,7 @@ class ControlSender:
         """获取当前屏幕分辨率。"""
         return self._resolution
 
-    def update_resolution(self, resolution: tuple[int, int]):
+    def update_resolution(self, resolution: tuple[int, int]) -> None:
         """更新屏幕分辨率（屏幕旋转时调用）。"""
         self._resolution = resolution
         logger.info("control_resolution_updated", resolution=resolution)
@@ -79,7 +79,7 @@ class ControlSender:
         y: int,
         action: int,
         pointer_id: int = -1,
-    ):
+    ) -> None:
         """
         发送触摸事件（32 字节）。
 
@@ -116,7 +116,7 @@ class ControlSender:
         action: int = ACTION_DOWN,
         repeat: int = 0,
         meta_state: int = 0,
-    ):
+    ) -> None:
         """
         发送按键事件（13 字节）。
 
@@ -140,7 +140,7 @@ class ControlSender:
         )
         await self._send(package)
 
-    async def text(self, text: str):
+    async def text(self, text: str) -> None:
         """
         发送文本输入。
 
@@ -162,7 +162,7 @@ class ControlSender:
         y: int,
         h_scroll: int,
         v_scroll: int,
-    ):
+    ) -> None:
         """
         发送滚动事件（21 字节）。
 
@@ -190,7 +190,7 @@ class ControlSender:
         package += struct.pack(">i", 0)
         await self._send(package)
 
-    async def back_or_screen_on(self, action: int = ACTION_DOWN):
+    async def back_or_screen_on(self, action: int = ACTION_DOWN) -> None:
         """
         发送返回或唤醒屏幕事件。
 
@@ -204,22 +204,22 @@ class ControlSender:
         package += struct.pack(">B", action)
         await self._send(package)
 
-    async def expand_notification_panel(self):
+    async def expand_notification_panel(self) -> None:
         """发送展开通知面板命令（1 字节）。"""
         package = struct.pack(">B", TYPE_EXPAND_NOTIFICATION_PANEL)
         await self._send(package)
 
-    async def expand_settings_panel(self):
+    async def expand_settings_panel(self) -> None:
         """发送展开设置面板命令（1 字节）。"""
         package = struct.pack(">B", TYPE_EXPAND_SETTINGS_PANEL)
         await self._send(package)
 
-    async def collapse_panels(self):
+    async def collapse_panels(self) -> None:
         """发送折叠面板命令（1 字节）。"""
         package = struct.pack(">B", TYPE_COLLAPSE_PANELS)
         await self._send(package)
 
-    async def set_display_power(self, on: bool):
+    async def set_display_power(self, on: bool) -> None:
         """
         设置屏幕电源状态。
 
@@ -233,7 +233,7 @@ class ControlSender:
         package += struct.pack(">?", on)
         await self._send(package)
 
-    async def _send(self, data: bytes):
+    async def _send(self, data: bytes) -> None:
         """
         线程安全发送数据。
 

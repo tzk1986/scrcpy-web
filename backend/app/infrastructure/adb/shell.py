@@ -37,11 +37,12 @@ import asyncio
 import re
 import sys
 import uuid
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.core.logging import get_logger
+from app.infrastructure.adb.winpty import ConPtyProcess
 
 logger = get_logger(__name__)
 
@@ -65,25 +66,29 @@ class InteractiveShell:
 
     READ_TIMEOUT = 30.0  # 读取超时（支持长时间运行的命令）
 
-    def __init__(self):
+    def __init__(self) -> None:
         """从配置初始化 ADB 二进制路径。"""
         self._adb_path = settings().adb.path
         # ConPTY 模式下为 ConPtyProcess（鸭子类型，最小 Process 接口）
-        self._proc: asyncio.subprocess.Process | None = None
+        self._proc: asyncio.subprocess.Process | ConPtyProcess | None = None
         self._lock = asyncio.Lock()
         self._device_id: str | None = None
         # 输出路由
         self._output_queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._exec_queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._executing = False
-        self._reader_task: asyncio.Task | None = None
+        self._reader_task: asyncio.Task[None] | None = None
 
     @property
     def is_alive(self) -> bool:
         """检查 shell 进程是否存活"""
         return self._proc is not None and self._proc.returncode is None
 
-    async def start(self, device_id: str, initial_output_callback=None):
+    async def start(
+        self,
+        device_id: str,
+        initial_output_callback: Callable[[str], None] | None = None,
+    ) -> None:
         """
         启动 adb shell -tt（强制 PTY）。
 
@@ -123,7 +128,7 @@ class InteractiveShell:
         # 启动后台读取器（持续读取 stdout 并路由到队列）
         self._reader_task = asyncio.create_task(self._background_reader())
 
-    async def _spawn_process(self, device_id: str):
+    async def _spawn_process(self, device_id: str) -> asyncio.subprocess.Process | ConPtyProcess:
         """
         启动 adb shell 子进程。
 
@@ -149,12 +154,15 @@ class InteractiveShell:
             stderr=asyncio.subprocess.PIPE,
         )
 
-    async def _read_until_prompt(self, callback=None):
+    async def _read_until_prompt(
+        self, callback: Callable[[str], None] | None = None
+    ) -> None:
         """读取初始输出，直到看到 shell prompt，并转发给回调。
 
         超时策略：每次 read 最多等待 5s（网络设备延迟较高）。
         循环读取直到检测到 prompt 或超时。
         """
+        assert self._proc is not None and self._proc.stdout is not None
         try:
             while True:
                 chunk = await asyncio.wait_for(
@@ -177,7 +185,7 @@ class InteractiveShell:
         except asyncio.TimeoutError:
             logger.info("initial_output_timeout", total_len=len(self._initial_output))
 
-    async def _background_reader(self):
+    async def _background_reader(self) -> None:
         """
         后台任务：持续读取 stdout 并路由到适当的队列。
 
@@ -191,6 +199,7 @@ class InteractiveShell:
 
         当 stdout 返回空数据（EOF）时退出。
         """
+        assert self._proc is not None and self._proc.stdout is not None
         while True:
             try:
                 raw = await self._proc.stdout.read(4096)
@@ -250,6 +259,7 @@ class InteractiveShell:
 
             # 设置执行状态（后台读取器会将输出路由到 _exec_queue）
             self._executing = True
+            assert self._proc is not None and self._proc.stdin is not None
 
             # 写入命令 + 标记（合并 stderr）
             line = f'{cmd} 2>&1 ; echo "\\n{marker}"\n'
@@ -284,7 +294,7 @@ class InteractiveShell:
                 # 清除执行状态（后续输出回到 _output_queue）
                 self._executing = False
 
-    async def send_input(self, data: bytes):
+    async def send_input(self, data: bytes) -> None:
         """
         发送原始输入（按键）到 shell。
 
@@ -297,6 +307,7 @@ class InteractiveShell:
         async with self._lock:
             if not self.is_alive:
                 raise ShellExitedError("Shell process not running")
+            assert self._proc is not None and self._proc.stdin is not None
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
 
@@ -320,7 +331,7 @@ class InteractiveShell:
         """
         return self._initial_output
 
-    async def stop(self):
+    async def stop(self) -> None:
         """
         安全关闭 shell 进程。
 
@@ -339,6 +350,7 @@ class InteractiveShell:
                     pass
 
             # 2. 关闭 stdin
+            assert self._proc.stdin is not None
             self._proc.stdin.close()
             try:
                 # 3. 等待 3 秒让 shell 自然退出
@@ -348,15 +360,16 @@ class InteractiveShell:
                 self._proc.kill()
                 await self._proc.wait()
 
-            # 5. 清理 transport（避免 Windows 资源泄漏）
-            try:
-                self._proc.stdout._transport.close()
-            except Exception:
-                pass
-            try:
-                self._proc.stderr._transport.close()
-            except Exception:
-                pass
+            # 5. 清理 transport（避免 Windows 资源泄漏；_transport 为 asyncio 私有属性）
+            # 注意：ConPtyProcess 没有 stderr 属性，用 getattr 兼容
+            streams = [self._proc.stdout, getattr(self._proc, "stderr", None)]
+            for stream in streams:
+                transport = getattr(stream, "_transport", None)
+                if transport is not None:
+                    try:
+                        transport.close()
+                    except Exception:
+                        pass
             self._proc = None
             logger.info("shell_stopped", device=self._device_id)
 

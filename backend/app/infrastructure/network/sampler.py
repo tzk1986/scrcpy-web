@@ -100,7 +100,7 @@ class NetworkSampler:
         # 计算速率
         rx_rate = 0.0
         tx_rate = 0.0
-        if self._prev_rx is not None and self._prev_ts is not None:
+        if self._prev_rx is not None and self._prev_tx is not None and self._prev_ts is not None:
             elapsed = now - self._prev_ts
             if elapsed > 0:
                 rx_delta = rx_bytes - self._prev_rx
@@ -176,7 +176,7 @@ class NetworkSampler:
                         wlan_rx = rx
                         wlan_tx = tx
 
-            if wlan_rx is not None:
+            if wlan_rx is not None and wlan_tx is not None:
                 return wlan_rx, wlan_tx
             return total_rx, total_tx
 
@@ -307,8 +307,7 @@ class NetworkSampler:
                     ip_addr = str(ip6)
             else:
                 # 纯 IPv6 地址：直接转换
-                raw_bytes = bytes.fromhex(ip_hex)
-                ip_addr = str(ipaddress.IPv6Address(raw_bytes))
+                ip_addr = str(ipaddress.IPv6Address(bytes.fromhex(ip_hex)))
         else:
             ip_addr = f"[{ip_hex}]"
 

@@ -44,7 +44,7 @@ scrcpy-server 视频编码器
 """
 
 import asyncio
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from app.core.logging import get_logger
 from app.domain.ports import EncoderOpts
@@ -72,7 +72,7 @@ class ScrcpyEncoder:
     同时提供 send_input() 方法，通过控制 socket 发送二进制控制消息。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化编码器状态。"""
         self.process: asyncio.subprocess.Process | None = None
         self._running = False
@@ -85,7 +85,7 @@ class ScrcpyEncoder:
         self._server_manager = ServerManager()
         self._local_port = 27183
         self._socket_name: str = "scrcpy"  # 固定 socket 名称
-        self._data_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self._data_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -143,7 +143,7 @@ class ScrcpyEncoder:
             pass  # 忽略清理错误（可能本来就不存在）
 
         # 3. 转换 bit_rate 格式
-        bit_rate_value = opts.bit_rate
+        bit_rate_value: int | str = opts.bit_rate
         if isinstance(bit_rate_value, str):
             if bit_rate_value.endswith("M"):
                 bit_rate_value = int(float(bit_rate_value[:-1]) * 1000000)
@@ -208,19 +208,23 @@ class ScrcpyEncoder:
         )
         self._running = True
 
+        # stderr 固定为 PIPE（上面创建时指定），绑定局部变量便于类型收窄
+        assert self.process.stderr is not None
+        server_stderr = self.process.stderr
+
         # 7. 读取 server 启动日志（stderr），等待 "Device:" 确认启动成功
         server_ready = False
         try:
             for _ in range(30):  # 最多等待 3 秒
                 if self.process.returncode is not None:
-                    stderr_data = await self.process.stderr.read()
+                    stderr_data = await server_stderr.read()
                     error_msg = stderr_data.decode().strip()
                     logger.error("scrcpy_server_start_failed",
                                  device=device_id, error=error_msg)
                     raise RuntimeError(f"scrcpy-server failed: {error_msg}")
                 try:
                     line = await asyncio.wait_for(
-                        self.process.stderr.readline(),
+                        server_stderr.readline(),
                         timeout=0.1
                     )
                     if line:
@@ -242,13 +246,13 @@ class ScrcpyEncoder:
             logger.warning("server_ready_timeout", device=device_id)
 
         # 7.5 启动后台任务持续读取 server stderr 日志
-        async def read_server_logs():
+        async def read_server_logs() -> None:
             """持续读取 server stderr 输出"""
             try:
                 while self._running and self.process and self.process.returncode is None:
                     try:
                         line = await asyncio.wait_for(
-                            self.process.stderr.readline(),
+                            server_stderr.readline(),
                             timeout=1.0
                         )
                         if line:
@@ -279,7 +283,7 @@ class ScrcpyEncoder:
 
         # 7.6 检查 server 进程状态
         if self.process.returncode is not None:
-            stderr_data = await self.process.stderr.read()
+            stderr_data = await server_stderr.read()
             error_msg = stderr_data.decode().strip()
             logger.error("scrcpy_server_exited_early",
                         device=device_id,
@@ -312,10 +316,10 @@ class ScrcpyEncoder:
             stdout, _ = await asyncio.wait_for(resolution_proc.communicate(), timeout=5.0)
             # 解析输出，如 "Physical size: 1080x1920"
             output = stdout.decode().strip()
-            for line in output.splitlines():
-                if "size" in line.lower():
+            for size_line in output.splitlines():
+                if "size" in size_line.lower():
                     # 提取 "1080x1920" 部分
-                    parts = line.split(":")
+                    parts = size_line.split(":")
                     if len(parts) >= 2:
                         size_str = parts[-1].strip()
                         if "x" in size_str:
@@ -354,7 +358,7 @@ class ScrcpyEncoder:
             # 控制连接失败不是致命的，会回退到 adb shell input
 
         # 11. 后台任务：从 socket 读取数据到队列
-        async def read_socket():
+        async def read_socket() -> None:
             try:
                 while self._running and self._reader:
                     chunk = await self._reader.read(VIDEO_STREAM_FRAME_SIZE)
@@ -420,7 +424,7 @@ class ScrcpyEncoder:
     # 控制输入方法
     # =========================================================================
 
-    async def send_input(self, data: dict):
+    async def send_input(self, data: dict[str, Any]) -> None:
         """
         通过控制 socket 发送输入事件。
 
@@ -478,7 +482,7 @@ class ScrcpyEncoder:
             # 回退到 adb shell input
             await self._fallback_adb_input(data)
 
-    async def _send_swipe(self, data: dict):
+    async def _send_swipe(self, data: dict[str, Any]) -> None:
         """
         连续 MOVE 事件滑动（参考 py-scrcpy-client swipe()）。
 
@@ -517,7 +521,7 @@ class ScrcpyEncoder:
 
         await self._control_sender.touch(x2, y2, ACTION_UP)
 
-    async def _fallback_adb_input(self, data: dict):
+    async def _fallback_adb_input(self, data: dict[str, Any]) -> None:
         """
         回退到 adb shell input（控制 socket 不可用时）。
 
@@ -556,7 +560,7 @@ class ScrcpyEncoder:
         except Exception as e:
             logger.error("fallback_adb_input_failed", device=self._device_id, error=str(e))
 
-    async def stop(self):
+    async def stop(self) -> None:
         """停止编码并释放资源。"""
         logger.info("stopping_scrcpy_encoder", device=self._device_id)
         self._running = False
