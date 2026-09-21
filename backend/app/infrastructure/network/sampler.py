@@ -291,23 +291,19 @@ class NetworkSampler:
             ip_addr = f"{ip_bytes[0]}.{ip_bytes[1]}.{ip_bytes[2]}.{ip_bytes[3]}"
         elif len(ip_hex) == 32:
             # IPv6（/proc/net/tcp6 格式）
-            # Linux 内核存储方式：
-            # - 纯 IPv6 地址：网络字节序（直接转换）
-            # - IPv4 映射地址（::ffff:x.x.x.x）：混合字节序（需每 32-bit 字反转）
-            if ip_hex.upper().startswith('0000000000000000FFFF'):
-                # IPv4 映射地址：每 32-bit 字反转
-                raw_bytes = bytearray(16)
-                for i in range(4):
-                    chunk = bytes.fromhex(ip_hex[i*8:(i+1)*8])
-                    raw_bytes[i*4:(i+1)*4] = chunk[::-1]
-                ip6 = ipaddress.IPv6Address(bytes(raw_bytes))
-                if ip6.ipv4_mapped:
-                    ip_addr = f"::ffff:{ip6.ipv4_mapped}"
-                else:
-                    ip_addr = str(ip6)
+            # 内核按主机字节序逐 32-bit 字打印 s6_addr32，小端设备上每个字的
+            # 字节序被反转，需逐字反转恢复成网络字节序：
+            # - 纯 IPv6 地址：逐字反转后即标准表示
+            # - IPv4 映射地址（::ffff:x.x.x.x）：同样逐字反转
+            raw_bytes = bytearray(16)
+            for i in range(4):
+                chunk = bytes.fromhex(ip_hex[i*8:(i+1)*8])
+                raw_bytes[i*4:(i+1)*4] = chunk[::-1]
+            ip6 = ipaddress.IPv6Address(bytes(raw_bytes))
+            if ip6.ipv4_mapped:
+                ip_addr = f"::ffff:{ip6.ipv4_mapped}"
             else:
-                # 纯 IPv6 地址：直接转换
-                ip_addr = str(ipaddress.IPv6Address(bytes.fromhex(ip_hex)))
+                ip_addr = str(ip6)
         else:
             ip_addr = f"[{ip_hex}]"
 
