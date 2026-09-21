@@ -21,7 +21,7 @@ dev:
 
 test:
 	@echo "Running backend tests..."
-	PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -v
+	PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/e2e -v
 	@echo "Running frontend tests..."
 	cd frontend && npx vitest run
 
@@ -36,7 +36,7 @@ lint:
 ci:
 	python -m ruff check backend/app
 	python -m mypy backend/app
-	PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -q
+	PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/e2e -q
 	cd frontend && npm run lint && npx vitest run && npm run build
 
 format:

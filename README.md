@@ -199,7 +199,7 @@ scrcpy-web/
 
 ```bash
 # 后端测试（默认套件，排除需真机的 e2e；含覆盖率门禁 80%）
-PYTHONPATH=backend python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -v --cov=app --cov-fail-under=80
+PYTHONPATH=backend python -m pytest tests/ --ignore=tests/e2e -v --cov=app --cov-fail-under=80
 
 # 前端单元测试（含分层覆盖率门禁：services/stores ≥80%，关键组件 ≥70%）
 cd frontend && npx vitest run --coverage

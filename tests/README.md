@@ -8,16 +8,13 @@
 tests/
 ├── README.md              # 本文件
 ├── conftest.py            # 全局测试配置和共享 fixture
+├── unit/                  # 单元与接口层测试（含冒烟 test_health.py）
 ├── scrcpy/                # scrcpy 模块测试
-│   ├── __init__.py
-│   ├── test_constants.py
-│   ├── test_h264_parser.py
-│   ├── test_input_controller.py
-│   ├── test_server_manager.py
-│   └── test_encoder.py
-├── application/           # 应用层服务测试（待实现）
-├── infrastructure/        # 基础设施层测试（待实现）
-└── integration/           # 集成测试（待实现）
+├── application/           # 应用层服务测试
+├── infrastructure/        # 基础设施层测试
+├── e2e/                   # Playwright 端到端测试（需真机，本地跑）
+├── manual/                # 真机手工验证脚本
+└── integration/           # 已归档 → docs/archive/tests-integration-2026-09/
 ```
 
 ## 运行测试
@@ -97,19 +94,18 @@ def h264_parser():        # ✗ 错误：缺少 test_ 前缀
 - 特点：快速、隔离、可重复
 - 使用 mock 替换外部依赖
 
-### 集成测试 (Integration Tests)
+### 集成测试
 
-测试多个组件的协作，可能涉及外部服务。
-
-- 位置：`tests/integration/`
-- 特点：测试组件间交互
-- 可能需要真实设备或模拟环境
+原 `tests/integration/` 为早期真机 POC 脚本群，已归档至
+`docs/archive/tests-integration-2026-09/`（2026-09-21，详见该目录 README）。
+当前替代：mock 级协作验证由 `tests/unit/`、`tests/application/`、`tests/infrastructure/`
+承担；真机验证走 `tests/e2e/`（Playwright）与 `tests/manual/` 手工脚本。
 
 ### 端到端测试 (E2E Tests)
 
 测试完整的用户场景。
 
-- 位置：`tests/e2e/`（待创建）
+- 位置：`tests/e2e/`（Playwright，需真机 adb，本地跑）
 - 特点：模拟真实用户操作
 - 需要完整的测试环境
 

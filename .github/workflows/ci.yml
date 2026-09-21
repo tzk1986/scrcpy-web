@@ -26,7 +26,7 @@ jobs:
       - name: Mypy (strict)
         run: python -m mypy backend/app
       - name: Pytest (含覆盖率门禁 80%)
-        run: PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -q --cov=app --cov-fail-under=80
+        run: PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/e2e -q --cov=app --cov-fail-under=80
 
   frontend:
     runs-on: ubuntu-latest

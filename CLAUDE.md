@@ -15,14 +15,15 @@
 
 目录结构：
 - `tests/unit/` — 单元测试（不依赖外部服务）
-- `tests/integration/` — 集成测试（可能需要数据库、设备等）
 - `tests/scrcpy/` — scrcpy 相关模块测试
 - `tests/application/` — 应用层服务测试
 - `tests/infrastructure/` — 基础设施层测试
+- `tests/e2e/` — Playwright 端到端测试（需真机，本地跑，不入 CI）
+- `tests/manual/` — 真机手工验证脚本（不入 CI）
 
 禁止在项目根目录或 `backend/` 下创建测试文件。运行测试：
 ```bash
-PYTHONPATH=backend python -m pytest tests/ -v
+PYTHONPATH=backend python -m pytest tests/ --ignore=tests/e2e --cov=app --cov-fail-under=80
 ```
 
 ## 项目结构
