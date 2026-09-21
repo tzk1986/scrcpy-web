@@ -1,7 +1,6 @@
-// ESLint 9 flat config。
-// 说明：@vue/eslint-config-typescript@13 尚无 flat 导出（defineConfigWithVueTs 是 v14），
-// 为不新增/升级依赖，这里直接使用已随其安装的 @typescript-eslint v7（parser + plugin）
-// 与 eslint-plugin-vue 9.33 的 flat configs 组合出等价配置。
+// ESLint 9 flat config：显式组合 @typescript-eslint v7（parser + plugin）与 eslint-plugin-vue 9.33 的 flat configs。
+// 不依赖 @vue/eslint-config-typescript：v13 无 flat 导出，v14 会引入 @typescript-eslint v8 改变规则集；
+// 其残留依赖还曾拖垮 npm install（peer eslint ^8 与 eslint 9 冲突），已从 devDependencies 移除。
 import { defineConfig } from 'eslint/config'
 import js from '@eslint/js'
 import pluginVue from 'eslint-plugin-vue'
