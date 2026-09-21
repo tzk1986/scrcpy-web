@@ -25,6 +25,29 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "backend"))
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """兜底清理测试期间泄漏的 SQLite 连接池。
+
+    aiosqlite 的连接线程是非守护线程，连接不 close 会导致解释器退出时
+    永久 join、pytest 进程挂住（测试全过但 EXIT 不返回）。正常用例的
+    fixture 应自行关闭；这里兜住遗漏，保证 CI 不会因此卡死。
+    """
+    from app.infrastructure.persistence.sqlite import _POOLS
+
+    if not _POOLS:
+        return
+
+    async def _close_all() -> None:
+        while _POOLS:
+            _, pool = _POOLS.popitem()
+            try:
+                await pool.close()
+            except Exception:
+                pass
+
+    asyncio.run(_close_all())
+
+
 # ---------------------------------------------------------------------------
 # 基础 Fixture
 # ---------------------------------------------------------------------------

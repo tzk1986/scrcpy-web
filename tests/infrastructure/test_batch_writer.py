@@ -6,15 +6,16 @@ import pytest
 
 from app.domain.ports import LogEntry, LogFilter
 from app.infrastructure.persistence.batch_writer import BatchLogWriter
-from app.infrastructure.persistence.sqlite import SqliteDebugRepository, _POOLS
+from app.infrastructure.persistence.sqlite import SqliteDebugRepository
 
 
 @pytest.fixture
-def repo(tmp_path):
+async def repo(tmp_path):
     db = str(tmp_path / "bw.sqlite")
     r = SqliteDebugRepository(db)
     yield r
-    _POOLS.pop(db, None)
+    # aiosqlite 连接线程非守护，不关闭会阻塞解释器退出（pytest 挂起）
+    await r.close()
 
 
 def entry(i):

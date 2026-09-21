@@ -12,10 +12,13 @@ from app.infrastructure.persistence.sqlite import (
 
 
 @pytest.fixture
-def db_path(tmp_path):
+async def db_path(tmp_path):
     p = str(tmp_path / "pool_test.sqlite")
     yield p
-    _POOLS.pop(p, None)
+    # aiosqlite 连接线程非守护，不关闭会阻塞解释器退出（pytest 挂起）
+    pool = _POOLS.pop(p, None)
+    if pool is not None:
+        await pool.close()
 
 
 async def test_pool_reuses_connections(db_path):
