@@ -61,9 +61,11 @@ class DatabasePool:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         for _ in range(self.pool_size):
             conn = await aiosqlite.connect(self.db_path)
-            # WAL 提升读写并发；busy_timeout 防瞬时锁冲突报错
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout=5000")
+            # WAL 提升读写并发；busy_timeout 防瞬时锁冲突报错。
+            # 必须消费并关闭 PRAGMA 游标（execute_fetchall），否则语句残留
+            # 在连接上，后续 VACUUM 会报 "SQL statements in progress"。
+            await conn.execute_fetchall("PRAGMA journal_mode=WAL")
+            await conn.execute_fetchall("PRAGMA busy_timeout=5000")
             await self._pool.put(conn)
         self._initialized = True
 
