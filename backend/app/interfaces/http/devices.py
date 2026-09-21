@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import Response, StreamingResponse
 
 from app.application.device_service import DeviceService
+from app.core.exceptions import DeviceNotFoundError
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
 
@@ -132,7 +133,7 @@ async def device_events(service: DeviceService = Depends(get_device_service)) ->
 @router.get("/{device_id}")
 async def get_device(
     device_id: str, service: DeviceService = Depends(get_device_service)
-) -> DeviceInfo | dict[str, Any]:
+) -> DeviceInfo:
     """
     获取指定设备的详细信息。
 
@@ -140,11 +141,14 @@ async def get_device(
         device_id: 设备 ADB 序列号（路径参数）。
 
     返回：
-        DeviceInfo 对象，或 {"error": "Device not found"}。
+        DeviceInfo 对象。
+
+    异常：
+        DeviceNotFoundError: 设备未连接（映射为 404 DEVICE_NOT_FOUND）。
     """
     device = await service.get_device(device_id)
     if not device:
-        return {"error": "Device not found"}
+        raise DeviceNotFoundError(device_id)
     return device
 
 

@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.application.debug_service import DebugService
+from app.core.exceptions import SessionNotFoundError
 from app.deps import get_debug_service
 
 router = APIRouter(prefix="/api/debug", tags=["debug"])
@@ -67,12 +68,14 @@ async def get_session(
         session_id: 会话 ID（路径参数）。
 
     返回：
-        会话信息（session_id, device_id, user_id, is_active），
-        或 {"error": "Session not found"}。
+        会话信息（session_id, device_id, user_id, is_active）。
+
+    异常：
+        SessionNotFoundError: 会话不存在（映射为 404 SESSION_NOT_FOUND）。
     """
     session = await service.get_session(session_id)
     if not session:
-        return {"error": "Session not found"}
+        raise SessionNotFoundError(session_id)
     return {
         "session_id": session.id,
         "device_id": session.device_id,

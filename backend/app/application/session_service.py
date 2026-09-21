@@ -26,6 +26,7 @@
 
 from typing import Any, Optional
 
+from app.core.exceptions import PermissionDeniedError, SessionNotFoundError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,11 +76,11 @@ class SessionService:
             permission: 角色 — "admin" 或 "viewer"（默认）。
 
         异常：
-            ValueError: 如果 session_id 不存在。
+            SessionNotFoundError: 如果 session_id 不存在。
         """
         session = self.sessions.get(session_id)
         if not session:
-            raise ValueError("Session not found")
+            raise SessionNotFoundError(session_id)
         session["participants"][user_id] = permission
 
     async def leave_session(self, session_id: str, user_id: str) -> None:
@@ -111,14 +112,14 @@ class SessionService:
             to_user: 接收控制权的用户。
 
         异常：
-            ValueError: 如果 session_id 不存在。
-            PermissionError: 如果 from_user 不是 admin。
+            SessionNotFoundError: 如果 session_id 不存在。
+            PermissionDeniedError: 如果 from_user 不是 admin。
         """
         session = self.sessions.get(session_id)
         if not session:
-            raise ValueError("Session not found")
+            raise SessionNotFoundError(session_id)
         if session["participants"].get(from_user) != "admin":
-            raise PermissionError("Only admin can transfer control")
+            raise PermissionDeniedError("Only admin can transfer control")
         session["active_controller"] = to_user
 
     async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:

@@ -28,6 +28,7 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, WebSocket
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -37,6 +38,7 @@ from app.core.exceptions import (
     generic_exception_handler,
     http_exception_handler,
     openscrcpy_exception_handler,
+    validation_exception_handler,
 )
 from app.interfaces.http import apps, debug, devices, network, performance, sessions
 from app.interfaces.ws import debug as ws_debug
@@ -76,10 +78,11 @@ def create_app() -> FastAPI:
     )
 
     # --- 异常处理器 --------------------------------------------------------
-    # 三层：领域异常 → HTTP 异常 → 兜底。
+    # 四层：领域异常 → 校验错误 → HTTP 异常 → 兜底。
     # Starlette 的类型签名只接受 (Request, Exception) 处理器；
     # FastAPI 实际按异常类型精确分发，这里收窄的参数类型是安全的
     app.add_exception_handler(OpenScrcpyException, openscrcpy_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, generic_exception_handler)
 

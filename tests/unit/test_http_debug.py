@@ -4,10 +4,10 @@
 
 用 hand-rolled FakeDebugService 经 dependency_overrides 注入，覆盖：
     - POST   /api/debug/sessions                     创建（返回 session_id）
-    - GET    /api/debug/sessions/{id}                存在 / 不存在
+    - GET    /api/debug/sessions/{id}                存在 / 不存在（404）
     - GET    /api/debug/sessions/{id}/logs           过滤参数透传与默认值
     - GET    /api/debug/sessions/{id}/logs/export    json / csv 两种格式与响应头
-    - POST   /api/debug/sessions/{id}/shell          正常输出 / 服务抛 ValueError→500
+    - POST   /api/debug/sessions/{id}/shell          正常输出 / 会话缺失→404
     - DELETE /api/debug/sessions/{id}                关闭
     - POST   /api/debug/cleanup                      手动清理
     - DELETE /api/debug/sessions/{id}/logs           会话日志清理
@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from app.core.exceptions import SessionNotFoundError
 from app.deps import get_debug_service
 
 from .http_testkit import make_client, override
@@ -158,13 +159,15 @@ def test_get_session_found(fake: FakeDebugService) -> None:
 
 
 def test_get_session_not_found(fake: FakeDebugService) -> None:
-    """会话不存在返回 200 + error 字段（前端约定，非 404）。"""
+    """会话不存在返回 404 + 结构化错误体（统一契约，2026-09-21 由 200+字符串改）。"""
     client = make_client()
     with override(get_debug_service, fake):
         response = client.get(f"/api/debug/sessions/{SESSION}")
 
-    assert response.status_code == 200
-    assert response.json() == {"error": "Session not found"}
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {"code": "SESSION_NOT_FOUND", "message": f"Session not found: {SESSION}"}
+    }
 
 
 def test_close_session(fake: FakeDebugService) -> None:
@@ -252,16 +255,16 @@ def test_exec_shell_success(fake: FakeDebugService) -> None:
     assert fake.calls == [("exec_shell", SESSION, "ls /sdcard")]
 
 
-def test_exec_shell_session_missing_500(fake: FakeDebugService) -> None:
-    """服务抛 ValueError（会话不存在）→ 统一兜底 500，不泄露内部消息。"""
-    fake.shell_error = ValueError(f"Session not found: {SESSION}")
+def test_exec_shell_session_missing_404(fake: FakeDebugService) -> None:
+    """服务抛 SessionNotFoundError（会话不存在）→ 404 SESSION_NOT_FOUND（原为兜底 500）。"""
+    fake.shell_error = SessionNotFoundError(SESSION)
     client = make_client()
     with override(get_debug_service, fake):
         response = client.post(f"/api/debug/sessions/{SESSION}/shell", params={"command": "ls"})
 
-    assert response.status_code == 500
+    assert response.status_code == 404
     assert response.json() == {
-        "error": {"code": "INTERNAL_ERROR", "message": "An internal error occurred"}
+        "error": {"code": "SESSION_NOT_FOUND", "message": f"Session not found: {SESSION}"}
     }
 
 

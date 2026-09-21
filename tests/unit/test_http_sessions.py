@@ -4,10 +4,10 @@
 
 用 hand-rolled FakeSessionService 经 dependency_overrides 注入，覆盖：
     - POST /api/sessions                      创建（返回 session_id）
-    - GET  /api/sessions/{id}                 存在（原样透传）/ 不存在
-    - POST /api/sessions/{id}/join            permission 默认 viewer / 显式 admin
+    - GET  /api/sessions/{id}                 存在（原样透传）/ 不存在（404）
+    - POST /api/sessions/{id}/join            permission 默认 viewer / 显式 admin / 会话缺失→404
     - POST /api/sessions/{id}/leave           离开
-    - POST /api/sessions/{id}/transfer        转移成功 / PermissionError→500
+    - POST /api/sessions/{id}/transfer        转移成功 / 非 admin→403
 
 不触碰真实设备。
 """
@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from app.core.exceptions import PermissionDeniedError, SessionNotFoundError
 from app.deps import get_session_service
 
 from .http_testkit import make_client, override
@@ -107,13 +108,15 @@ def test_get_session_found_passthrough(fake: FakeSessionService) -> None:
 
 
 def test_get_session_not_found(fake: FakeSessionService) -> None:
-    """会话不存在返回 200 + error 字段（前端约定，非 404）。"""
+    """会话不存在返回 404 + 结构化错误体（统一契约，2026-09-21 由 200+字符串改）。"""
     client = make_client()
     with override(get_session_service, fake):
         response = client.get(f"/api/sessions/{SESSION}")
 
-    assert response.status_code == 200
-    assert response.json() == {"error": "Session not found"}
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {"code": "SESSION_NOT_FOUND", "message": f"Session not found: {SESSION}"}
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -177,10 +180,10 @@ def test_transfer_control_success(fake: FakeSessionService) -> None:
     assert fake.calls == [("transfer_control", SESSION, "user-1", "user-2")]
 
 
-def test_transfer_control_permission_denied_500(fake: FakeSessionService) -> None:
-    """非 admin 转移 → PermissionError 未被端点捕获 → 统一兜底 500。"""
+def test_transfer_control_permission_denied_403(fake: FakeSessionService) -> None:
+    """非 admin 转移 → PermissionDeniedError → 403 PERMISSION_DENIED（原为兜底 500）。"""
     fake.sessions[SESSION] = make_session()
-    fake.transfer_error = PermissionError("Only admin can transfer control")
+    fake.transfer_error = PermissionDeniedError("Only admin can transfer control")
     client = make_client()
     with override(get_session_service, fake):
         response = client.post(
@@ -188,18 +191,18 @@ def test_transfer_control_permission_denied_500(fake: FakeSessionService) -> Non
             params={"from_user": "user-2", "to_user": "user-3"},
         )
 
-    assert response.status_code == 500
+    assert response.status_code == 403
     assert response.json() == {
-        "error": {"code": "INTERNAL_ERROR", "message": "An internal error occurred"}
+        "error": {"code": "PERMISSION_DENIED", "message": "Only admin can transfer control"}
     }
 
 
-def test_join_session_missing_session_500(fake: FakeSessionService) -> None:
-    """会话不存在 → 服务抛 ValueError → 统一兜底 500。"""
-    fake.join_error = ValueError("Session not found")
+def test_join_session_missing_session_404(fake: FakeSessionService) -> None:
+    """会话不存在 → 服务抛 SessionNotFoundError → 404 SESSION_NOT_FOUND（原为兜底 500）。"""
+    fake.join_error = SessionNotFoundError(SESSION)
     client = make_client()
     with override(get_session_service, fake):
         response = client.post(f"/api/sessions/{SESSION}/join", params={"user_id": "user-2"})
 
-    assert response.status_code == 500
-    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "SESSION_NOT_FOUND"

@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from app.application.session_service import SessionService
+from app.core.exceptions import SessionNotFoundError
 from app.deps import get_session_service
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -59,12 +60,14 @@ async def get_session(
         session_id: 会话 ID（路径参数）。
 
     返回：
-        会话详情（包含 participants 和 active_controller），
-        或 {"error": "Session not found"}。
+        会话详情（包含 participants 和 active_controller）。
+
+    异常：
+        SessionNotFoundError: 会话不存在（映射为 404 SESSION_NOT_FOUND）。
     """
     session = await service.get_session(session_id)
     if not session:
-        return {"error": "Session not found"}
+        raise SessionNotFoundError(session_id)
     return session
 
 

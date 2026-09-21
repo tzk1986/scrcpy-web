@@ -21,6 +21,7 @@ import pytest
 import app.application.debug_service as dbg_mod
 from app.application.debug_service import DebugService
 from app.core.config import settings as get_settings
+from app.core.exceptions import SessionNotFoundError
 from app.domain.ports import LogEntry
 from app.domain.session import DebugSession
 
@@ -477,7 +478,7 @@ async def test_exec_shell_success_records_history():
 
 async def test_exec_shell_missing_session_raises():
     svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
-    with pytest.raises(ValueError):
+    with pytest.raises(SessionNotFoundError):
         await svc.exec_shell("nope", "ls")
 
 
@@ -517,7 +518,7 @@ async def test_get_or_create_shell_replaces_dead_instance():
 
 async def test_get_or_create_shell_missing_session_raises():
     svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
-    with pytest.raises(ValueError):
+    with pytest.raises(SessionNotFoundError):
         await svc.get_or_create_shell("nope")
 
 
@@ -625,7 +626,7 @@ async def test_exec_shell_stream_error_path_still_records_history():
 
 async def test_exec_shell_stream_missing_session_raises():
     svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
-    with pytest.raises(ValueError):
+    with pytest.raises(SessionNotFoundError):
         await svc.exec_shell_stream("nope", "ls")
 
 
@@ -645,7 +646,7 @@ async def test_exec_shell_stream_raw_yields_lines_and_records():
 
 async def test_exec_shell_stream_raw_missing_session_raises():
     svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
-    with pytest.raises(ValueError):
+    with pytest.raises(SessionNotFoundError):
         async for _line in svc._exec_shell_stream_raw("nope", "ls"):
             pass
 

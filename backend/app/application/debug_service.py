@@ -32,6 +32,7 @@ from typing import Any, AsyncIterator, Optional
 
 from fastapi import WebSocket
 
+from app.core.exceptions import SessionNotFoundError
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver, DebugRepository, LogEntry, LogFilter, ShellSession
 from app.domain.session import DebugSession
@@ -505,12 +506,12 @@ class DebugService:
             命令输出（stdout）。
 
         异常：
-            ValueError: 如果找不到 session_id。
+            SessionNotFoundError: 如果找不到 session_id。
             AdbError: 如果 ADB 命令失败。
         """
         session = self.sessions.get(session_id)
         if not session:
-            raise ValueError(f"Session not found: {session_id}")
+            raise SessionNotFoundError(session_id)
 
         output = await self.adb.shell(session.device_id, cmd)
         await self.repo.save_shell_history(session_id, cmd, output)
@@ -532,7 +533,7 @@ class DebugService:
             ShellSession 实例。
 
         异常：
-            ValueError: 如果找不到 session_id。
+            SessionNotFoundError: 如果找不到 session_id。
             AdbError: 如果启动失败。
         """
         if session_id in self.shell_sessions:
@@ -544,7 +545,7 @@ class DebugService:
 
         session = self.sessions.get(session_id)
         if not session:
-            raise ValueError(f"Session not found: {session_id}")
+            raise SessionNotFoundError(session_id)
 
         # 创建新 shell
         shell = await self.adb.create_shell(session.device_id)
@@ -650,11 +651,11 @@ class DebugService:
             字典 {"output": str, "success": bool}
 
         异常：
-            ValueError: 如果找不到 session_id。
+            SessionNotFoundError: 如果找不到 session_id。
         """
         session = self.sessions.get(session_id)
         if not session:
-            raise ValueError(f"Session not found: {session_id}")
+            raise SessionNotFoundError(session_id)
 
         collected_output = []
         success = True
@@ -690,12 +691,12 @@ class DebugService:
             每行输出（字符串）。
 
         异常：
-            ValueError: 如果找不到 session_id。
+            SessionNotFoundError: 如果找不到 session_id。
             ShellExitedError: 如果 shell 退出。
         """
         session = self.sessions.get(session_id)
         if not session:
-            raise ValueError(f"Session not found: {session_id}")
+            raise SessionNotFoundError(session_id)
 
         shell = await self.get_or_create_shell(session_id)
         collected_output = []

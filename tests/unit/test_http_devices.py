@@ -159,13 +159,28 @@ def test_get_device_found(fake: FakeDeviceService) -> None:
 
 
 def test_get_device_not_found(fake: FakeDeviceService) -> None:
-    """设备不存在返回 200 + error 字段（前端约定，非 404）。"""
+    """设备不存在返回 404 + 结构化错误体（统一契约，2026-09-21 由 200+字符串改）。"""
     client = make_client()
     with override(get_device_service, fake):
         response = client.get(f"/api/devices/{DEV}")
 
-    assert response.status_code == 200
-    assert response.json() == {"error": "Device not found"}
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {"code": "DEVICE_NOT_FOUND", "message": f"Device not found: {DEV}"}
+    }
+
+
+def test_validation_error_unified_shape(fake: FakeDeviceService) -> None:
+    """参数校验错误（缺必需查询参数）返回 422 且为 {"error": {...}} 统一形状。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/connect")  # 缺 ip
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert "ip" in body["error"]["message"]
+    assert "detail" not in body
 
 
 # ---------------------------------------------------------------------------
