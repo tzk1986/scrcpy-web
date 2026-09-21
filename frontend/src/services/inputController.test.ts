@@ -197,7 +197,7 @@ describe('鼠标手势', () => {
     })
   })
 
-  it('长按 500ms 发送原地 swipe（duration 1000ms）', () => {
+  it('长按 500ms 发送 long_press（duration 1000ms）', () => {
     vi.useFakeTimers()
     const ws = makeWs()
     const ic = new InputController(ws, 100, 100)
@@ -206,7 +206,7 @@ describe('鼠标手势', () => {
     vi.advanceTimersByTime(600)
 
     expect(ws.send).toHaveBeenCalledWith({
-      action: 'swipe', x1: 50, y1: 50, x2: 50, y2: 50, duration: 1000,
+      action: 'long_press', x: 50, y: 50, duration: 1000,
     })
   })
 
@@ -339,7 +339,7 @@ describe('触摸手势', () => {
     expect(ws.send).not.toHaveBeenCalled()
   })
 
-  it('触摸长按 500ms 发送原地 swipe', () => {
+  it('触摸长按 500ms 发送 long_press', () => {
     vi.useFakeTimers()
     const ws = makeWs()
     const ic = new InputController(ws, 100, 100)
@@ -348,7 +348,7 @@ describe('触摸手势', () => {
     vi.advanceTimersByTime(600)
 
     expect(ws.send).toHaveBeenCalledWith({
-      action: 'swipe', x1: 50, y1: 50, x2: 50, y2: 50, duration: 1000,
+      action: 'long_press', x: 50, y: 50, duration: 1000,
     })
   })
 

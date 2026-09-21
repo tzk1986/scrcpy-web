@@ -21,6 +21,7 @@
     客户端 → 服务端：JSON 消息
         { "action": "touch", "x": 100, "y": 200 }
         { "action": "swipe", "x1": 100, "y1": 200, "x2": 300, "y2": 400, "duration": 300 }
+        { "action": "long_press", "x": 100, "y": 200, "duration": 1000 }
         { "action": "key", "keycode": 4 }
         { "action": "text", "text": "hello" }
 
@@ -288,6 +289,7 @@ async def _handle_input(device_id: str, data: dict[str, Any], stream_service: St
     支持的 action：
         - touch: 触摸事件（x, y）
         - swipe: 滑动事件（x1, y1, x2, y2, duration）
+        - long_press: 长按事件（x, y, duration 默认 1000ms）
         - key: 按键事件（keycode）
         - text: 文本输入（text）
 

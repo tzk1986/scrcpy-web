@@ -505,6 +505,7 @@ class ScrcpyEncoder:
         支持的 action：
             - "touch": {"action": "touch", "x": 100, "y": 200}
             - "swipe": {"action": "swipe", "x1": 100, "y1": 200, "x2": 300, "y2": 400, "duration": 300}
+            - "long_press": {"action": "long_press", "x": 100, "y": 200, "duration": 1000}
             - "key": {"action": "key", "keycode": 4}
             - "text": {"action": "text", "text": "hello"}
 
@@ -534,6 +535,15 @@ class ScrcpyEncoder:
 
             elif action == "swipe":
                 await self._send_swipe(data)
+
+            elif action == "long_press":
+                x, y = data["x"], data["y"]
+                duration = data.get("duration", 1000)
+                logger.info("sending_long_press", device=self._device_id,
+                            x=x, y=y, duration=duration)
+                await self._control_sender.touch(x, y, ACTION_DOWN)
+                await asyncio.sleep(duration / 1000.0)
+                await self._control_sender.touch(x, y, ACTION_UP)
 
             elif action == "key":
                 keycode = data["keycode"]
@@ -614,6 +624,14 @@ class ScrcpyEncoder:
                 await asyncio.create_subprocess_exec(
                     "adb", "-s", self._device_id, "shell", "input", "swipe",
                     str(x1), str(y1), str(x2), str(y2), str(duration))
+
+            elif action == "long_press":
+                x, y = data["x"], data["y"]
+                duration = data.get("duration", 1000)
+                # 同点长时 swipe 是 adb 模拟长按的标准方式
+                await asyncio.create_subprocess_exec(
+                    "adb", "-s", self._device_id, "shell", "input", "swipe",
+                    str(x), str(y), str(x), str(y), str(duration))
 
             elif action == "key":
                 keycode = data["keycode"]

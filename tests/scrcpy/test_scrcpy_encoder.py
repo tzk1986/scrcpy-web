@@ -7,7 +7,7 @@ ScrcpyEncoder 单元测试（infrastructure/stream/scrcpy.py）
 - start()：opts 规范化（max_size 强制 0）、bit_rate 字符串换算、
   push/forward 失败、server 早退、socket 连接失败各异常路径、
   12B 包头读循环 yield、session 包更新分辨率、raw_stream 兜底模式
-- send_input() / _send_swipe() / _fallback_adb_input()：touch/swipe/key/text
+- send_input() / _send_swipe() / _fallback_adb_input()：touch/swipe/long_press/key/text
   分发与 adb shell input 回退（含报文/命令构造断言）
 - stop()：进程 terminate/kill、socket 关闭、forward --remove、状态复位
 
@@ -718,6 +718,30 @@ async def test_send_input_text_dispatches_to_control_sender():
     sender.text.assert_awaited_once_with("hello")
 
 
+async def test_send_input_long_press_holds_between_down_and_up():
+    """long_press → DOWN → 保持 duration/1000 秒 → UP，坐标一致。"""
+    encoder, sender = make_control_encoder()
+
+    with patch("asyncio.sleep", new=AsyncMock()) as sleeper:
+        await encoder.send_input({"action": "long_press", "x": 100, "y": 200, "duration": 1500})
+
+    calls = [(c.args[0], c.args[1], c.args[2]) for c in sender.touch.await_args_list]
+    assert calls == [(100, 200, ACTION_DOWN), (100, 200, ACTION_UP)]
+    sleeper.assert_awaited_once_with(1.5)
+
+
+async def test_send_input_long_press_default_duration():
+    """long_press 未传 duration → 默认保持 1000ms。"""
+    encoder, sender = make_control_encoder()
+
+    with patch("asyncio.sleep", new=AsyncMock()) as sleeper:
+        await encoder.send_input({"action": "long_press", "x": 1, "y": 2})
+
+    calls = [(c.args[0], c.args[1], c.args[2]) for c in sender.touch.await_args_list]
+    assert calls == [(1, 2, ACTION_DOWN), (1, 2, ACTION_UP)]
+    sleeper.assert_awaited_once_with(1.0)
+
+
 async def test_send_input_unknown_action_falls_back_without_failure():
     """未知 action：记 warning，不抛错（也不发控制消息）。"""
     encoder, sender = make_control_encoder()
@@ -743,10 +767,15 @@ async def test_send_input_unknown_action_falls_back_without_failure():
         ),
         ({"action": "swipe", "x1": 1, "y1": 2, "x2": 3, "y2": 4}, ["input", "swipe",
                                                                   "1", "2", "3", "4", "300"]),
+        ({"action": "long_press", "x": 1, "y": 2}, ["input", "swipe",
+                                                     "1", "2", "1", "2", "1000"]),
+        ({"action": "long_press", "x": 1, "y": 2, "duration": 800},
+         ["input", "swipe", "1", "2", "1", "2", "800"]),
         ({"action": "key", "keycode": 4}, ["input", "keyevent", "4"]),
         ({"action": "text", "text": "hi"}, ["input", "text", "hi"]),
     ],
-    ids=["touch", "swipe", "swipe-default-duration", "key", "text"],
+    ids=["touch", "swipe", "swipe-default-duration",
+         "long-press", "long-press-duration", "key", "text"],
 )
 async def test_fallback_adb_input_builds_expected_commands(data, expected):
     """控制通道不可用 → adb shell input 命令构造（含 duration 缺省值 300）。"""
@@ -801,7 +830,7 @@ async def test_fallback_unknown_action_is_noop():
     encoder._device_id = DEVICE_ID
 
     with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
-        await encoder.send_input({"action": "long_press", "x": 1, "y": 2})
+        await encoder.send_input({"action": "bogus", "x": 1, "y": 2})
 
     exec_mock.assert_not_awaited()
 

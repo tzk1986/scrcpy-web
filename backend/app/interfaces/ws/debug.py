@@ -12,7 +12,7 @@
         { "op": "filter", "level": "E" }      — 设置过滤条件
         { "op": "exec", "command": "ls" }     — 执行 shell 命令（流式输出）
         { "op": "input", "data": "<base64>" } — 发送原始按键到设备 shell（PTY 模式）
-        { "op": "export" }                    — 导出日志
+        { "op": "unsubscribe" }               — 取消订阅
 
     服务端 → 客户端：
         { "type": "log", "entry": {...} }      — 日志条目
@@ -20,6 +20,9 @@
         { "type": "shell_output", "output": "...", "success": true } — shell 命令完成
         { "type": "error", "message": "..." }  — 错误消息
         { "type": "session_closed" }            — 会话已关闭
+
+日志导出不走本 WS：使用 HTTP 端 GET /api/debug/sessions/{id}/logs/export
+（json/csv 文件下载），此前 WS 的 export 操作未实现、恒回错误，已移除。
 
 流式 shell 输出：
     exec 命令使用流式输出。命令执行时，每行输出通过 shell_stream 消息发送。
@@ -34,7 +37,6 @@ PTY 模式 input 操作：
     - input 操作已实现（PTY 模式透传，后台读取器转发输出）
     - subscribe: 已实现，实时推送日志 + shell 输出
     - filter: 已实现，服务端过滤
-    - export: 待实现
 """
 
 import base64
@@ -149,10 +151,6 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                         "type": "error",
                         "message": f"Failed to send input: {e}"
                     })
-
-            elif op == "export":
-                # TODO: 实现日志导出
-                await websocket.send_json({"type": "error", "message": "Export not implemented yet"})
 
             elif op == "unsubscribe":
                 # 取消订阅

@@ -325,11 +325,11 @@ export class InputController {
     })
   }
 
-  /** 发送长按事件（通过长时间滑动模拟） */
+  /** 发送长按事件（后端映射为 DOWN/保持/UP，adb 回退路径用同点 swipe 模拟） */
   private sendLongPress(x: number, y: number) {
     this.ws.send({
-      action: 'swipe',
-      x1: x, y1: y, x2: x, y2: y,
+      action: 'long_press',
+      x, y,
       duration: 1000,
     })
   }
