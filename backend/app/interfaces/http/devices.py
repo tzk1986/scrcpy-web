@@ -44,45 +44,6 @@ async def list_devices(service: DeviceService = Depends(get_device_service)) -> 
     return await service.list_devices()
 
 
-@router.get("/{device_id}")
-async def get_device(
-    device_id: str, service: DeviceService = Depends(get_device_service)
-) -> DeviceInfo | dict[str, Any]:
-    """
-    获取指定设备的详细信息。
-
-    参数：
-        device_id: 设备 ADB 序列号（路径参数）。
-
-    返回：
-        DeviceInfo 对象，或 {"error": "Device not found"}。
-    """
-    device = await service.get_device(device_id)
-    if not device:
-        return {"error": "Device not found"}
-    return device
-
-
-@router.post("/{device_id}/install")
-async def install_apk(
-    device_id: str,
-    apk_path: str,
-    service: DeviceService = Depends(get_device_service),
-) -> dict[str, Any]:
-    """
-    在指定设备上安装 APK。
-
-    参数：
-        device_id: 设备 ADB 序列号（路径参数）。
-        apk_path: APK 文件路径（查询参数）。
-
-    返回：
-        {"success": True, "result": "..."}。
-    """
-    result = await service.install_apk(device_id, apk_path)
-    return {"success": True, "result": result}
-
-
 @router.post("/batch/install")
 async def batch_install(
     device_ids: list[str],
@@ -101,66 +62,6 @@ async def batch_install(
     """
     results = await service.batch_install(device_ids, apk_path)
     return {"success": True, "results": results}
-
-
-@router.get("/{device_id}/screenshot")
-async def screenshot(device_id: str, service: DeviceService = Depends(get_device_service)) -> Response:
-    """
-    截取设备屏幕截图。
-
-    参数：
-        device_id: 设备 ADB 序列号（路径参数）。
-
-    返回：
-        PNG 图片数据（Content-Type: image/png）。
-    """
-    png_bytes = await service.screenshot(device_id)
-    return Response(content=png_bytes, media_type="image/png")
-
-
-@router.post("/connect")
-async def connect_device(
-    ip: str,
-    port: int = 5555,
-    service: DeviceService = Depends(get_device_service),
-) -> dict[str, Any]:
-    """
-    通过 TCP/IP 连接到设备。
-
-    用于无线调试或 USB 连接不稳定时的备用方案。
-
-    参数：
-        ip: 设备 IP 地址（查询参数）。
-        port: ADB 端口（查询参数，默认 5555）。
-
-    返回：
-        {"success": True, "device_id": "ip:port"}。
-    """
-    device_id = await service.connect_tcp(ip, port)
-    return {"success": True, "device_id": device_id}
-
-
-@router.post("/{device_id}/disconnect")
-async def disconnect_device(
-    device_id: str,
-    service: DeviceService = Depends(get_device_service),
-) -> dict[str, Any]:
-    """
-    断开设备的 TCP/IP 连接。
-
-    参数：
-        device_id: 设备 ID（格式为 "ip:port"，路径参数）。
-
-    返回：
-        {"success": True}。
-    """
-    # 从 device_id 解析 ip 和 port
-    if ":" in device_id:
-        parts = device_id.split(":")
-        ip = parts[0]
-        port = int(parts[1]) if len(parts) > 1 else 5555
-        await service.disconnect_tcp(ip, port)
-    return {"success": True}
 
 
 @router.get("/events")
@@ -224,3 +125,104 @@ async def device_events(service: DeviceService = Depends(get_device_service)) ->
             "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
         }
     )
+
+
+# 注意：以下 /{device_id} 参数路由必须注册在上述字面路径路由之后，
+# 否则 /batch/install、/events 会被当作 device_id 吞掉。
+@router.get("/{device_id}")
+async def get_device(
+    device_id: str, service: DeviceService = Depends(get_device_service)
+) -> DeviceInfo | dict[str, Any]:
+    """
+    获取指定设备的详细信息。
+
+    参数：
+        device_id: 设备 ADB 序列号（路径参数）。
+
+    返回：
+        DeviceInfo 对象，或 {"error": "Device not found"}。
+    """
+    device = await service.get_device(device_id)
+    if not device:
+        return {"error": "Device not found"}
+    return device
+
+
+@router.post("/{device_id}/install")
+async def install_apk(
+    device_id: str,
+    apk_path: str,
+    service: DeviceService = Depends(get_device_service),
+) -> dict[str, Any]:
+    """
+    在指定设备上安装 APK。
+
+    参数：
+        device_id: 设备 ADB 序列号（路径参数）。
+        apk_path: APK 文件路径（查询参数）。
+
+    返回：
+        {"success": True, "result": "..."}。
+    """
+    result = await service.install_apk(device_id, apk_path)
+    return {"success": True, "result": result}
+
+
+@router.get("/{device_id}/screenshot")
+async def screenshot(device_id: str, service: DeviceService = Depends(get_device_service)) -> Response:
+    """
+    截取设备屏幕截图。
+
+    参数：
+        device_id: 设备 ADB 序列号（路径参数）。
+
+    返回：
+        PNG 图片数据（Content-Type: image/png）。
+    """
+    png_bytes = await service.screenshot(device_id)
+    return Response(content=png_bytes, media_type="image/png")
+
+
+@router.post("/connect")
+async def connect_device(
+    ip: str,
+    port: int = 5555,
+    service: DeviceService = Depends(get_device_service),
+) -> dict[str, Any]:
+    """
+    通过 TCP/IP 连接到设备。
+
+    用于无线调试或 USB 连接不稳定时的备用方案。
+
+    参数：
+        ip: 设备 IP 地址（查询参数）。
+        port: ADB 端口（查询参数，默认 5555）。
+
+    返回：
+        {"success": True, "device_id": "ip:port"}。
+    """
+    device_id = await service.connect_tcp(ip, port)
+    return {"success": True, "device_id": device_id}
+
+
+@router.post("/{device_id}/disconnect")
+async def disconnect_device(
+    device_id: str,
+    service: DeviceService = Depends(get_device_service),
+) -> dict[str, Any]:
+    """
+    断开设备的 TCP/IP 连接。
+
+    参数：
+        device_id: 设备 ID（格式为 "ip:port"，路径参数）。
+
+    返回：
+        {"success": True}。
+    """
+    # 从 device_id 解析 ip 和 port
+    if ":" in device_id:
+        parts = device_id.split(":")
+        ip = parts[0]
+        port = int(parts[1]) if len(parts) > 1 else 5555
+        await service.disconnect_tcp(ip, port)
+    return {"success": True}
