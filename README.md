@@ -30,8 +30,8 @@
 # 安装后端依赖（含 dev 工具链：pytest/ruff/mypy）
 pip install -e ".[dev]"
 
-# 安装前端依赖（现状 eslint@9 与 @typescript-eslint@7 peer 冲突，需 --legacy-peer-deps）
-cd frontend && npm ci --legacy-peer-deps
+# 安装前端依赖
+cd frontend && npm ci
 cd ..
 
 # 启动开发服务器（后端 8765 + 前端 8080）
@@ -57,9 +57,12 @@ ConPTY/pywinpty、scrcpy.exe、ProactorEventLoop 等 Windows 专属组件）。�
 ### 核心文档
 
 - [项目总览](方案/00-总览.md) - 项目定位、技术栈、实施路线
+- [用户手册](docs/用户手册.md) - 面向使用者的操作指南（随交付分发）
+- [架构总览](docs/架构.md) - 分层结构、依赖方向、关键数据流
+- [API 参考](docs/API.md) - HTTP 端点、WebSocket 协议、二进制流协议
 - [部署指南](docs/部署指南.md) - 运行方式、端口配置、本地 E2E、CI、已知限制
 - [经验记录](docs/经验记录.md) - 协议/环境/调试踩坑与解决方案
-- [视频流实现总结](docs/archive/视频流实现总结.md) - H.264 端到端链路与点击控制实现要点（历史归档）
+- [归档文档](docs/archive/README.md) - 历史实施记录索引
 
 ### 实施方案
 
@@ -174,12 +177,11 @@ scrcpy-web/
 - **图表**：ECharts
 - **视频**：WebCodecs API
 
-### Chrome 专属优化
+### 前端关键技术
 
-- WebCodecs（H.264 解码）
-- SharedArrayBuffer（零拷贝）
-- WebTransport（低延迟传输）
-- FileSystem Access（本地文件）
+- WebCodecs（H.264 解码，支持 `?swdecode=1` 切换软解）
+- WebSocket（视频帧 / 日志 / 性能指标流传输）
+- WebTransport（保留占位，尚未启用）
 
 ## 📊 性能指标
 
@@ -196,11 +198,11 @@ scrcpy-web/
 所有测试位于仓库根 `tests/` 目录（禁止放在 `backend/` 或项目根下）：
 
 ```bash
-# 后端测试（默认套件，排除需真机的 e2e）
-PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -v
+# 后端测试（默认套件，排除需真机的 e2e；含覆盖率门禁 80%）
+PYTHONPATH=backend python -m pytest tests/ --ignore=tests/integration --ignore=tests/e2e -v --cov=app --cov-fail-under=80
 
-# 前端单元测试
-cd frontend && npx vitest run
+# 前端单元测试（含分层覆盖率门禁：services/stores ≥80%，关键组件 ≥70%）
+cd frontend && npx vitest run --coverage
 
 # 端到端测试（需连接 Android 设备，在仓库根运行）
 npm run test:e2e
