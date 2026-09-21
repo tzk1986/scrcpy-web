@@ -7,10 +7,11 @@
     - `dumpsys package` 批量解析（版本 / 安装时间 / 系统标志）
     - `dumpsys activity processes` 运行进程解析（含去重与兜底）
     - list_apps 列表组装（包列表 + dumpsys + 运行进程合并）
-    - get_app_info 详情（APK 路径 / 大小、运行状态、内存）
+    - get_app_info 详情（APK 路径 / 大小、运行状态、内存、包不存在返回 None）
     - launch / stop / uninstall / clear 命令组装与成功失败两条路径
 
-全部使用手写 FakeAdb（按精确命令行返回预设输出并记录调用序列），不依赖真实设备。
+全部使用手写 FakeAdb（按精确命令行返回预设输出并记录调用序列），不依赖真实设备；
+关键用例带真机（192.168.8.18，Android 11+）取证样本（REAL_* 常量）。
 """
 
 from app.application.app_service import AppService
@@ -20,12 +21,61 @@ DEVICE = "192.168.1.100"
 CHAT_PKG = "com.example.chat"
 SYS_PKG = "com.example.systemtool"
 CHAT_APK = f"/data/app/~~xyz==/{CHAT_PKG}-abc==/base.apk"
-# 第三方包列表解析用的旧版路径格式（Android 10 及更早，不含 "="）。
-# Android 11+ 路径形如 /data/app/~~xxx==/pkg-yyy==/base.apk（含 "="），
-# list_apps 会解析错误 —— 见 test_list_apps_misparses_apk_path_containing_equals。
+# 第三方包列表解析用的旧版路径格式（Android 10 及更早，不含 "="），验证兼容性。
 LEGACY_CHAT_APK = f"/data/app/{CHAT_PKG}-1/base.apk"
 MONKEY_CHAT_CMD = (
     f"monkey -p {CHAT_PKG} -c android.intent.category.LAUNCHER --pct-syskeys 0 1"
+)
+
+# ---------------------------------------------------------------------------
+# 真机样本（192.168.8.18，Android 11+，2026-09-21 取证，原样摘录）
+# ---------------------------------------------------------------------------
+
+# `pm list packages -f -3` 输出行：Android 11+ 路径含 "=="（bug1 取证）
+REAL_PKG_COMASSISTANT = "com.bjw.ComAssistant"
+REAL_PM_LINE_COMASSISTANT = (
+    "package:/data/app/~~VCcmZr4z-HepZhwWBNl_YA==/com.bjw.ComAssistant-"
+    "YHI0fR0X9Q-6p8VHWcvM2g==/base.apk=com.bjw.ComAssistant"
+)
+# `dumpsys package com.bjw.ComAssistant` 摘录（第三方应用）
+REAL_TP_BLOCK_COMASSISTANT = (
+    f"  Package [{REAL_PKG_COMASSISTANT}] (758557d):\n"
+    "    userId=10118\n"
+    "    codePath=/data/app/~~VCcmZr4z-HepZhwWBNl_YA==/com.bjw.ComAssistant-"
+    "YHI0fR0X9Q-6p8VHWcvM2g==\n"
+    "    versionCode=2 minSdk=10 targetSdk=10\n"
+    "    versionName=1.1\n"
+    "    flags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP ]\n"
+    "    pkgFlags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP ]\n"
+    "    firstInstallTime=2025-09-30 15:29:17\n"
+    "    lastUpdateTime=2025-09-30 15:29:17\n"
+)
+# `dumpsys package com.android.settings` 摘录（系统应用，bug2 取证：
+# SYSTEM 混在多个标志中，不存在 "[ SYSTEM ]" 字面；privateFlags 含 SYSTEM_EXT）
+REAL_SYS_BLOCK_SETTINGS = (
+    "  Package [com.android.settings] (38dd4f2):\n"
+    "    userId=1000\n"
+    "    codePath=/system_ext/priv-app/Settings\n"
+    "    versionCode=30 minSdk=30 targetSdk=30\n"
+    "    versionName=11\n"
+    "    flags=[ SYSTEM HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP KILL_AFTER_RESTORE ]\n"
+    "    pkgFlags=[ SYSTEM HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP KILL_AFTER_RESTORE ]\n"
+    "    privateFlags=[ PRIVATE_FLAG_ACTIVITIES_RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION "
+    "DEFAULT_TO_DEVICE_PROTECTED_STORAGE SYSTEM_EXT ]\n"
+    "    firstInstallTime=2025-09-30 15:29:17\n"
+    "    lastUpdateTime=2025-09-30 15:29:17\n"
+)
+# 真机权限行摘录：竖线分隔的复合标志，含 "SYSTEM_FIXED" 字样
+REAL_PERMISSION_LINE = (
+    "      android.permission.READ_CALL_LOG: granted=true, flags=[ SYSTEM_FIXED"
+    "|GRANTED_BY_DEFAULT|RESTRICTION_SYSTEM_EXEMPT|RESTRICTION_UPGRADE_EXEMPT]\n"
+)
+# 真机对不存在包执行 `dumpsys package <pkg>` 的输出（无 "Package [包名]" 块）
+REAL_DUMPSYS_NOT_FOUND = (
+    "Dexopt state:\n"
+    "  Unable to find package: com.ghost.app\n"
+    "Compiler stats:\n"
+    "  Unable to find package: com.ghost.app\n"
 )
 
 
@@ -135,7 +185,7 @@ MEMINFO_CHAT = (
 # ---------------------------------------------------------------------------
 
 def test_parse_dumpsys_packages_extracts_fields_and_system_flag():
-    """多个包块：版本、安装/更新时间、系统标志逐个解析且互不串块。"""
+    """多个包块：版本、安装/更新时间（含时分秒）、系统标志逐个解析且互不串块。"""
     service = AppService(FakeAdb())
 
     parsed = service._parse_dumpsys_packages(DUMPSYS_ALL_PACKAGES)
@@ -144,11 +194,48 @@ def test_parse_dumpsys_packages_extracts_fields_and_system_flag():
     chat = parsed[CHAT_PKG]
     assert chat["version_name"] == "3.5.0"
     assert chat["version_code"] == 305
-    assert chat["install_time"] == "2025-11-02"
-    assert chat["update_time"] == "2026-03-18"
+    assert chat["install_time"] == "2025-11-02 10:14:33"
+    assert chat["update_time"] == "2026-03-18 09:05:12"
     assert chat["is_system"] is False
     assert parsed[SYS_PKG]["version_name"] == "1.2"
     assert parsed[SYS_PKG]["is_system"] is True
+
+
+def test_parse_dumpsys_packages_real_device_samples():
+    """真机样本：系统包（SYSTEM 混在多标志中）判 True，第三方包判 False，时间含时分秒。"""
+    service = AppService(FakeAdb())
+    output = "Packages:\n" + REAL_SYS_BLOCK_SETTINGS + REAL_TP_BLOCK_COMASSISTANT
+
+    parsed = service._parse_dumpsys_packages(output)
+
+    settings = parsed["com.android.settings"]
+    assert settings["is_system"] is True  # pkgFlags=[ SYSTEM HAS_CODE ... ]（旧子串匹配恒 False）
+    assert settings["install_time"] == "2025-09-30 15:29:17"
+    tp = parsed[REAL_PKG_COMASSISTANT]
+    assert tp["is_system"] is False
+    assert tp["version_name"] == "1.1"
+    assert tp["update_time"] == "2025-09-30 15:29:17"
+
+
+def test_parse_dumpsys_packages_permission_flags_not_misdetected_as_system():
+    """第三方包块内权限行 flags=[ SYSTEM_FIXED|... ]（竖线复合标志）不误判为系统应用。
+
+    旧实现 `re.search(r"flag.*SYSTEM", block, re.IGNORECASE)` 会命中该行导致误判。
+    """
+    service = AppService(FakeAdb())
+    output = (
+        "Packages:\n"
+        "  Package [com.example.permapp] (a1b2c3):\n"
+        "    versionCode=9\n"
+        "    flags=[ HAS_CODE ALLOW_BACKUP ]\n"
+        "    pkgFlags=[ HAS_CODE ALLOW_BACKUP ]\n"
+        "    requested permissions:\n"
+        + REAL_PERMISSION_LINE
+    )
+
+    parsed = service._parse_dumpsys_packages(output)
+
+    assert parsed["com.example.permapp"]["is_system"] is False
 
 
 def test_parse_dumpsys_packages_missing_fields_use_defaults():
@@ -251,8 +338,8 @@ async def test_list_apps_merges_dumpsys_and_processes():
     assert app.package_name == CHAT_PKG
     assert app.version_name == "3.5.0"
     assert app.version_code == 305
-    assert app.install_time == "2025-11-02"
-    assert app.update_time == "2026-03-18"
+    assert app.install_time == "2025-11-02 10:14:33"
+    assert app.update_time == "2026-03-18 09:05:12"
     assert app.is_system is False
     assert app.is_running is True
     assert app.pid == 1335
@@ -305,25 +392,45 @@ async def test_list_apps_returns_empty_on_adb_error():
     assert await AppService(fake).list_apps(DEVICE) == []
 
 
-async def test_list_apps_misparses_apk_path_containing_equals():
-    """已知源码 bug（真机 192.168.8.18 实测）：Android 11+ 的 APK 路径含 "=="
-    （如 /data/app/~~VCcmZr4z...==/pkg-...==/base.apk），`package:(.+?)=(.+)`
-    的懒惰匹配把路径中第一个 "=" 当作分隔符 → 包名/路径解析出错。
-    本测试锁定当前行为，修复源码后需同步更新（详见测试报告）。
-    """
-    real_device_line = (
-        "package:/data/app/~~VCcmZr4z-HepZhwWBNl_YA==/com.bjw.ComAssistant-"
-        "YHI0fR0X9Q-6p8VHWcvM2g==/base.apk=com.bjw.ComAssistant"
-    )
-    fake = FakeAdb().on("pm list packages -f -3", real_device_line + "\n")
+async def test_list_apps_parses_android11_apk_path_containing_double_equals():
+    """真机样本（Android 11+）：APK 路径含 "==" 时包名取最后一个 "=" 之后的部分，
+    包名与 dumpsys 信息正确对上（原实现 `package:(.+?)=(.+)` 惰性匹配会错位）。"""
+    fake = FakeAdb()
+    fake.on("pm list packages -f -3", REAL_PM_LINE_COMASSISTANT + "\n")
+    fake.on("dumpsys package", "Packages:\n" + REAL_TP_BLOCK_COMASSISTANT)
+    fake.on("dumpsys activity processes", PROCESSES_WITHOUT_CHAT)
 
     apps = await AppService(fake).list_apps(DEVICE)
 
-    bad_package_name = (
-        "=/com.bjw.ComAssistant-YHI0fR0X9Q-6p8VHWcvM2g==/base.apk=com.bjw.ComAssistant"
+    assert len(apps) == 1
+    app = apps[0]
+    assert app.package_name == REAL_PKG_COMASSISTANT
+    assert app.version_name == "1.1"
+    assert app.version_code == 2
+    assert app.install_time == "2025-09-30 15:29:17"
+    assert app.is_system is False
+
+
+async def test_list_apps_parses_mixed_legacy_and_android11_paths():
+    """同一次输出混合老式（无 "="）与 Android 11+（双 "=="）路径时都能正确解析。"""
+    fake = FakeAdb()
+    fake.on(
+        "pm list packages -f -3",
+        _pm_list_line(CHAT_PKG, LEGACY_CHAT_APK)
+        + "\n"
+        + REAL_PM_LINE_COMASSISTANT
+        + "\n",
     )
-    assert apps[0].package_name == bad_package_name
-    assert apps[0].version_name == ""  # 包名错位后 dumpsys 信息也对不上
+    fake.on("dumpsys package", DUMPSYS_ALL_PACKAGES)
+    fake.on("dumpsys activity processes", PROCESSES_WITHOUT_CHAT)
+
+    apps = await AppService(fake).list_apps(DEVICE)
+
+    by_name = {app.package_name: app for app in apps}
+    assert sorted(by_name) == sorted([CHAT_PKG, REAL_PKG_COMASSISTANT])
+    assert by_name[CHAT_PKG].version_name == "3.5.0"
+    # ComAssistant 不在 DUMPSYS_ALL_PACKAGES 中 → 字段用默认值，但包名不再错位
+    assert by_name[REAL_PKG_COMASSISTANT].version_name == ""
 
 
 # ---------------------------------------------------------------------------
@@ -352,8 +459,8 @@ async def test_get_app_info_parses_running_app_details():
     assert info.package_name == CHAT_PKG
     assert info.version_name == "3.5.0"
     assert info.version_code == 305
-    assert info.install_time == "2025-11-02"
-    assert info.update_time == "2026-03-18"
+    assert info.install_time == "2025-11-02 10:14:33"
+    assert info.update_time == "2026-03-18 09:05:12"
     assert info.apk_size_mb == 65.28  # 68456117 字节
     assert info.is_system is False
     assert info.is_running is True
@@ -378,27 +485,32 @@ async def test_get_app_info_not_running_skips_meminfo():
     assert f"dumpsys meminfo {CHAT_PKG}" not in fake.cmds
 
 
-async def test_get_app_info_absent_package_returns_empty_fields():
-    """包不存在（各命令输出为空）时返回字段为空的 AppInfo，而非 None。"""
-    fake = FakeAdb()  # 所有命令返回空输出
+async def test_get_app_info_absent_package_returns_none():
+    """包不存在（真机 dumpsys 输出 "Unable to find package: xxx"）时返回 None。
+
+    HTTP 调用方据此返回 404（interfaces/http/apps.py），前端 try/catch 兜底。
+    """
+    fake = FakeAdb()
+    fake.on("pm list packages -f com.ghost.app", "")
+    fake.on("dumpsys package com.ghost.app", REAL_DUMPSYS_NOT_FOUND)
 
     info = await AppService(fake).get_app_info(DEVICE, "com.ghost.app")
 
-    assert info is not None
-    assert info.package_name == "com.ghost.app"
-    assert info.version_name == ""
-    assert info.version_code == 0
-    assert info.install_time == ""
-    assert info.update_time == ""
-    assert info.apk_size_mb == 0.0
-    assert info.is_running is False
-    assert info.memory_kb is None
-    # 无 APK 路径时不执行 ls -l
+    assert info is None
+    # 确认包不存在即返回，不再调用 ls -l / 运行进程 / 内存查询
+    assert fake.cmds == ["pm list packages -f com.ghost.app", "dumpsys package com.ghost.app"]
+
+
+async def test_get_app_info_absent_package_returns_none_on_empty_output():
+    """包不存在且 dumpsys 输出为空串时同样返回 None。"""
+    fake = FakeAdb()  # 所有命令返回空输出
+
+    assert await AppService(fake).get_app_info(DEVICE, "com.ghost.app") is None
     assert not any(cmd.startswith("ls -l") for cmd in fake.cmds)
 
 
 async def test_get_app_info_detects_system_app():
-    """dumpsys 含 pkgFlags 且带 "[ SYSTEM ]" 子串时判定为系统应用。"""
+    """dumpsys 的 pkgFlags=[ SYSTEM ]（单标志旧式）按空白分词仍判定为系统应用。"""
     fake = FakeAdb()
     fake.on(
         f"pm list packages -f {SYS_PKG}",
@@ -415,23 +527,45 @@ async def test_get_app_info_detects_system_app():
     assert info.memory_kb is None
 
 
-async def test_get_app_info_multi_flag_system_pkg_not_detected_as_system():
-    """已知源码 bug（真机 192.168.8.18 实测）：is_system 要求子串 "[ SYSTEM ]"，
-    而真机输出为 "pkgFlags=[ SYSTEM HAS_CODE ALLOW_BACKUP ... ]" → 恒判为 False。
-    本测试锁定当前行为，修复源码后需同步更新（详见测试报告）。
-    """
-    fake = FakeAdb().on(
-        f"dumpsys package {SYS_PKG}",
-        _dumpsys_block(
-            SYS_PKG,
-            flags=" SYSTEM HAS_CODE ALLOW_BACKUP KILL_AFTER_RESTORE RESTORE_ANY_VERSION ",
-        ),
+async def test_get_app_info_detects_system_app_with_real_android11_pkgflags():
+    """真机样本（192.168.8.18）：pkgFlags=[ SYSTEM HAS_CODE ALLOW_BACKUP ... ]
+    判定为系统应用（原实现要求子串 "[ SYSTEM ]" → 恒 False），时间含时分秒。"""
+    fake = FakeAdb()
+    fake.on(
+        "pm list packages -f com.android.settings",
+        _pm_list_line("com.android.settings", "/system_ext/priv-app/Settings/base.apk")
+        + "\n",
     )
+    fake.on("dumpsys package com.android.settings", REAL_SYS_BLOCK_SETTINGS)
+    fake.on("dumpsys activity processes", PROCESSES_WITHOUT_CHAT)
 
-    info = await AppService(fake).get_app_info(DEVICE, SYS_PKG)
+    info = await AppService(fake).get_app_info(DEVICE, "com.android.settings")
 
     assert info is not None
+    assert info.is_system is True
+    assert info.version_name == "11"
+    assert info.install_time == "2025-09-30 15:29:17"
+    assert info.update_time == "2025-09-30 15:29:17"
+
+
+async def test_get_app_info_real_device_third_party_not_system():
+    """真机样本（192.168.8.18）：第三方包 pkgFlags=[ HAS_CODE ALLOW_CLEAR_USER_DATA
+    ALLOW_BACKUP ] 不判为系统应用。"""
+    fake = FakeAdb()
+    fake.on(
+        f"pm list packages -f {REAL_PKG_COMASSISTANT}",
+        REAL_PM_LINE_COMASSISTANT + "\n",
+    )
+    fake.on(f"dumpsys package {REAL_PKG_COMASSISTANT}", REAL_TP_BLOCK_COMASSISTANT)
+    fake.on("dumpsys activity processes", PROCESSES_WITHOUT_CHAT)
+
+    info = await AppService(fake).get_app_info(DEVICE, REAL_PKG_COMASSISTANT)
+
+    assert info is not None
+    assert info.package_name == REAL_PKG_COMASSISTANT
+    assert info.version_name == "1.1"
     assert info.is_system is False
+    assert info.install_time == "2025-09-30 15:29:17"
 
 
 async def test_get_app_info_returns_none_when_dumpsys_fails():

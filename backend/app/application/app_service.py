@@ -23,6 +23,31 @@ from app.domain.ports import AdbDriver
 
 logger = get_logger(__name__)
 
+# dumpsys 中的标志位块：`flags=[ ... ]` / `pkgFlags=[ ... ]` / `privateFlags=[ ... ]`
+_FLAGS_BLOCK_RE = re.compile(r"[Ff]lags=\[([^\]]*)\]")
+
+
+def _has_system_flag(text: str) -> bool:
+    """
+    判断 dumpsys 输出中是否含系统应用标志。
+
+    真机（Android 11+）输出形如 `pkgFlags=[ SYSTEM HAS_CODE ALLOW_BACKUP ]`，
+    按空白分词后要求存在独立的 "SYSTEM" 标志：既兼容旧式 `flags=[ SYSTEM ]`，
+    也不会把权限行的 `flags=[ SYSTEM_FIXED|... ]`（竖线分隔的复合标志）误判为系统应用。
+    """
+    return any("SYSTEM" in match.group(1).split() for match in _FLAGS_BLOCK_RE.finditer(text))
+
+
+def _extract_timestamp(text: str, field: str) -> str:
+    """
+    提取 firstInstallTime/lastUpdateTime 时间戳。
+
+    真机格式含时分秒且中间有空格（如 `2025-11-02 14:30:22`），需捕获整行剩余内容；
+    字段缺失时返回空串。
+    """
+    match = re.search(rf"{field}=([^\r\n]+)", text)
+    return match.group(1).strip() if match else ""
+
 
 @dataclass
 class AppInfo:
@@ -97,7 +122,10 @@ class AppService:
                 line = line.strip()
                 if not line.startswith("package:"):
                     continue
-                match = re.match(r"package:(.+?)=(.+)", line)
+                # 包名是最后一个 "=" 之后的部分：Android 11+ 的 APK 路径本身含 "=="
+                # （如 /data/app/~~XxYy==/pkg-AbCd==/base.apk），包名不含 "="，
+                # 故用贪婪匹配让 (.+) 回溯到最后一个 "=" 处切分；兼容老式无 "=" 的路径。
+                match = re.match(r"package:(.+)=([^=]+)$", line)
                 if match:
                     packages.append((match.group(2), match.group(1)))
 
@@ -177,15 +205,12 @@ class AppService:
             vcode = re.search(r"versionCode=(\d+)", block)
             info["version_code"] = int(vcode.group(1)) if vcode else 0
 
-            # 安装时间
-            install = re.search(r"firstInstallTime=(\S+)", block)
-            info["install_time"] = install.group(1) if install else ""
-            update = re.search(r"lastUpdateTime=(\S+)", block)
-            info["update_time"] = update.group(1) if update else ""
+            # 安装时间（真机含时分秒，如 2025-11-02 14:30:22）
+            info["install_time"] = _extract_timestamp(block, "firstInstallTime")
+            info["update_time"] = _extract_timestamp(block, "lastUpdateTime")
 
-            # 系统应用标志（从 flags 字段判断）
-            # 格式：flags=[ SYSTEM HAS_CODE ... ]
-            info["is_system"] = bool(re.search(r"flag.*SYSTEM", block, re.IGNORECASE))
+            # 系统应用标志（pkgFlags=[ SYSTEM ... ] 按空白分词判断）
+            info["is_system"] = _has_system_flag(block)
 
             result[pkg_name] = info
 
@@ -240,7 +265,7 @@ class AppService:
         package: str,
         apk_path: str | None = None,
     ) -> AppInfo | None:
-        """内部方法：获取应用详情。"""
+        """内部方法：获取应用详情；包不存在时返回 None。"""
         try:
             # 获取 APK 路径（如果未提供）
             if not apk_path:
@@ -248,6 +273,12 @@ class AppService:
 
             # 获取 dumpsys package 信息
             output = await self.adb.shell(device_id, f"dumpsys package {package}")
+
+            # 包不存在时真机输出 "Unable to find package: xxx"（无 "Package [包名]" 块），
+            # 按调用方契约（HTTP 404 / 前端兜底）返回 None，不再返回空字段 AppInfo
+            if not re.search(rf"Package \[{re.escape(package)}\]", output):
+                logger.info("get_app_info_package_not_found", device=device_id, package=package)
+                return None
 
             # 解析版本号
             version_name = ""
@@ -259,15 +290,9 @@ class AppService:
             if code_match:
                 version_code = int(code_match.group(1))
 
-            # 解析安装时间
-            install_time = ""
-            update_time = ""
-            install_match = re.search(r"firstInstallTime=(\S+)", output)
-            if install_match:
-                install_time = install_match.group(1)
-            update_match = re.search(r"lastUpdateTime=(\S+)", output)
-            if update_match:
-                update_time = update_match.group(1)
+            # 解析安装时间（真机含时分秒，如 2025-11-02 14:30:22）
+            install_time = _extract_timestamp(output, "firstInstallTime")
+            update_time = _extract_timestamp(output, "lastUpdateTime")
 
             # 获取 APK 大小
             apk_size_mb = 0.0
@@ -282,8 +307,9 @@ class AppService:
                 except Exception as e:
                     logger.warning("get_apk_size_failed", package=package, error=str(e))
 
-            # 判断是否系统应用
-            is_system = "pkgFlags" in output and "[ SYSTEM ]" in output
+            # 判断是否系统应用（真机为 pkgFlags=[ SYSTEM HAS_CODE ... ]，
+            # 按空白分词判断，与 _parse_dumpsys_packages 保持同一逻辑）
+            is_system = _has_system_flag(output)
 
             # 检查是否运行中（使用 dumpsys activity processes）
             is_running, pid = await self._check_app_running(device_id, package)
