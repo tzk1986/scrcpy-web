@@ -47,7 +47,10 @@ logs/
 
 # Coverage
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
+frontend/coverage/
 
 # Binary files
 *.jar
