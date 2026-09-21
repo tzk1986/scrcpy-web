@@ -38,26 +38,25 @@
 
 ### 1.4 错误格式
 
-后端注册了三个异常处理器（`backend/app/main.py` → `backend/app/core/exceptions.py`），实际产生的错误体有四种形态：
+后端注册了四个异常处理器（`backend/app/main.py` → `backend/app/core/exceptions.py`），**所有错误响应统一为 `{"error": {"code", "message"}}` 形状**（2026-09-21 契约统一）：
 
 | 场景 | HTTP 状态码 | 响应体 |
 |------|------------|--------|
-| 领域异常（`OpenScrcpyException` 子类） | 400 | `{"error": {"code": "<CODE>", "message": "<描述>"}}` |
+| 领域异常（`OpenScrcpyException` 子类） | `exc.status_code`（默认 400；未找到 404、无权限 403） | `{"error": {"code": "<CODE>", "message": "<描述>"}}` |
 | 端点内 `raise HTTPException(...)` | 该状态码 | `{"error": {"code": "HTTP_ERROR", "message": "<detail>"}}` |
-| 请求参数校验失败（FastAPI 默认处理器） | 422 | `{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}` |
+| 请求参数校验失败 | 422 | `{"error": {"code": "VALIDATION_ERROR", "message": "<字段: 原因; ...>"}}` |
 | 未捕获异常（兜底，消息不外泄） | 500 | `{"error": {"code": "INTERNAL_ERROR", "message": "An internal error occurred"}}` |
 
 领域错误码取值（`backend/app/core/exceptions.py`）：
 
-| code | 触发条件 |
-|------|---------|
-| `DEVICE_NOT_FOUND` | 设备 ID 未连接/不在仓库 |
-| `SESSION_NOT_FOUND` | 调试会话 ID 无效 |
-| `ADB_ERROR` | ADB 子进程非零退出 |
-| `DEVICE_UNREACHABLE` | `connect`/`disconnect` 前置 TCP 可达性预检失败 |
-| `UNKNOWN_ERROR` | 基类默认值 |
-
-注意：少数端点用 HTTP 200 + `{"error": "..."}` 字符串表达“未找到”（见第四节“已知问题”）。
+| code | HTTP | 触发条件 |
+|------|------|---------|
+| `DEVICE_NOT_FOUND` | 404 | 设备 ID 未连接/不在仓库 |
+| `SESSION_NOT_FOUND` | 404 | 会话 ID 无效（调试会话与协作会话共用） |
+| `PERMISSION_DENIED` | 403 | 权限不足（如非 admin 转移控制权） |
+| `ADB_ERROR` | 400 | ADB 子进程非零退出 |
+| `DEVICE_UNREACHABLE` | 400 | `connect`/`disconnect` 前置 TCP 可达性预检失败 |
+| `UNKNOWN_ERROR` | 400 | 基类默认值 |
 
 ## 二、HTTP 端点
 
@@ -139,7 +138,8 @@
 #### GET /api/devices/{device_id}
 
 - 路径参数：`device_id` — ADB 序列号（从本地仓库查询）
-- 响应 200：`DeviceInfo` 对象；设备不存在时仍为 200，返回 `{"error": "Device not found"}`
+- 响应 200：`DeviceInfo` 对象
+- 错误：404 `DEVICE_NOT_FOUND`（设备不存在）
 
 #### POST /api/devices/connect
 
@@ -245,7 +245,7 @@ data: {"type": "disconnected", "device_id": "..."}
 #### GET /api/debug/sessions/{session_id}
 
 - 响应 200：`{"session_id": "...", "device_id": "...", "user_id": "...", "is_active": true}`
-- 不存在时仍为 200，返回 `{"error": "Session not found"}`
+- 错误：404 `SESSION_NOT_FOUND`（会话不存在）
 
 #### DELETE /api/debug/sessions/{session_id}
 
@@ -275,7 +275,7 @@ data: {"type": "disconnected", "device_id": "..."}
 
 - 查询参数：`command`（必填）
 - 响应 200：`{"output": "<stdout>"}`
-- 错误：会话不存在时抛 `ValueError` → 500 `INTERNAL_ERROR`（不是 404）；ADB 执行失败 → 400 `ADB_ERROR`
+- 错误：404 `SESSION_NOT_FOUND`（会话不存在）；ADB 执行失败 → 400 `ADB_ERROR`
 
 #### DELETE /api/debug/sessions/{session_id}/logs
 
@@ -384,13 +384,14 @@ data: {"type": "disconnected", "device_id": "..."}
 
 #### GET /api/sessions/{session_id}
 
-- 响应 200：完整会话对象；不存在时仍为 200，返回 `{"error": "Session not found"}`
+- 响应 200：完整会话对象
+- 错误：404 `SESSION_NOT_FOUND`（会话不存在）
 
 #### POST /api/sessions/{session_id}/join
 
 - 查询参数：`user_id`（必填）、`permission`（可选，`admin` 或 `viewer`，默认 `viewer`）
 - 响应 200：`{"success": true}`
-- 错误：会话不存在 → `ValueError` → 500 `INTERNAL_ERROR`
+- 错误：404 `SESSION_NOT_FOUND`（会话不存在）
 
 #### POST /api/sessions/{session_id}/leave
 
@@ -401,7 +402,7 @@ data: {"type": "disconnected", "device_id": "..."}
 
 - 查询参数：`from_user`、`to_user`（均必填）
 - 响应 200：`{"success": true}`
-- 错误：`from_user` 不是 admin → `PermissionError` → 500 `INTERNAL_ERROR`
+- 错误：403 `PERMISSION_DENIED`（`from_user` 不是 admin）、404 `SESSION_NOT_FOUND`（会话不存在）
 
 ## 三、WebSocket 端点
 
@@ -434,6 +435,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 |--------|------|------|
 | `touch` | `x`, `y`（整数，设备坐标） | 点击：后端发送 DOWN + UP |
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `duration`（毫秒） | 滑动：DOWN → 分段 MOVE（步长 5px，最多 100 步）→ UP；距离 <10px 或 `duration` <100ms 时退化为 DOWN+UP |
+| `long_press` | `x`, `y`（整数，设备坐标）、`duration`（毫秒，默认 1000） | 长按：DOWN → 保持 `duration` → UP；adb 回退路径用同点 `input swipe x y x y duration` |
 | `key` | `keycode`（Android keycode 整数） | 按键：DOWN + UP |
 | `text` | `text`（字符串，UTF-8） | 文本注入 |
 
@@ -460,8 +462,9 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `filter` | `level`（可选）、`tag`（可选）、`paused`（布尔，默认 `false`） | 设置本订阅者的服务端过滤条件；`level` 精确匹配日志级别，`tag` 子串匹配；`paused=true` 暂停推送（暂停状态可让后端停止 logcat 采集） |
 | `exec` | `command`（字符串） | 流式执行 shell 命令：逐行回 `shell_stream`（含 `done: false`），完成后回 `shell_output` |
 | `input` | `data`（base64 字符串） | PTY 模式透传原始按键到设备 shell（如 `\r`→`\n` 由前端转换）；输出由后台转发器以 `shell_stream` 回推 |
-| `export` | — | 未实现，固定回 `{"type": "error", "message": "Export not implemented yet"}` |
 | `unsubscribe` | — | 取消订阅并停止 shell 输出转发 |
+
+日志导出不走本 WS（原 `export` 操作恒回未实现错误，2026-09-21 已移除）；用 HTTP 端 `GET /api/debug/sessions/{id}/logs/export`（json/csv 文件下载）。
 
 #### 服务端 → 客户端
 
@@ -475,7 +478,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `filter_applied` | `{"type": "filter_applied", "level": ..., "tag": ..., "paused": ...}` | `filter` 应用确认，回显设置值 |
 | `unsubscribed` | `{"type": "unsubscribed"}` | `unsubscribe` 确认 |
 | `session_closed` | `{"type": "session_closed"}` | 会话被 `DELETE /api/debug/sessions/{id}` 关闭时主动推送 |
-| `error` | `{"type": "error", "message": "..."}` | 操作失败（如 `input` 发送异常、`export` 未实现） |
+| `error` | `{"type": "error", "message": "..."}` | 操作失败（如 `input` 发送异常） |
 
 消息顺序：`subscribe` 的响应依次为 `log_batch`（仅带 `from_seq` 时）→ 初始 `shell_stream`（设备 prompt，非空时）→ `subscribed`。
 
@@ -503,23 +506,25 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 - 断开行为：仅移除推送队列，**不会**停止性能监控；监控需显式调用 `POST /api/perf/{device_id}/stop` 停止（或应用退出时清理）
 - 内部异常时以 `close(code=1011, reason=<错误>)` 关闭连接
 
-## 四、已知问题
+## 四、已知问题与现状说明
 
-以下为核对源码时发现的契约/不一致项。**已修复项**于 2026-09-21 文档批次中处理：
+以下为核对源码时发现的契约/不一致项，**全部已处置**（2026-09-21）：
 
-1. （已修复）`frontend/src/services/api.ts` 头注释 8000 → 8765。
-2. （已修复）`backend/app/main.py` 的 `__main__` 入口改为读取 `settings().server`（默认 8765，与 `run_server.py` 同源）。
-3. （已修复）CORS 默认来源 `http://localhost:5173` → `http://localhost:8080`（`config/settings.py`、`config/base.yaml`、`config/dev.yaml` 同步；`main.py` 注释同步修正）。
-4. （已修复）`backend/app/scrcpy/control_sender.py` 头注释 v2.4 → v4.1。
+**已修复**：
 
-**待处置**项（记录备查）：
+1. `frontend/src/services/api.ts` 头注释 8000 → 8765。
+2. `backend/app/main.py` 的 `__main__` 入口改为读取 `settings().server`（默认 8765，与 `run_server.py` 同源）。
+3. CORS 默认来源 `http://localhost:5173` → `http://localhost:8080`（`config/settings.py`、`config/base.yaml`、`config/dev.yaml` 同步；`main.py` 注释同步修正）。
+4. `backend/app/scrcpy/control_sender.py` 头注释 v2.4 → v4.1。
+5. **错误约定统一**：`GET /api/devices/{id}`、`GET /api/debug/sessions/{id}`、`GET /api/sessions/{id}` 原“200 + `{"error": "<字符串>"}`”改为 404 + `{"error": {"code", "message"}}`；参数校验错误由 FastAPI 默认 `{"detail": [...]}` 改为 422 + `{"error": {"code": "VALIDATION_ERROR", "message": ...}}`。至此全站错误体统一为 `{"error": {...}}` 形状（见 1.4）。
+6. **“未找到/无权限”状态码落地**：`exec_shell`/`join_session`/`transfer_control` 等服务层由抛裸 `ValueError`/`PermissionError` 改为 `SessionNotFoundError`（404）/`PermissionDeniedError`（403），不再被兜底处理器转成 500。
+7. **WS `export` 移除**：`/ws/debug/{session_id}` 的 `export` 操作恒回未实现错误，属未落地残留，已从协议与代码中移除；日志导出由 HTTP 端 `GET .../logs/export` 承担（能力对称性以 HTTP 为准）。
+8. **`long_press` 落地**：`ScrcpyEncoder.send_input` 与 `_fallback_adb_input` 均已支持 `long_press`（控制通道：DOWN → 保持 duration → UP；adb 回退：同点 `input swipe x y x y duration`）；前端 `inputController.ts` 长按改为直接发 `long_press`（不再用同点 swipe 模拟）。
 
-5. **错误约定分裂**：多数端点使用 `{"error": {"code", "message"}}`；但 `GET /api/devices/{id}`、`GET /api/debug/sessions/{id}`、`GET /api/sessions/{id}` 在“未找到”时返回 HTTP 200 + `{"error": "<字符串>"}`；而 422 参数校验错误为 FastAPI 默认的 `{"detail": [...]}`。
-6. **“未找到”状态码缺失**：`POST /api/debug/sessions/{id}/shell`、`POST /api/sessions/{id}/join`、`/transfer` 在目标不存在/权限不足时抛 `ValueError`/`PermissionError`，被兜底处理器转成 500 `INTERNAL_ERROR`，而非 404/403。
-7. **协作会话端点无前端调用**：`/api/sessions/*`（5 个端点）与 `POST /api/devices/batch/install` 在后端已实现，但 `frontend/src/services/api.ts` 中无对应方法。
-8. **WS `export` 未实现**：`/ws/debug/{session_id}` 的 `export` 操作恒回未实现错误（TODO），与 HTTP 端 `GET .../logs/export` 能力不对称。
-9. **`long_press` 仅存在于常量**：`backend/app/scrcpy/constants.py` 定义 `INPUT_ACTION_LONG_PRESS = "long_press"`，但 `send_input` 与 `_fallback_adb_input` 均未处理；前端实际用“同点 1000ms swipe”模拟长按，`frontend/src/services/inputController.ts` 头注释中的 long_press 描述与实现不符。
-10. **视频 WS 单客户端假设**：`StreamService.start_stream` 对同一设备在流已活跃时直接返回（不产帧），第二条连接会拿到空流并被关闭；客户端断开即调用 `stop_stream`，多观看者场景下互相影响。
+**现状说明（非缺陷，如需变更属路线图级决策）**：
+
+9. **协作会话与批量安装暂无前端调用**：`/api/sessions/*`（5 个端点）与 `POST /api/devices/batch/install` 后端已就绪且语义完整，前端 `api.ts` 无对应方法。二者对应 README 中「团队协作（多人控制）」路线图（当前为计划中状态）；批量安装无 UI 入口。启用时属新增前端功能，不属缺陷修复。
+10. **视频 WS 单客户端假设（设计限制）**：`StreamService.start_stream` 对同一设备在流已活跃时直接返回（不产帧），第二条连接会拿到空流并被关闭；客户端断开即调用 `stop_stream`，多观看者场景下互相影响（该行为已在 3.1 节说明）。多人同时观看需上层做 fan-out（一路编码广播给多订阅者），属未实现的特性空间。
 
 ## 附录 A：视频流二进制协议（scrcpy-server v4.1，12 字节包头）
 
@@ -600,10 +605,11 @@ SPS 与 PPS 不随帧转发，仅用于构造 `config` 消息的 `description`�
 |---------|-------------|
 | `{"action": "touch", "x": X, "y": Y}` | TOUCH(DOWN, X, Y) → TOUCH(UP, X, Y) |
 | `{"action": "swipe", "x1": .., "y1": .., "x2": .., "y2": .., "duration": D}` | TOUCH(DOWN, x1, y1) → N × TOUCH(MOVE, 插值点) → TOUCH(UP, x2, y2)；步长 5px、最多 100 步；距离 <10px 或 D <100ms 时仅 DOWN+UP |
+| `{"action": "long_press", "x": X, "y": Y, "duration": D}` | TOUCH(DOWN, X, Y) → 保持 D 毫秒 → TOUCH(UP, X, Y)；D 默认 1000 |
 | `{"action": "key", "keycode": K}` | KEYCODE(DOWN, K) → KEYCODE(UP, K) |
 | `{"action": "text", "text": T}` | TEXT(T) |
 
-控制通道不可用（控制 socket 未建立或分辨率未知）或发送异常时，自动回退 `adb shell input tap/swipe/keyevent/text`（`ScrcpyEncoder._fallback_adb_input`）。
+控制通道不可用（控制 socket 未建立或分辨率未知）或发送异常时，自动回退 `adb shell input tap/swipe/keyevent/text`（`ScrcpyEncoder._fallback_adb_input`）；`long_press` 的回退命令为同点 `input swipe X Y X Y D`。
 
 坐标系：控制消息使用设备物理坐标。后端启动 scrcpy-server 时强制 `max_size=0`（不缩放），保证视频帧尺寸等于设备物理分辨率，使前端 canvas 坐标可直接作为设备坐标使用。
 
