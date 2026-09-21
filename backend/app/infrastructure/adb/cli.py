@@ -44,6 +44,16 @@ class AdbCliDriver:
     实现 domain.ports.AdbDriver 协议。
     """
 
+    # 采集启动命令：-T 以「设备端当前时刻」为下界，只收此刻起的日志，
+    # 不回放设备端现存缓冲（方案 17 宣称「开启时才从当前时刻起收」，
+    # 修复暂停→开始/重启采集时旧缓冲整段重放并以新 seq 重复入库）。
+    # 下界时间由设备端 date 在命令执行瞬间生成（%N 纳秒），避免主机与
+    # 设备时钟差导致重放或空窗；-T '<time>' 形式与 'MM-DD hh:mm:ss.mmm...'
+    # 精度已真机验证（Android 11；另测 `-T 1` 计数形式会回放 1 行，
+    # 纯数字参数按计数解析，不可用于零重放）。经 shell 以单参数传入
+    #（同 shell_stream 约定，避免远端 shell 把带空格的时刻拆成两个参数）。
+    _LOGCAT_SINCE_NOW_CMD = 'logcat -v threadtime -T "$(date "+%m-%d %H:%M:%S.%N")"'
+
     def __init__(self) -> None:
         """从配置初始化 ADB 二进制路径。"""
         self.adb_path = settings().adb.path
@@ -337,11 +347,13 @@ class AdbCliDriver:
         """
         逐行流式输出 logcat（修复 stderr 死锁）。
 
-        启动长运行的 `adb logcat -v threadtime` 子进程并
-        在每行到达时产出。当生成器关闭时
-        （如通过 asyncio.Task.cancel()），子进程被 kill。
+        启动长运行的 `adb shell logcat -v threadtime -T <设备当前时刻>`
+        子进程并在每行到达时产出：只输出绑定时刻之后的新日志，不回放
+        设备端现存缓冲。当生成器关闭时（如通过 asyncio.Task.cancel()），
+        子进程被 kill。
 
-        修复：启动后台任务消费 stderr，防止管道缓冲区满导致死锁。
+        修复 1：启动后台任务消费 stderr，防止管道缓冲区满导致死锁。
+        修复 2：-T 时间下界绑定设备端当前时刻，消除重启采集时的缓冲重放。
 
         参数：
             device_id: ADB 序列号。
@@ -353,9 +365,8 @@ class AdbCliDriver:
             self.adb_path,
             "-s",
             device_id,
-            "logcat",
-            "-v",
-            "threadtime",
+            "shell",
+            self._LOGCAT_SINCE_NOW_CMD,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

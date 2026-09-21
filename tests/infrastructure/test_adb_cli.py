@@ -281,6 +281,102 @@ class TestShell:
 
 
 # ---------------------------------------------------------------------------
+# logcat 流式采集测试（-T 时间下界绑定）
+# ---------------------------------------------------------------------------
+
+class _FakeReader:
+    """最小 StreamReader 替身：按行返回，用尽后 EOF。"""
+
+    def __init__(self, lines: list[bytes]):
+        self._lines = list(lines)
+
+    async def readline(self) -> bytes:
+        return self._lines.pop(0) if self._lines else b""
+
+    async def read(self) -> bytes:
+        return b""
+
+
+def _make_logcat_proc(stdout_lines: list[bytes]) -> MagicMock:
+    proc = MagicMock()
+    proc.returncode = None
+    proc.stdout = _FakeReader(stdout_lines)
+    proc.stderr = _FakeReader([])
+    proc.kill = MagicMock()
+    return proc
+
+
+class TestStreamLogcat:
+    """测试 stream_logcat：重启采集以设备端当前时刻为下界，不回放缓冲。"""
+
+    @pytest.mark.asyncio
+    async def test_stream_logcat_binds_device_time_lower_bound(self, mock_device_id):
+        """命令经 shell 以单参数传入，含 -T 且时刻由设备端 date 生成（防时钟差）。"""
+        captured = {}
+        proc = _make_logcat_proc([])
+
+        async def mock_exec(*args, **kwargs):
+            captured["argv"] = args
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=mock_exec):
+            driver = AdbCliDriver()
+            lines = [line async for line in driver.stream_logcat(mock_device_id)]
+
+        assert lines == []
+        argv = captured["argv"]
+        assert argv[0] == driver.adb_path
+        assert argv[1:4] == ("-s", mock_device_id, "shell")
+        # shell 后必须只有一个参数（整条命令），否则远端 shell 会把含空格的时刻拆开
+        assert len(argv) == 5
+        cmd = argv[4]
+        assert cmd == AdbCliDriver._LOGCAT_SINCE_NOW_CMD
+        assert cmd.startswith("logcat -v threadtime -T ")
+        assert '$(date "+%m-%d %H:%M:%S.%N")' in cmd
+        # 时间形式必须带引号（纯数字参数会被 logcat 按「计数」解析而回放行）
+        assert '-T "' in cmd
+
+    @pytest.mark.asyncio
+    async def test_stream_logcat_yields_lines(self, mock_device_id):
+        """逐行产出并去除行尾，流结束后 kill 子进程。"""
+        raw = [
+            b"09-21 14:58:50.634 24011 24011 I TZKMARK : A\r\n",
+            b"09-21 14:58:51.000 24012 24012 I TZKMARK : B",
+        ]
+        proc = _make_logcat_proc(raw)
+
+        async def mock_exec(*args, **kwargs):
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=mock_exec):
+            driver = AdbCliDriver()
+            seen = [line async for line in driver.stream_logcat(mock_device_id)]
+
+        assert seen == [
+            "09-21 14:58:50.634 24011 24011 I TZKMARK : A",
+            "09-21 14:58:51.000 24012 24012 I TZKMARK : B",
+        ]
+        proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stream_logcat_kills_proc_on_early_cancel(self, mock_device_id):
+        """消费方提前关闭生成器（采集任务被取消）时 kill 子进程。"""
+        proc = _make_logcat_proc([b"line1\n", b"line2\n"])
+
+        async def mock_exec(*args, **kwargs):
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=mock_exec):
+            driver = AdbCliDriver()
+            gen = driver.stream_logcat(mock_device_id)
+            first = await gen.__anext__()
+            await gen.aclose()
+
+        assert first == "line1"
+        proc.kill.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # 解析方法测试
 # ---------------------------------------------------------------------------
 
