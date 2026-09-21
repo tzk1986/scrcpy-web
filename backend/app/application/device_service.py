@@ -14,15 +14,15 @@
     - list_devices():   扫描 ADB 获取连接的设备，获取信息，持久化
     - get_device():     从仓库检索设备
     - install_apk():    在单个设备上安装 APK
-    - batch_install():  在多个设备上安装同一个 APK（顺序执行）
+    - batch_install():  在多个设备上安装同一个 APK（并发执行，信号量上限 5）
     - screenshot():     截取设备屏幕为 PNG 字节
     - start():          启动后台设备状态自动刷新
     - stop():           停止后台刷新
     - on_device_connected():    注册设备连接回调
     - on_device_disconnected(): 注册设备断开回调
 
-注意：batch_install 当前是顺序执行的。对于大型设备集群，
-考虑使用 asyncio.gather() + 信号量实现并发。
+注意：batch_install 已用 asyncio.gather() + 信号量（并发上限 5）实现并发；
+单设备失败被捕获并计入结果列表，不中止整批。
 """
 
 import asyncio

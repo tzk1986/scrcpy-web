@@ -555,8 +555,10 @@ def _parse_logcat_line(self, line: str) -> LogEntry:
         # 格式不正确，返回默认值
         return LogEntry(ts=time.time(), level="I", ...)
     
-    # 提取日志级别（单字符）
-    level = parts[2] if len(parts[2]) == 1 else "I"
+    # split(None, 6) 后：parts[2]=PID, parts[3]=TID, parts[4]=级别（单字符）
+    level = parts[4] if len(parts[4]) == 1 else "I"
+    pid = int(parts[2]) if parts[2].isdigit() else 0
+    tid = int(parts[3]) if parts[3].isdigit() else 0
     
     # ...
 ```

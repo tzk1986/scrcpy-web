@@ -49,7 +49,7 @@ async def create_session(
 
     副作用：
         - 在内存和数据库中创建会话记录
-        - 启动后台 logcat 收集任务
+        - logcat 采集不随会话创建启动；订阅者发 paused=False（开启录制）时才惰性启动
     """
     session = await service.create_session(device_id, user_id)
     return {"session_id": session.id}

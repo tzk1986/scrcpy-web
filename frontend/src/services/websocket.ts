@@ -13,7 +13,7 @@
  *   - 调试数据流（/ws/debug/{session_id}）
  *
  * 使用方式：
- *   const ws = new WebSocketService('ws://localhost:8000/ws/video/xxx')
+ *   const ws = new WebSocketService('ws://localhost:8765/ws/video/xxx')
  *   ws.setMessageHandler((data) => { /* 处理帧数据 *\/ })
  *   ws.connect()
  */
