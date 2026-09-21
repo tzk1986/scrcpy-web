@@ -63,10 +63,12 @@ const query = ref('')
 const activeIndex = ref(0)
 const inputRef = ref<HTMLInputElement>()
 
-// commands 仅在 show() 时整体重建；filtered 随 query 响应式重算。
-let commands: Command[] = []
+// commands 仅在 show() 时整体重建；filtered 随 query/commands 响应式重算。
+// 注意：必须用 ref——watch(filtered) 会在 setup 阶段立即求值一次，
+// 若 commands 是非响应式的普通变量，首次打开面板时 filtered 会缓存空列表。
+const commands = ref<Command[]>([])
 
-const filtered = computed(() => filterCommands(query.value, commands))
+const filtered = computed(() => filterCommands(query.value, commands.value))
 
 const grouped = computed(() => {
   const out: { section: string; items: { cmd: Command; index: number }[] }[] = []
@@ -88,7 +90,7 @@ function refreshCommands() {
     route.name === 'device-detail' && route.params.id
       ? decodeURIComponent(String(route.params.id))
       : null
-  commands = buildCommands({
+  commands.value = buildCommands({
     devices: deviceStore.devices,
     currentDeviceId,
     navigate: (path) => router.push(path),
