@@ -109,7 +109,7 @@ scrcpy-web/
 │       ├── stores/         # Pinia 状态管理
 │       ├── services/       # API 服务
 │       └── router/         # 路由
-├── tests/                   # 全部测试（unit/integration/e2e/scrcpy 等）
+├── tests/                   # 全部测试（unit/scrcpy/application/infrastructure/e2e/manual）
 ├── config/                  # 配置文件
 │   ├── base.yaml           # 默认配置
 │   ├── dev.yaml            # 开发环境
