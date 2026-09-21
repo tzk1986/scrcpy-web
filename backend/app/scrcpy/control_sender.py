@@ -10,7 +10,7 @@ scrcpy 二进制控制协议
     - 按键事件：13 字节（type + action + keycode + repeat + metaState）
     - 文本事件：5 + text 字节（type + length + text）
 
-与 scrcpy-server v2.4 协议完全兼容。
+与 scrcpy-server v4.1 控制协议兼容。
 """
 
 import asyncio

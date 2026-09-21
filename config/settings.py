@@ -113,7 +113,7 @@ class SecurityConfig(BaseSettings):
     jwt_secret: str = Field(default="change-me-in-production")
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = ["http://localhost:8080"]
 
 
 class Settings(BaseSettings):

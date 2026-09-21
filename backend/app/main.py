@@ -65,8 +65,8 @@ def create_app() -> FastAPI:
     )
 
     # --- 中间件 -----------------------------------------------------------
-    # CORS：来源从 config/security.cors_origins 读取（环境变量覆盖）。
-    # 开发环境为 ["*"]；生产环境必须显式设置。
+    # CORS：来源从 config/security.cors_origins 读取（环境变量可覆盖），
+    # 默认见 config/base.yaml；生产环境必须显式设置。
     app.add_middleware(
         CORSMiddleware,
         allow_origins=s.security.cors_origins,
@@ -125,4 +125,6 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    srv = settings().server
+    uvicorn.run(app, host=srv.host, port=srv.port)

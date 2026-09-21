@@ -31,16 +31,16 @@ cd ..
 
 # Initialize database
 echo "Initializing database..."
-python -c "import asyncio; from app.infrastructure.persistence.sqlite import init_db; asyncio.run(init_db())"
+PYTHONPATH=backend python -c "import asyncio; from app.infrastructure.persistence.sqlite import init_db; asyncio.run(init_db())"
 
 # Start services
 echo "Starting services..."
-echo "   Backend: http://localhost:8000"
-echo "   Frontend: http://localhost:5173"
+echo "   Backend: http://localhost:8765"
+echo "   Frontend: http://localhost:8080"
 echo ""
 
-# Start backend in background
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
+# Start backend in background（走 run_server.py：Windows 需 ProactorEventLoop，端口读配置）
+python run_server.py &
 BACKEND_PID=$!
 
 # Start frontend

@@ -3,7 +3,7 @@
  * ===============
  *
  * 封装所有与后端的 HTTP 通信。
- * 使用 axios 作为 HTTP 客户端，baseURL 为 /api（通过 Vite 代理到后端 8000 端口）。
+ * 使用 axios 作为 HTTP 客户端，baseURL 为 /api（通过 Vite 代理到后端 8765 端口）。
  *
  * API 分组：
  *   - 设备 API：listDevices, getDevice, installApk

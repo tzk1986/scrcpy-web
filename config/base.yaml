@@ -40,4 +40,4 @@ security:
   jwt_algorithm: HS256
   jwt_expire_minutes: 1440
   cors_origins:
-    - http://localhost:5173
+    - http://localhost:8080
