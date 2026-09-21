@@ -49,8 +49,10 @@
         <div class="metric-value" :class="{ warning: latestMetrics.fps && latestMetrics.fps < 30 }">
           {{ latestMetrics.fps?.toFixed(0) || '-' }} FPS
         </div>
+        <!-- gfxinfo 每 5 轮采样一次（后端降频），非 gfxinfo 轮 jank 恒 0，
+             故 delta 覆盖约 5 秒窗口而非 1 秒，标签按「采样窗口」口径标注 -->
         <div class="metric-detail" v-if="latestMetrics.jank_count !== undefined && latestMetrics.jank_count > 0">
-          卡顿: {{ latestMetrics.jank_count }} 帧/秒
+          卡顿: {{ latestMetrics.jank_count }} 帧/采样窗口
         </div>
       </div>
 

@@ -127,6 +127,23 @@ describe('PerfView', () => {
     expect(cards[0].text()).toContain('69.0%')
   })
 
+  it('卡顿数按「采样窗口」口径展示（gfxinfo 降频后非每秒口径）', async () => {
+    const wrapper = mountView()
+    const ws = latestWs()
+    const fpsCard = () => wrapper.findAll('.metric-card')[2]
+
+    ws.messageHandler!(JSON.stringify({ ...metrics, jank_count: 0 }))
+    await nextTick()
+    expect(fpsCard().text()).not.toContain('卡顿')
+
+    ws.messageHandler!(JSON.stringify({ ...metrics, jank_count: 7 }))
+    await nextTick()
+    expect(fpsCard().text()).toContain('卡顿: 7 帧/采样窗口')
+    expect(fpsCard().text()).not.toContain('帧/秒')
+
+    wrapper.unmount()
+  })
+
   it('非法 JSON 被忽略且不破坏已有数据；卸载时关闭 WebSocket', async () => {
     const wrapper = mountView()
     const ws = latestWs()

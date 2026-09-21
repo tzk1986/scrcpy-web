@@ -379,6 +379,16 @@ onMounted(async () => {
     console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
     startScreenshotMode()
   }
+
+  // 挂载时 tab 可能已处于隐藏态（后台标签打开设备页），按当前可见性
+  // 初始化一次降载状态，不必等首个 visibilitychange 事件才纠正。
+  // 此时 h264Stream/inputController 均已就绪；若隐藏，onVisibilityChange
+  // 会停掉刚启动的 fps 上报（startH264StatsReporting 内部先 stopH264Stats，
+  // 不存在双重定时器）。
+  if (document.hidden) {
+    console.log('[VideoPlayer] Mounted while tab hidden, applying load-shedding')
+    onVisibilityChange()
+  }
 })
 
 onUnmounted(() => {

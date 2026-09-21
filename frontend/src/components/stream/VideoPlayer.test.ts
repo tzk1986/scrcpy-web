@@ -185,6 +185,26 @@ describe('VideoPlayer Page Visibility', () => {
     expect(ic.setEnabled).not.toHaveBeenCalled()
   })
 
+  it('挂载时 tab 已隐藏 → 不启动 fps 上报且输入停用', async () => {
+    vi.useFakeTimers()
+    // 不派发 visibilitychange，仅让 document.hidden 在挂载前已为 true
+    hiddenFlag = true
+    const wrapper = await mountPlayer()
+    const ic = h.MockInputController.instances[0]
+
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(statsReportCount()).toBe(0)
+    expect(ic.setEnabled).toHaveBeenLastCalledWith(false)
+
+    // 恢复可见后按常规路径重启上报与输入
+    setHidden(false)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(statsReportCount()).toBe(1)
+    expect(ic.setEnabled).toHaveBeenLastCalledWith(true)
+
+    wrapper.unmount()
+  })
+
   it('?swdecode=1 时向 H264VideoStream 传入 prefer-software', async () => {
     history.pushState({}, '', '/?swdecode=1')
     const wrapper = await mountPlayer()
