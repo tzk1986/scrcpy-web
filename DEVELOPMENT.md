@@ -147,7 +147,7 @@ PYTHONPATH=backend python -m pytest tests/ -v
 - ❌ 仅凭症状猜测根因
 - ❌ 不查源码/文档就假设参数格式
 
-**参考案例**：视频流修复（`docs/视频流修复方案.md`）
+**参考案例**：视频流修复（`docs/archive/视频流修复方案.md`）
 - 根因：scid 格式（十进制 vs 十六进制）+ socket 名称（固定 vs 含 scid）
 - 依据：scrcpy 官方源码 `app/src/server.c` 中 `scid=%08x` 格式
 - 如未调研，会持续在"参数不被识别"的症状上盲改
@@ -709,7 +709,7 @@ def _parse_logcat_line(self, line: str) -> LogEntry:
 
 **下一步计划**：
 - [ ] 修复编码器测试 mock 配置
-- [ ] 视频流修复（方案文档 `docs/视频流修复方案.md` 已就绪）
+- [ ] 视频流修复（方案文档 `docs/archive/视频流修复方案.md` 已就绪）
 - [ ] PTY 伪终端支持
 
 **参与人员**：
@@ -741,7 +741,7 @@ def _parse_logcat_line(self, line: str) -> LogEntry:
 **关键文件**：
 - `backend/app/infrastructure/stream/scrcpy.py` — 协议握手解析
 - `docs/经验记录.md` — 经验沉淀（E001-E008）
-- `docs/视频流修复完成.md` — 修复完整报告
+- `docs/archive/视频流修复完成.md` — 修复完整报告
 
 **经验沉淀**：
 | 编号 | 主题 | 关键教训 |
