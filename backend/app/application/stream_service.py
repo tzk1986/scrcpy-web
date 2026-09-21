@@ -8,7 +8,7 @@
 
 流式传输管道：
     设备屏幕 → scrcpy-server（H.264 编码器）→ 原始帧 →
-    → WebSocket/WebTransport → 浏览器（WebCodecs 解码器）
+    → WebSocket → 浏览器（WebCodecs 解码器）
 
 本服务：
     1. 从设置中读取编码器配置（max_size、bit_rate 等）

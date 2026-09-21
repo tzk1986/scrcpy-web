@@ -14,7 +14,6 @@
 实现类（见 infrastructure/）：
     AdbDriver:         AdbCliDriver（基于子进程的 ADB CLI）
     VideoEncoder:      ScrcpyEncoder（scrcpy-server H.264）
-    Transport:         WebSocketTransport, WebTransportTransport（占位符）
     DebugRepository:   SqliteDebugRepository（aiosqlite）
     DeviceRepository:  SqliteDeviceRepository（aiosqlite）
 
@@ -391,41 +390,6 @@ class VideoEncoder(Protocol):
 
     async def stop(self) -> None:
         """停止编码并释放资源（子进程等）。"""
-        ...
-
-
-@runtime_checkable
-class Transport(Protocol):
-    """
-    传输层抽象 — 双向二进制帧传递。
-
-    实现类：
-        - WebSocketTransport（infrastructure/transport/websocket.py）
-        - WebTransportTransport（infrastructure/transport/webtransport.py，占位符）
-
-    用于视频流管道，将编码器与网络层解耦。
-    """
-
-    async def send(self, frame: bytes) -> None:
-        """
-        发送二进制帧给远端。
-
-        参数：
-            frame: 要发送的原始字节（H.264 数据等）。
-        """
-        ...
-
-    async def receive(self) -> bytes:
-        """
-        从远端接收二进制帧。
-
-        返回：
-            接收到的原始字节。
-        """
-        ...
-
-    async def close(self) -> None:
-        """关闭传输连接。"""
         ...
 
 

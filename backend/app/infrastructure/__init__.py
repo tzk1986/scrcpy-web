@@ -14,9 +14,6 @@
         sqlite.py      SqliteDebugRepository, SqliteDeviceRepository
     stream/        — 视频编码器实现
         scrcpy.py      ScrcpyEncoder：scrcpy-server H.264 编码器
-    transport/     — 网络传输层实现
-        websocket.py   WebSocketTransport：封装 FastAPI WebSocket
-        webtransport.py WebTransportTransport：Chrome 优化（占位符）
 
 依赖方向：
     infrastructure → domain（实现其 Protocol）
