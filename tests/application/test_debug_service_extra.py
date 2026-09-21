@@ -416,8 +416,6 @@ def test_parse_logcat_line_malformed_falls_back():
     assert entry.message == "garbage output"
 
 
-@pytest.mark.xfail(reason="源码疑点：_parse_logcat_line 字段映射疑似 off-by-one"
-                          "（level/pid/tid 取了错位的 token），待确认后修正", strict=False)
 def test_parse_logcat_line_threadtime_field_mapping():
     """按模块文档声明的 threadtime 契约：PID TID LEVEL 应对应 pid/tid/level。"""
     svc = DebugService(adb=FakeAdb(), repo=FakeRepo())

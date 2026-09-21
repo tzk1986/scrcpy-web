@@ -425,9 +425,9 @@ class DebugService:
             )
         return LogEntry(
             ts=time.time(),
-            level=parts[2] if len(parts[2]) == 1 else "I",
-            pid=int(parts[3]) if parts[3].isdigit() else 0,
-            tid=int(parts[4]) if parts[4].isdigit() else 0,
+            level=parts[4] if len(parts[4]) == 1 else "I",
+            pid=int(parts[2]) if parts[2].isdigit() else 0,
+            tid=int(parts[3]) if parts[3].isdigit() else 0,
             tag=parts[5].rstrip(":"),
             message=parts[6] if len(parts) > 6 else "",
             raw=line,
