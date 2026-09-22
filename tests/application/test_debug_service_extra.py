@@ -203,6 +203,7 @@ class FakeRepo:
         self.deleted_session_logs = 0
         self.cleanup_calls = 0
         self.next_seq_calls = 0
+        self.vacuum_calls = 0
 
     async def save_logs_bulk(self, rows):
         self.bulk.extend(rows)
@@ -234,14 +235,36 @@ class FakeRepo:
     async def delete_old_shell_history(self, retention_seconds):
         return 2
 
-    async def trim_logs_to_db_size(self, max_size_bytes):
+    async def trim_to_db_size(self, max_size_bytes):
         return 1
+
+    async def vacuum(self):
+        self.vacuum_calls += 1
 
     async def get_db_size_bytes(self):
         return 5 * 1024 * 1024
 
     async def delete_session_logs(self, session_id):
         return self.deleted_session_logs
+
+
+class FakeMetricsRepo:
+    """MetricsRepository 替身：清理链路双限步骤的固定返回值。"""
+
+    def __init__(self):
+        self.deleted = 4
+        self.trimmed = 5
+        self.fail_step: str | None = None
+
+    async def delete_old_metrics(self, retention_seconds):
+        if self.fail_step == "delete_old_metrics":
+            raise RuntimeError("delete_old_metrics exploded")
+        return self.deleted
+
+    async def trim_metrics_rows(self, max_rows):
+        if self.fail_step == "trim_metrics_rows":
+            raise RuntimeError("trim_metrics_rows exploded")
+        return self.trimmed
 
 
 def make_entry(level: str, message: str) -> LogEntry:
@@ -823,7 +846,7 @@ async def test_start_cleanup_task_duplicate_and_stop():
 
 async def test_cleanup_loop_runs_cleanup_then_exits_on_cancel():
     repo = FakeRepo()
-    svc = DebugService(adb=FakeAdb(), repo=repo)
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=FakeMetricsRepo())
     task = asyncio.create_task(svc._cleanup_loop(0.01))
     for _ in range(200):
         if repo.cleanup_calls:
@@ -835,15 +858,107 @@ async def test_cleanup_loop_runs_cleanup_then_exits_on_cancel():
 
 
 async def test_run_cleanup_returns_stats():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    repo = FakeRepo()
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=FakeMetricsRepo())
     stats = await svc.run_cleanup()
     assert stats == {
         "logs_deleted": 3,
         "shell_deleted": 2,
+        "metrics_deleted": 4,
+        "metrics_trimmed": 5,
         "size_trimmed": 1,
+        "vacuumed": True,
         "db_size_bytes": 5 * 1024 * 1024,
         "db_size_mb": 5.0,
+        "errors": [],
     }
+    assert repo.vacuum_calls == 1
+
+
+async def test_run_cleanup_skips_vacuum_when_nothing_deleted():
+    repo = FakeRepo()
+
+    async def zero(*args):
+        return 0
+
+    repo.delete_old_logs = zero
+    repo.delete_old_shell_history = zero
+    repo.trim_to_db_size = zero
+    metrics = FakeMetricsRepo()
+    metrics.deleted = 0
+    metrics.trimmed = 0
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=metrics)
+
+    stats = await svc.run_cleanup()
+
+    assert stats["vacuumed"] is False
+    assert stats["errors"] == []
+    assert repo.vacuum_calls == 0
+
+
+async def test_run_cleanup_isolates_step_failures_and_continues():
+    """分段兜底：任一环节抛异常记入 errors，其余步骤照常完成（§3.8）。"""
+    repo = FakeRepo()
+
+    async def boom(*args):
+        raise RuntimeError("logs exploded")
+
+    repo.delete_old_logs = boom
+    metrics = FakeMetricsRepo()
+    metrics.fail_step = "trim_metrics_rows"
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=metrics)
+
+    stats = await svc.run_cleanup()
+
+    assert stats["logs_deleted"] == 0
+    assert stats["shell_deleted"] == 2  # 后续段照常执行
+    assert stats["metrics_deleted"] == 4
+    assert stats["metrics_trimmed"] == 0
+    assert stats["size_trimmed"] == 1
+    assert stats["vacuumed"] is True  # 有删除（shell_deleted 等）→ 仍 VACUUM
+    assert [e["step"] for e in stats["errors"]] == [
+        "delete_old_logs",
+        "trim_metrics_rows",
+    ]
+
+
+async def test_run_cleanup_vacuum_failure_isolated():
+    """VACUUM 失败只记 errors，不影响已完成的删除与结果返回。"""
+
+    async def boom():
+        raise RuntimeError("database is locked")
+
+    repo = FakeRepo()
+    repo.vacuum = boom
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=FakeMetricsRepo())
+
+    stats = await svc.run_cleanup()
+
+    assert stats["logs_deleted"] == 3  # DELETE 段已完成
+    assert stats["vacuumed"] is False
+    assert [e["step"] for e in stats["errors"]] == ["vacuum"]
+
+
+async def test_cleanup_loop_survives_run_cleanup_crash():
+    """外层兜底：run_cleanup 整体抛异常时循环存活并续跑（B4）。"""
+    repo = FakeRepo()
+    calls = {"n": 0}
+
+    async def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("run_cleanup exploded")
+
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=FakeMetricsRepo())
+    svc.run_cleanup = flaky
+    task = asyncio.create_task(svc._cleanup_loop(0.01))
+    for _ in range(400):
+        if calls["n"] >= 2:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await task
+    assert calls["n"] >= 2  # 首轮失败后循环仍续跑第二轮
 
 
 async def test_cleanup_session_delegates_to_repo():

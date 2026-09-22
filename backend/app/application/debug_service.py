@@ -35,9 +35,17 @@ from fastapi import WebSocket
 
 from app.core.exceptions import SessionNotFoundError
 from app.core.logging import get_logger
-from app.domain.ports import AdbDriver, DebugRepository, LogEntry, LogFilter, ShellSession
+from app.domain.ports import (
+    AdbDriver,
+    DebugRepository,
+    LogEntry,
+    LogFilter,
+    MetricsRepository,
+    ShellSession,
+)
 from app.domain.session import DebugSession
 from app.infrastructure.persistence.batch_writer import BatchLogWriter
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 logger = get_logger(__name__)
 
@@ -52,14 +60,23 @@ class DebugService:
     # 防录制开关抖动导致 logcat 子进程频繁启停（方案 17 实施项 5）
     LOGCOLLECT_STOP_GRACE = 0.5
 
-    def __init__(self, adb: AdbDriver, repo: DebugRepository):
+    def __init__(
+        self,
+        adb: AdbDriver,
+        repo: DebugRepository,
+        metrics_repo: MetricsRepository | None = None,
+    ):
         """
         参数：
             adb: 用于设备通信的 ADB 驱动。
             repo: 用于持久化的调试仓库。
+            metrics_repo: 指标仓储（清理链路对 perf/network 采样表做
+                时间/容量双限删除用），默认 SqliteMetricsRepository，
+                测试可注入替身。
         """
         self.adb = adb
         self.repo = repo
+        self._metrics_repo = metrics_repo or SqliteMetricsRepository()
         # 活跃会话，按 session_id 索引。内存中用于快速访问。
         self.sessions: dict[str, DebugSession] = {}
         # 后台 logcat 收集任务，按 session_id 索引。
@@ -778,29 +795,45 @@ class DebugService:
         """
         后台清理循环。
 
-        每隔 interval_seconds 执行一次清理：
+        每隔 interval_seconds 执行一次清理（方案 18 Step 5）：
           1. 删除超过保留期的日志
           2. 删除超过保留期的 shell 历史
-          3. 如果数据库超过大小限制，删除最旧日志
+          3. 删除超过保留期的指标采样（perf/network）
+          4. metrics 超过 max_rows_total 时按行数裁剪最旧
+          5. 如果数据库超过大小限制，删除最旧数据（指标 → shell 历史 → 日志）
+          6. 本轮确有删除时 VACUUM 回收空间
+
+        单轮异常（含 run_cleanup 自身的未兜底异常）只记警告，
+        循环存活续跑（B4）。
         """
         try:
             while True:
                 await asyncio.sleep(interval_seconds)
-                await self.run_cleanup()
+                try:
+                    await self.run_cleanup()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "cleanup_loop_iteration_failed",
+                        error=str(exc),
+                    )
         except asyncio.CancelledError:
             logger.info("cleanup_loop_cancelled")
 
     async def run_cleanup(self) -> dict[str, Any]:
         """
-        执行一次日志清理。
+        执行一次清理（方案 18 Step 5 / §3.8）。
 
-        清理策略：
+        清理策略（各段独立兜底，异常记入 errors 不中断后续段）：
           1. 删除超过 log_retention_days 的日志
           2. 删除超过 shell_history_days 的 shell 历史
-          3. 如果数据库超过 max_db_size_mb，删除最旧日志直到低于限制
+          3. 删除超过 metrics.retention_days 的指标采样
+          4. metrics 合计超过 max_rows_total 时按行数裁剪最旧
+          5. 如果数据库超过 max_db_size_mb，删除最旧数据
+             （顺序：指标 → shell 历史 → 日志，D5）
+          6. 本轮确有删除时 VACUUM 回收空间（D4；失败仅记录）
 
         返回：
-            清理统计信息字典。
+            清理统计信息字典（含 errors 列表）。
         """
         from app.core.config import settings as get_settings
         settings = get_settings()
@@ -808,24 +841,77 @@ class DebugService:
         log_retention_seconds = settings.debug.log_retention_days * 86400
         shell_retention_seconds = settings.debug.shell_history_days * 86400
         max_db_size_bytes = settings.debug.max_db_size_mb * 1024 * 1024
+        metrics_retention_seconds = settings.metrics.retention_days * 86400
+        max_rows_total = settings.metrics.max_rows_total
+
+        errors: list[dict[str, str]] = []
+
+        async def guarded(step: str, coro: Any) -> int:
+            """单段兜底：异常记警告与 errors 并返回 0，不中断清理链。"""
+            try:
+                return await coro
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("cleanup_step_failed", step=step, error=str(exc))
+                errors.append({"step": step, "error": str(exc)})
+                return 0
 
         # 1. 删除超过保留期的日志
-        logs_deleted = await self.repo.delete_old_logs(log_retention_seconds)
+        logs_deleted = await guarded(
+            "delete_old_logs", self.repo.delete_old_logs(log_retention_seconds)
+        )
 
         # 2. 删除超过保留期的 shell 历史
-        shell_deleted = await self.repo.delete_old_shell_history(shell_retention_seconds)
+        shell_deleted = await guarded(
+            "delete_old_shell_history",
+            self.repo.delete_old_shell_history(shell_retention_seconds),
+        )
 
-        # 3. 如果数据库超过大小限制，删除最旧日志
-        size_trimmed = await self.repo.trim_logs_to_db_size(max_db_size_bytes)
+        # 3. 删除超过保留期的指标采样
+        metrics_deleted = await guarded(
+            "delete_old_metrics",
+            self._metrics_repo.delete_old_metrics(metrics_retention_seconds),
+        )
+
+        # 4. metrics 合计超限时按行数裁剪最旧
+        metrics_trimmed = await guarded(
+            "trim_metrics_rows",
+            self._metrics_repo.trim_metrics_rows(max_rows_total),
+        )
+
+        # 5. 库级字节兜底（指标 → shell 历史 → 日志，D5）
+        size_trimmed = await guarded(
+            "trim_to_db_size", self.repo.trim_to_db_size(max_db_size_bytes)
+        )
+
+        # 6. 本轮确有删除才 VACUUM（D4，避免空转重建库）
+        any_deleted = bool(
+            logs_deleted
+            or shell_deleted
+            or metrics_deleted
+            or metrics_trimmed
+            or size_trimmed
+        )
+        vacuumed = False
+        if any_deleted:
+            try:
+                await self.repo.vacuum()
+                vacuumed = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("cleanup_step_failed", step="vacuum", error=str(exc))
+                errors.append({"step": "vacuum", "error": str(exc)})
 
         db_size = await self.repo.get_db_size_bytes()
 
         result = {
             "logs_deleted": logs_deleted,
             "shell_deleted": shell_deleted,
+            "metrics_deleted": metrics_deleted,
+            "metrics_trimmed": metrics_trimmed,
             "size_trimmed": size_trimmed,
+            "vacuumed": vacuumed,
             "db_size_bytes": db_size,
             "db_size_mb": round(db_size / (1024 * 1024), 2),
+            "errors": errors,
         }
 
         logger.info(

@@ -19,6 +19,7 @@ from app.infrastructure.persistence.sqlite import (
     DatabasePool,
     SqliteDebugRepository,
     SqliteDeviceRepository,
+    SqliteMetricsRepository,
     get_pool,
 )
 
@@ -281,11 +282,12 @@ async def test_get_db_size_bytes(debug_repo, db_path, tmp_path):
     assert size == Path(db_path).stat().st_size
 
 
-async def test_trim_logs_to_db_size(debug_repo, db_path):
+async def test_trim_to_db_size(debug_repo, db_path):
+    await SqliteMetricsRepository(db_path).init_db()  # trim 遍历 4 表，需指标表存在
     await debug_repo.save_log("keep", make_entry(time.time()), seq=0)
     size = await debug_repo.get_db_size_bytes()
     # 未超限：直接返回 0，不删任何数据
-    assert await debug_repo.trim_logs_to_db_size(size + 1024) == 0
+    assert await debug_repo.trim_to_db_size(size + 1024) == 0
     assert await debug_repo.next_seq("keep") == 1
 
     rows = [("bulk", float(i), "I", 1, 1, "T", "x" * 100, "r", i) for i in range(1500)]
@@ -300,7 +302,7 @@ async def test_trim_logs_to_db_size(debug_repo, db_path):
 
     # 超限：按每批 1000 条删除。WAL 下主库文件不会因 DELETE 缩小，
     # 循环只能靠"表已空"收尾，因此超限时会删掉全部日志（含较新的 keep 行）。
-    assert await debug_repo.trim_logs_to_db_size(size // 4) == 1501
+    assert await debug_repo.trim_to_db_size(size // 4) == 1501
     assert await debug_repo.query_logs_since("bulk", 0) == []
     assert await debug_repo.query_logs_since("keep", 0) == []
 
@@ -325,6 +327,7 @@ async def test_trim_logs_breaks_when_file_shrinks_below_limit(db_path):
     _POOLS[db_path] = pool
     repo = SqliteDebugRepository(db_path)
     await repo.init_db()
+    await SqliteMetricsRepository(db_path).init_db()  # trim 遍历 4 表，需指标表存在
 
     async with pool.connection() as conn:
         await conn.execute_fetchall("PRAGMA journal_mode=DELETE")
@@ -336,14 +339,14 @@ async def test_trim_logs_breaks_when_file_shrinks_below_limit(db_path):
     assert before > 100_000  # 数据主导文件体积，schema 开销可忽略
     max_size = before // 2
 
-    deleted = await repo.trim_logs_to_db_size(max_size)
+    deleted = await repo.trim_to_db_size(max_size)
     # 首轮删 1000 条后 auto_vacuum 截断文件 → 复检低于上限 → break
     assert deleted == 1000
     assert len(await repo.query_logs_since("s", 0)) == 500  # 剩余 500 条被保留
     assert await repo.get_db_size_bytes() < max_size  # 收缩真实发生
 
     # 再次裁剪：已低于上限，直接返回 0
-    assert await repo.trim_logs_to_db_size(max_size) == 0
+    assert await repo.trim_to_db_size(max_size) == 0
 
 
 async def test_vacuum_compacts_without_data_loss(debug_repo):

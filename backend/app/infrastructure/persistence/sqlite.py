@@ -476,49 +476,62 @@ class SqliteDebugRepository(DebugRepository):
         except FileNotFoundError:
             return 0
 
-    async def trim_logs_to_db_size(self, max_size_bytes: int) -> int:
+    async def trim_to_db_size(self, max_size_bytes: int) -> int:
         """
-        当数据库超过指定大小时，删除最旧的日志直到低于限制。
+        库级字节兜底（方案 18 D5）：当数据库超过指定大小时，
+        按「指标 → shell 历史 → 日志」顺序删除最旧数据直到低于限制。
+
+        指标是设备在线即可重采的可再生数据，最先删；日志是不可再生
+        的主业务数据，最后删。WAL 下字节计量只在 checkpoint 后反映，
+        因此极端情况下可能删到表空（既有语义，已写入 API 文档）。
 
         参数：
             max_size_bytes: 最大数据库大小（字节）。
 
         返回：
-            删除的日志条数。
+            删除的总条数（跨表）。
         """
         current_size = await self.get_db_size_bytes()
         if current_size <= max_size_bytes:
             return 0
 
         total_deleted = 0
-        # 批量删除，每次删除 1000 条
+        # 批量删除，每批 1000 条
         batch_size = 1000
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
-            while True:
-                current_size = await self.get_db_size_bytes()
-                if current_size <= max_size_bytes:
-                    break
+            # D5 顺序：指标 → shell 历史 → 日志
+            for table in (
+                "perf_samples",
+                "network_samples",
+                "shell_history",
+                "debug_logs",
+            ):
+                while True:
+                    current_size = await self.get_db_size_bytes()
+                    if current_size <= max_size_bytes:
+                        break
 
-                # 获取最旧的 1000 条日志的时间戳
-                cursor = await conn.execute(
-                    "SELECT ts FROM debug_logs ORDER BY ts ASC LIMIT ?", (batch_size,)
-                )
-                rows = list(await cursor.fetchall())
-                if not rows:
-                    break
+                    # 该表最旧的 1000 条的时间戳
+                    cursor = await conn.execute(
+                        f"SELECT ts FROM {table} ORDER BY ts ASC LIMIT ?",
+                        (batch_size,),
+                    )
+                    rows = list(await cursor.fetchall())
+                    if not rows:
+                        break
 
-                # 删除这些日志
-                max_ts = rows[-1][0]
-                cursor = await conn.execute(
-                    "DELETE FROM debug_logs WHERE ts <= ?", (max_ts,)
-                )
-                await conn.commit()
-                total_deleted += cursor.rowcount
+                    # 删除这些行
+                    max_ts = rows[-1][0]
+                    cursor = await conn.execute(
+                        f"DELETE FROM {table} WHERE ts <= ?", (max_ts,)
+                    )
+                    await conn.commit()
+                    total_deleted += cursor.rowcount
 
         if total_deleted > 0:
             logger.info(
-                "logs_trimmed_to_size",
+                "db_trimmed_to_size",
                 deleted=total_deleted,
                 max_size_mb=max_size_bytes / (1024 * 1024),
             )

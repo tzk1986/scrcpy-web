@@ -549,15 +549,17 @@ class DebugRepository(Protocol):
         """
         ...
 
-    async def trim_logs_to_db_size(self, max_size_bytes: int) -> int:
+    async def trim_to_db_size(self, max_size_bytes: int) -> int:
         """
-        当数据库超过指定大小时，删除最旧的日志。
+        库级字节兜底：当数据库超过指定大小时按顺序删除最旧数据——
+        指标 → shell 历史 → 日志（方案 18 D5：先删可再生采样，
+        日志是不可再生的主业务数据，最后删）。
 
         参数：
             max_size_bytes: 最大数据库大小（字节）。
 
         返回：
-            删除的日志条数。
+            删除的总条数（跨表）。
         """
         ...
 
