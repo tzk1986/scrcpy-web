@@ -569,6 +569,129 @@ class DebugRepository(Protocol):
 
 
 @runtime_checkable
+class MetricsRepository(Protocol):
+    """
+    指标采样数据持久化抽象（缓存态，方案 18）。
+
+    实现类：
+        - SqliteMetricsRepository（infrastructure/persistence/sqlite.py）
+
+    数据仅在「录制」开启时落盘；不录制时指标表零写入。
+    清理（时间 + 容量双限）与导出查询都走本接口。
+    """
+
+    async def save_perf_samples_bulk(self, rows: list[tuple[Any, ...]]) -> None:
+        """
+        批量插入性能采样行（单事务）。rows 元素为 9 元组
+        (device_id, ts, cpu_percent, total_memory_mb, used_memory_mb,
+         fps, jank_count, current_activity, top_package)。
+        """
+        ...
+
+    async def save_network_samples_bulk(self, rows: list[tuple[Any, ...]]) -> None:
+        """
+        批量插入网络采样行（单事务）。rows 元素为 9 元组
+        (device_id, ts, rx_bytes, tx_bytes, rx_rate_kbps, tx_rate_kbps,
+         active_connections, wifi_connected, wifi_ssid)。
+        """
+        ...
+
+    async def query_perf_samples(
+        self,
+        device_id: str,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        """
+        按设备与 ts 区间查询性能采样（ts 升序，最多 limit 条）。
+
+        参数：
+            device_id: 设备 ID。
+            from_ts: 区间下界（含），None 表示无下界。
+            to_ts: 区间上界（含），None 表示无上界。
+            limit: 最大返回条数。
+
+        返回：
+            行字典列表（键为列名）。
+        """
+        ...
+
+    async def query_network_samples(
+        self,
+        device_id: str,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        """
+        按设备与 ts 区间查询网络采样（ts 升序，最多 limit 条）。
+
+        参数：
+            device_id: 设备 ID。
+            from_ts: 区间下界（含），None 表示无下界。
+            to_ts: 区间上界（含），None 表示无上界。
+            limit: 最大返回条数。
+
+        返回：
+            行字典列表（键为列名）。
+        """
+        ...
+
+    async def perf_sample_stats(
+        self, device_id: str
+    ) -> tuple[int, float | None, float | None]:
+        """
+        该设备性能采样的聚合统计（跨批次叠加）。
+
+        返回：
+            (rows, oldest_ts, newest_ts)；无数据时 (0, None, None)。
+        """
+        ...
+
+    async def network_sample_stats(
+        self, device_id: str
+    ) -> tuple[int, float | None, float | None]:
+        """
+        该设备网络采样的聚合统计（跨批次叠加）。
+
+        返回：
+            (rows, oldest_ts, newest_ts)；无数据时 (0, None, None)。
+        """
+        ...
+
+    async def delete_old_metrics(self, retention_seconds: float) -> int:
+        """
+        删除超过保留期的指标（两表，按 ts 删最旧）。
+
+        参数：
+            retention_seconds: 保留时间（秒）。
+
+        返回：
+            删除的总行数（两表之和）。
+        """
+        ...
+
+    async def trim_metrics_rows(self, max_rows: int) -> int:
+        """
+        两表合计行数超过 max_rows 时按 ts 删最旧，直到合计不超限。
+
+        参数：
+            max_rows: 两表合计行数上限。
+
+        返回：
+            删除的总行数。
+        """
+        ...
+
+    async def count_metrics_rows(self) -> int:
+        """
+        返回两表行数之和。
+        """
+        ...
+
+
+@runtime_checkable
 class DeviceRepository(Protocol):
     """
     设备持久化抽象。

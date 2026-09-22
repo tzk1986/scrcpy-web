@@ -23,6 +23,7 @@ from app.application.network_service import NetworkService
 from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.infrastructure.network.sampler import NetworkStats
+from app.infrastructure.persistence.metric_recorder import MetricRecorder
 
 DEV = "net-svc-dev"
 
@@ -68,6 +69,21 @@ class DeadAdb:
 
     async def shell(self, device_id: str, cmd: str) -> str:
         raise AdbError("ADB command failed: device offline")
+
+
+class FakeMetricsRepo:
+    """内存版指标仓储：捕获批量写入供断言（录制测试注入用）。"""
+
+    def __init__(self):
+        self.perf_rows: list[tuple] = []
+        self.network_rows: list[tuple] = []
+        self.flush_calls = 0
+
+    async def save_perf_samples_bulk(self, rows: list[tuple]) -> None:
+        self.perf_rows.extend(rows)
+
+    async def save_network_samples_bulk(self, rows: list[tuple]) -> None:
+        self.network_rows.extend(rows)
 
 
 def make_stats(**overrides: object) -> NetworkStats:
@@ -251,16 +267,19 @@ async def test_guard_kept_alive_by_ongoing_access(guarded) -> None:
     assert DEV not in service._tasks
 
 
-async def test_guard_recording_inhibits_stop_then_resumes(guarded) -> None:
+async def test_guard_recording_inhibits_stop_then_resumes(guarded, monkeypatch) -> None:
     """录制中禁止空闲停采；录制结束后守卫继续观察并停采。"""
+    monkeypatch.setattr(settings().metrics, "recording", True)
     service = NetworkService(FakeAdb(std_outputs()))
-    service._recorders[DEV] = object()
+    recorder = MetricRecorder(FakeMetricsRepo())
+    await recorder.start()
+    service._recorders[DEV] = recorder
 
     await service.get_stats(DEV)
     await asyncio.sleep(0.2)
     assert DEV in service._tasks  # 录制中未停采
 
-    del service._recorders[DEV]
+    await service._finalize_recording(DEV, "stopped")
     await asyncio.sleep(0.2)
     assert DEV not in service._tasks
 

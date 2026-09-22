@@ -102,6 +102,16 @@ class ConfigReloadError(OpenScrcpyException):
         super().__init__(f"Config reload failed: {reason}", code="CONFIG_RELOAD_FAILED")
 
 
+class RecordingDisabledError(OpenScrcpyException):
+    """metrics.recording 总开关关闭时请求开启录制（方案 18 状态机，不静默）。"""
+
+    def __init__(self):
+        super().__init__(
+            "Metrics recording is disabled by configuration",
+            code="RECORDING_DISABLED",
+        )
+
+
 # ---------------------------------------------------------------------------
 # FastAPI 异常处理器
 # ---------------------------------------------------------------------------

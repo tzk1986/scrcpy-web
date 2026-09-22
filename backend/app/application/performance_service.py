@@ -17,9 +17,12 @@ from collections import deque
 from typing import Any, AsyncIterator
 
 from app.core.config import settings
+from app.core.exceptions import RecordingDisabledError
 from app.core.logging import get_logger
-from app.domain.ports import AdbDriver
+from app.domain.ports import AdbDriver, MetricsRepository
 from app.infrastructure.performance.sampler import PerformanceSampler, PerformanceMetrics
+from app.infrastructure.persistence.metric_recorder import MetricRecorder
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 logger = get_logger(__name__)
 
@@ -43,24 +46,29 @@ class PerformanceService:
             print(m.cpu_percent)
     """
 
-    def __init__(self, adb: AdbDriver) -> None:
+    def __init__(self, adb: AdbDriver, metrics_repo: MetricsRepository | None = None) -> None:
         """
         初始化服务。
 
         参数：
             adb: ADB 驱动实例。
+            metrics_repo: 指标仓储（录制落盘与缓存态导出用），
+                默认 SqliteMetricsRepository，测试可注入替身。
         """
         self.adb = adb
         # 内存缓冲区容量（@1s 采样约 1 小时/设备）；deque 构造后不可热伸缩，
         # 热重载仅对新建缓冲生效（方案 18 S3）
         self.buffer_capacity: int = settings().metrics.buffer_size
+        self._metrics_repo = metrics_repo or SqliteMetricsRepository()
         self._samplers: dict[str, PerformanceSampler] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._buffers: dict[str, deque[PerformanceMetrics]] = {}
         self._subscribers: dict[str, list[asyncio.Queue[PerformanceMetrics | None]]] = {}
         self._idle_guards: dict[str, asyncio.Task[None]] = {}
-        # 录制器挂接点（Step 3 填充）：空闲守卫以「无录制」为停采前提
-        self._recorders: dict[str, Any] = {}
+        # 录制器挂接点（方案 18 Step 3）：空闲守卫以「无录制」为停采前提
+        self._recorders: dict[str, MetricRecorder] = {}
+        # 最近一次停止原因（stopped/device_lost/config/shutdown），供 status 回显
+        self._record_reasons: dict[str, str] = {}
 
     async def start_monitoring(self, device_id: str, interval: float = 1.0) -> None:
         """
@@ -94,6 +102,7 @@ class PerformanceService:
         interval: float,
     ) -> None:
         """采样循环（后台任务）。"""
+        cancelled = False
         try:
             async for metrics in sampler.sample(interval):
                 # 存入缓冲区
@@ -111,20 +120,38 @@ class PerformanceService:
                         except Exception:
                             pass
 
+                # 录制落盘（缓存态，方案 18 Step 3）；总开关热重载
+                # true→false 时停录并停采（§3.6 状态机）
+                recorder = self._recorders.get(device_id)
+                if recorder is not None:
+                    if settings().metrics.recording:
+                        recorder.submit_perf(device_id, metrics)
+                    else:
+                        await self._finalize_recording(device_id, "config")
+                        return
+
         except asyncio.CancelledError:
+            cancelled = True
             logger.info("performance_monitoring_stopped", device=device_id)
         except Exception as e:
             logger.error("performance_monitoring_error", device=device_id, error=str(e))
         finally:
+            # 非 cancel 结束（sample() 自然结束 = 失联判定路径，或 bug 异常）
+            # → 录制置 stopped(device_lost)。cancel 路径由 stop_monitoring
+            # 统一 finalize（reason='stopped'/'shutdown'）。
+            if not cancelled:
+                await self._finalize_recording(device_id, "device_lost")
             # 统一释放（B1：离线/自然结束路径同样释放暂存缓冲）
             self._release_device(device_id)
 
-    async def stop_monitoring(self, device_id: str) -> None:
+    async def stop_monitoring(self, device_id: str, record_reason: str = "stopped") -> None:
         """
         停止设备性能监控并释放内存暂存缓冲（幂等）。
 
         参数：
             device_id: 设备 ID。
+            record_reason: 若该设备正录制，录制停止原因（§3.6 状态机
+                reason 字段：stopped/device_lost/config/shutdown）。
         """
         await self._cancel_idle_guard(device_id)
 
@@ -136,6 +163,7 @@ class PerformanceService:
             except asyncio.CancelledError:
                 pass
 
+        await self._finalize_recording(device_id, record_reason)
         self._release_device(device_id)
 
         logger.info("performance_monitoring_stopped", device=device_id)
@@ -238,6 +266,104 @@ class PerformanceService:
         }
 
     # ------------------------------------------------------------------
+    # 录制（缓存态落盘，方案 18 Step 3）
+    # ------------------------------------------------------------------
+
+    async def _finalize_recording(self, device_id: str, reason: str) -> int:
+        """结束录制：stop 录制器（final flush）并记录停止原因（幂等）。
+
+        返回本次录制落盘行数；未在录制时返回 0。
+        """
+        recorder = self._recorders.pop(device_id, None)
+        if recorder is None:
+            return 0
+        rows = await recorder.stop()
+        self._record_reasons[device_id] = reason
+        logger.info(
+            "performance_recording_stopped",
+            device=device_id,
+            reason=reason,
+            rows=rows,
+        )
+        return rows
+
+    async def record_start(self, device_id: str) -> dict[str, Any]:
+        """
+        开启录制（幂等）：已录制时返回现状态；未录制时拉起采样循环
+        并挂接批写录制器。metrics.recording=false 时抛
+        RecordingDisabledError（不静默，§3.6）。
+        """
+        if not settings().metrics.recording:
+            raise RecordingDisabledError()
+        if device_id in self._recorders:
+            return await self.record_status(device_id)
+        if device_id not in self._tasks:
+            await self.start_monitoring(device_id)
+
+        recorder = MetricRecorder(self._metrics_repo)
+        await recorder.start()
+        self._recorders[device_id] = recorder
+        self._record_reasons.pop(device_id, None)
+        logger.info("performance_recording_started", device=device_id)
+        return await self.record_status(device_id)
+
+    async def record_stop(self, device_id: str) -> dict[str, Any]:
+        """
+        停止录制并停采（幂等）。返回 {recording, reason, rows}，
+        rows 为本次录制落盘行数；未在录制时 rows=0。
+        """
+        rows = await self._finalize_recording(device_id, "stopped")
+        await self.stop_monitoring(device_id)
+        return {
+            "recording": False,
+            "reason": self._record_reasons.get(device_id),
+            "rows": rows,
+        }
+
+    async def record_status(self, device_id: str) -> dict[str, Any]:
+        """
+        录制状态：{recording, reason, rows, oldest_ts, newest_ts}。
+
+        rows/oldest_ts/newest_ts 为跨批次聚合值（多次录制叠加，
+        §3.3 S13）；进程重启后运行态丢失 → recording:false。
+        录制中先 flush 批写缓冲，保证行数与区间口径准确。
+        """
+        recording = device_id in self._recorders
+        if recording:
+            recorder = self._recorders[device_id]
+            await recorder.flush()
+        rows, oldest, newest = await self._metrics_repo.perf_sample_stats(device_id)
+        return {
+            "recording": recording,
+            "reason": None if recording else self._record_reasons.get(device_id),
+            "rows": rows,
+            "oldest_ts": oldest,
+            "newest_ts": newest,
+        }
+
+    # ------------------------------------------------------------------
+    # 导出（交付态，方案 18 Step 4）
+    # ------------------------------------------------------------------
+
+    async def export_cached(
+        self,
+        device_id: str,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        """
+        缓存态区间查询（source=cache）。查询前先 flush 录制批写缓冲
+        （S14：避免缓冲内已采未落盘的边界丢数）。
+        """
+        recorder = self._recorders.get(device_id)
+        if recorder is not None:
+            await recorder.flush()
+        return await self._metrics_repo.query_perf_samples(
+            device_id, from_ts=from_ts, to_ts=to_ts, limit=limit
+        )
+
+    # ------------------------------------------------------------------
     # 空闲守卫（暂存态清零）
     # ------------------------------------------------------------------
 
@@ -299,9 +425,16 @@ class PerformanceService:
         self._schedule_idle_guard(device_id)
 
     async def cleanup(self) -> None:
-        """清理所有监控任务并释放暂存（服务关闭时调用，幂等）。"""
+        """清理所有监控任务并释放暂存（服务关闭时调用，幂等）。
+
+        录制中设备 → stopped(reason='shutdown')（§3.6），final flush
+        挂在此处（§3.7）。
+        """
         for device_id in list(self._tasks.keys()):
-            await self.stop_monitoring(device_id)
+            await self.stop_monitoring(device_id, record_reason="shutdown")
+        # 兜底：无采样任务但仍在录制的孤儿状态
+        for device_id in list(self._recorders.keys()):
+            await self._finalize_recording(device_id, "shutdown")
         for device_id in list(self._idle_guards.keys()):
             await self._cancel_idle_guard(device_id)
 

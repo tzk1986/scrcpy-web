@@ -40,7 +40,13 @@ import aiosqlite
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
-from app.domain.ports import DebugRepository, DeviceRepository, LogEntry, LogFilter
+from app.domain.ports import (
+    DebugRepository,
+    DeviceRepository,
+    LogEntry,
+    LogFilter,
+    MetricsRepository,
+)
 from app.domain.session import DebugSession
 
 logger = get_logger(__name__)
@@ -665,6 +671,263 @@ class SqliteDeviceRepository(DeviceRepository):
             await conn.commit()
 
 
+class SqliteMetricsRepository(MetricsRepository):
+    """
+    MetricsRepository 的 SQLite 实现。
+
+    存储录制期间落盘的性能/网络采样（缓存态，方案 18）。
+    表与索引在 init_db() 幂等创建；写入走批量单事务（见
+    MetricRecorder），查询按 (device_id, ts) 走复合索引，
+    清理按单列 ts 索引删最旧。
+    """
+
+    PERF_COLUMNS = (
+        "device_id", "ts", "cpu_percent", "total_memory_mb", "used_memory_mb",
+        "fps", "jank_count", "current_activity", "top_package",
+    )
+    NETWORK_COLUMNS = (
+        "device_id", "ts", "rx_bytes", "tx_bytes", "rx_rate_kbps",
+        "tx_rate_kbps", "active_connections", "wifi_connected", "wifi_ssid",
+    )
+
+    def __init__(self, db_path: str | None = None):
+        self.db_path = db_path or settings().database.path
+
+    async def init_db(self) -> None:
+        """创建指标表与索引（幂等）。"""
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            await conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS perf_samples (
+                    device_id   TEXT NOT NULL,
+                    ts          REAL NOT NULL,
+                    cpu_percent REAL,
+                    total_memory_mb REAL,
+                    used_memory_mb  REAL,
+                    fps         REAL,
+                    jank_count  INTEGER,
+                    current_activity TEXT,
+                    top_package TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_perf_samples_device_ts ON perf_samples(device_id, ts);
+                CREATE INDEX IF NOT EXISTS idx_perf_samples_ts ON perf_samples(ts);
+
+                CREATE TABLE IF NOT EXISTS network_samples (
+                    device_id   TEXT NOT NULL,
+                    ts          REAL NOT NULL,
+                    rx_bytes    INTEGER,
+                    tx_bytes    INTEGER,
+                    rx_rate_kbps REAL,
+                    tx_rate_kbps REAL,
+                    active_connections INTEGER,
+                    wifi_connected INTEGER,
+                    wifi_ssid   TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_network_samples_device_ts ON network_samples(device_id, ts);
+                CREATE INDEX IF NOT EXISTS idx_network_samples_ts ON network_samples(ts);
+                """
+            )
+            await conn.commit()
+
+    async def save_perf_samples_bulk(self, rows: list[tuple[Any, ...]]) -> None:
+        if not rows:
+            return
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            await conn.executemany(
+                "INSERT INTO perf_samples VALUES (?,?,?,?,?,?,?,?,?)", rows
+            )
+            await conn.commit()
+
+    async def save_network_samples_bulk(self, rows: list[tuple[Any, ...]]) -> None:
+        if not rows:
+            return
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            await conn.executemany(
+                "INSERT INTO network_samples VALUES (?,?,?,?,?,?,?,?,?)", rows
+            )
+            await conn.commit()
+
+    async def _query_samples(
+        self,
+        table: str,
+        columns: tuple[str, ...],
+        device_id: str,
+        from_ts: float | None,
+        to_ts: float | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            f"SELECT {', '.join(columns)} FROM {table} "
+            "WHERE device_id=? "
+        )
+        params: list[Any] = [device_id]
+        if from_ts is not None:
+            sql += "AND ts >= ? "
+            params.append(from_ts)
+        if to_ts is not None:
+            sql += "AND ts <= ? "
+            params.append(to_ts)
+        sql += "ORDER BY ts ASC LIMIT ?"
+        params.append(limit)
+
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            cursor = await conn.execute(sql, params)
+            rows = list(await cursor.fetchall())
+        return [dict(zip(columns, row)) for row in rows]
+
+    async def query_perf_samples(
+        self,
+        device_id: str,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        return await self._query_samples(
+            "perf_samples", self.PERF_COLUMNS, device_id, from_ts, to_ts, limit
+        )
+
+    async def query_network_samples(
+        self,
+        device_id: str,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        return await self._query_samples(
+            "network_samples", self.NETWORK_COLUMNS, device_id, from_ts, to_ts, limit
+        )
+
+    async def _sample_stats(
+        self, table: str, device_id: str
+    ) -> tuple[int, float | None, float | None]:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                f"SELECT COUNT(*), MIN(ts), MAX(ts) FROM {table} WHERE device_id=?",
+                (device_id,),
+            )
+            row = await cursor.fetchone()
+        return (row[0], row[1], row[2]) if row else (0, None, None)
+
+    async def perf_sample_stats(
+        self, device_id: str
+    ) -> tuple[int, float | None, float | None]:
+        return await self._sample_stats("perf_samples", device_id)
+
+    async def network_sample_stats(
+        self, device_id: str
+    ) -> tuple[int, float | None, float | None]:
+        return await self._sample_stats("network_samples", device_id)
+
+    async def delete_old_metrics(self, retention_seconds: float) -> int:
+        """两表按 ts 删除超保留期行，返回合计删除数。"""
+        cutoff = time.time() - retention_seconds
+        pool = await get_pool(self.db_path)
+        total = 0
+        async with pool.connection() as conn:
+            for table in ("perf_samples", "network_samples"):
+                cursor = await conn.execute(
+                    f"DELETE FROM {table} WHERE ts < ?", (cutoff,)
+                )
+                total += cursor.rowcount
+            await conn.commit()
+        if total > 0:
+            logger.info("old_metrics_deleted", count=total, cutoff=cutoff)
+        return total
+
+    async def count_metrics_rows(self) -> int:
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT (SELECT COUNT(*) FROM perf_samples) "
+                "+ (SELECT COUNT(*) FROM network_samples)"
+            )
+            row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def trim_metrics_rows(self, max_rows: int) -> int:
+        """
+        两表合计行数超过 max_rows 时按 ts 删最旧（分批，行数级删除）。
+
+        阈值法：两表各取按 ts 升序头部批量，归并定位第 excess 条，
+        以其 ts 为下界删除（同 ts 边界按 rowid 补删至 exact）。
+        实现允许退化：逐步 DELETE 直到合计不超限（语义一致）。
+        """
+        total = await self.count_metrics_rows()
+        if total <= max_rows:
+            return 0
+
+        deleted = 0
+        pool = await get_pool(self.db_path)
+        async with pool.connection() as conn:
+            while True:
+                current = await self._count_rows(conn)
+                if current <= max_rows:
+                    break
+                excess = current - max_rows
+                # 取两表最旧批次的 ts 上限，删 min(cut_ts) 侧
+                cut_ts = await self._oldest_cut_ts(conn, excess)
+                for table in ("perf_samples", "network_samples"):
+                    cursor = await conn.execute(
+                        f"DELETE FROM {table} WHERE ts < ?", (cut_ts,)
+                    )
+                    deleted += cursor.rowcount
+                await conn.commit()
+                # 同 ts 边界可能多出（ts < cut 已删，ts == cut 还残留）
+                current = await self._count_rows(conn)
+                if current > max_rows:
+                    remaining = current - max_rows
+                    removed = await self._delete_oldest_by_rowid(conn, remaining)
+                    deleted += removed
+                    await conn.commit()
+                if deleted == 0 and current > max_rows:
+                    # 防御：无进展则退出（理论不可达）
+                    break
+
+        if deleted > 0:
+            logger.info("metrics_trimmed", deleted=deleted, max_rows=max_rows)
+        return deleted
+
+    async def _count_rows(self, conn: aiosqlite.Connection) -> int:
+        cursor = await conn.execute(
+            "SELECT (SELECT COUNT(*) FROM perf_samples) "
+            "+ (SELECT COUNT(*) FROM network_samples)"
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def _oldest_cut_ts(self, conn: aiosqlite.Connection, excess: int) -> float:
+        """两表按 ts 升序各取前 excess 条，归并后返回第 excess 条边界 ts。"""
+        heads: list[float] = []
+        for table in ("perf_samples", "network_samples"):
+            cursor = await conn.execute(
+                f"SELECT ts FROM {table} ORDER BY ts ASC LIMIT ?", (excess,)
+            )
+            heads.extend(row[0] for row in await cursor.fetchall())
+        heads.sort()
+        return heads[min(excess, len(heads)) - 1] if heads else 0.0
+
+    async def _delete_oldest_by_rowid(
+        self, conn: aiosqlite.Connection, count: int
+    ) -> int:
+        """删两表 rowid 最小的行，合计最多 count 条（同 ts 边界补删）。"""
+        removed = 0
+        for table in ("perf_samples", "network_samples"):
+            if removed >= count:
+                break
+            cursor = await conn.execute(
+                f"DELETE FROM {table} WHERE rowid IN "
+                f"(SELECT rowid FROM {table} ORDER BY rowid ASC LIMIT ?)",
+                (count - removed,),
+            )
+            removed += cursor.rowcount
+        return removed
+
+
 async def init_db() -> None:
     """
     初始化所有数据库表。
@@ -676,4 +939,6 @@ async def init_db() -> None:
     await debug_repo.init_db()
     device_repo = SqliteDeviceRepository()
     await device_repo.init_db()
+    metrics_repo = SqliteMetricsRepository()
+    await metrics_repo.init_db()
     logger.info("database_initialized", path=settings().database.path)
