@@ -40,7 +40,7 @@ from app.core.exceptions import (
     openscrcpy_exception_handler,
     validation_exception_handler,
 )
-from app.interfaces.http import apps, debug, devices, network, performance, sessions
+from app.interfaces.http import apps, debug, devices, network, performance, sessions, system
 from app.interfaces.ws import debug as ws_debug
 from app.interfaces.ws import performance as ws_performance
 from app.interfaces.ws import video as ws_video
@@ -93,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(network.router)     # /api/network
     app.include_router(performance.router) # /api/perf
     app.include_router(sessions.router)    # /api/sessions
+    app.include_router(system.router)      # /api/system（配置热重载）
 
     # --- WebSocket 端点 ---------------------------------------------------
     # 每个 WS 端点委托给 interfaces/ws/ 中的处理器，

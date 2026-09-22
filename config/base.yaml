@@ -4,6 +4,8 @@ app:
   version: 0.1.0
   debug: false
   log_level: INFO
+  config_watch: true         # 配置文件（config/*.yaml）热重载监听
+  config_watch_interval: 2.0 # 热重载 mtime 轮询间隔（秒）
 
 server:
   host: 0.0.0.0

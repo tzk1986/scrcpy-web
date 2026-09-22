@@ -20,6 +20,8 @@ class AppConfig(BaseSettings):
     version: str = "0.1.0"
     debug: bool = False
     log_level: str = "INFO"
+    config_watch: bool = True  # 配置文件（config/*.yaml）热重载监听开关
+    config_watch_interval: float = 2.0  # 热重载的 mtime 轮询间隔（秒）
 
 
 class ServerConfig(BaseSettings):
@@ -196,4 +198,18 @@ def settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = get_settings()
+    return _settings
+
+
+def reload_settings() -> Settings:
+    """
+    重新加载配置并替换全局缓存单例（配置热重载入口）。
+
+    重新执行 get_settings()（YAML / 环境变量全部重读），成功则替换缓存
+    并返回新实例；解析失败时抛出异常，旧缓存保持不变（服务继续用
+    旧配置运行）。仅对运行时读取 settings() 的消费点生效；数据库路径、
+    连接池大小等构造时读取的资源不会热切换。
+    """
+    global _settings
+    _settings = get_settings()
     return _settings

@@ -67,8 +67,6 @@ class InteractiveShell:
     READ_TIMEOUT = 30.0  # 读取超时（支持长时间运行的命令）
 
     def __init__(self) -> None:
-        """从配置初始化 ADB 二进制路径。"""
-        self._adb_path = settings().adb.path
         # ConPTY 模式下为 ConPtyProcess（鸭子类型，最小 Process 接口）
         self._proc: asyncio.subprocess.Process | ConPtyProcess | None = None
         self._lock = asyncio.Lock()
@@ -83,6 +81,11 @@ class InteractiveShell:
     def is_alive(self) -> bool:
         """检查 shell 进程是否存活"""
         return self._proc is not None and self._proc.returncode is None
+
+    @property
+    def _adb_path(self) -> str:
+        """ADB 可执行文件路径（运行时读取配置，热重载即时生效）。"""
+        return settings().adb.path
 
     async def start(
         self,

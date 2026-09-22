@@ -14,7 +14,8 @@
     ├── SessionNotFoundError     — 调试会话 ID 无效/过期（404）
     ├── PermissionDeniedError    — 调用者无权限执行该操作（403）
     ├── AdbError                 — ADB 子进程返回非零退出码（400）
-    └── DeviceUnreachableError   — TCP 可达性预检失败（400，connect/disconnect 前置）
+    ├── DeviceUnreachableError   — TCP 可达性预检失败（400，connect/disconnect 前置）
+    └── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）
 
 所有异常都携带一个机器可读的 ``code`` 字段（如 "DEVICE_NOT_FOUND"）
 以及一个人可读的 ``message``。这让前端可以根据 ``error.code`` 进行
@@ -92,6 +93,13 @@ class DeviceUnreachableError(OpenScrcpyException):
 
     def __init__(self, host: str, port: int, reason: str):
         super().__init__(f"设备 {host}:{port} 不可达：{reason}", code="DEVICE_UNREACHABLE")
+
+
+class ConfigReloadError(OpenScrcpyException):
+    """配置热重载失败（YAML 解析错误等），旧配置保持生效。"""
+
+    def __init__(self, reason: str):
+        super().__init__(f"Config reload failed: {reason}", code="CONFIG_RELOAD_FAILED")
 
 
 # ---------------------------------------------------------------------------

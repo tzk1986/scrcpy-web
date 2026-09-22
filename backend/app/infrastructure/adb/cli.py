@@ -54,9 +54,10 @@ class AdbCliDriver:
     #（同 shell_stream 约定，避免远端 shell 把带空格的时刻拆成两个参数）。
     _LOGCAT_SINCE_NOW_CMD = 'logcat -v threadtime -T "$(date "+%m-%d %H:%M:%S.%N")"'
 
-    def __init__(self) -> None:
-        """从配置初始化 ADB 二进制路径。"""
-        self.adb_path = settings().adb.path
+    @property
+    def adb_path(self) -> str:
+        """ADB 可执行文件路径（运行时读取配置，热重载即时生效）。"""
+        return settings().adb.path
 
     async def _run(self, *args: str, timeout: int | None = None) -> str:
         """
