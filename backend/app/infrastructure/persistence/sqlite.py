@@ -890,16 +890,19 @@ class SqliteMetricsRepository(MetricsRepository):
                     )
                     deleted += cursor.rowcount
                 await conn.commit()
-                # 同 ts 边界可能多出（ts < cut 已删，ts == cut 还残留）
+                # 同 ts 边界可能多出（ts < cut 已删，ts == cut 还残留）。
+                # 补删只限定 ts == cut_ts 的行：同 ts 行数据等价，删谁无差；
+                # 若按 rowid 全局删最旧，rowid 顺序与 ts 顺序解耦时会误删较新行
                 current = await self._count_rows(conn)
                 if current > max_rows:
-                    remaining = current - max_rows
-                    removed = await self._delete_oldest_by_rowid(conn, remaining)
+                    removed = await self._delete_equal_ts(
+                        conn, cut_ts, current - max_rows
+                    )
                     deleted += removed
                     await conn.commit()
-                if deleted == 0 and current > max_rows:
-                    # 防御：无进展则退出（理论不可达）
-                    break
+                    if removed == 0:
+                        # 防御：cut_ts 定位偏差（理论不可达）时退出，避免死循环
+                        break
 
         if deleted > 0:
             logger.info("metrics_trimmed", deleted=deleted, max_rows=max_rows)
@@ -924,18 +927,22 @@ class SqliteMetricsRepository(MetricsRepository):
         heads.sort()
         return heads[min(excess, len(heads)) - 1] if heads else 0.0
 
-    async def _delete_oldest_by_rowid(
-        self, conn: aiosqlite.Connection, count: int
+    async def _delete_equal_ts(
+        self, conn: aiosqlite.Connection, ts: float, count: int
     ) -> int:
-        """删两表 rowid 最小的行，合计最多 count 条（同 ts 边界补删）。"""
+        """删两表 ts == ts 的行，合计最多 count 条（同 ts 边界补删）。
+
+        必须先于 next 轮 cut_ts 重定位执行：只动边界批，不误删
+        ts > cut_ts 的行（rowid 与 ts 顺序无必然关系）。
+        """
         removed = 0
         for table in ("perf_samples", "network_samples"):
             if removed >= count:
                 break
             cursor = await conn.execute(
                 f"DELETE FROM {table} WHERE rowid IN "
-                f"(SELECT rowid FROM {table} ORDER BY rowid ASC LIMIT ?)",
-                (count - removed,),
+                f"(SELECT rowid FROM {table} WHERE ts=? ORDER BY rowid ASC LIMIT ?)",
+                (ts, count - removed),
             )
             removed += cursor.rowcount
         return removed

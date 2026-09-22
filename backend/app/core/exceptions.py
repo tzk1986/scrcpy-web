@@ -105,7 +105,7 @@ class ConfigReloadError(OpenScrcpyException):
 class RecordingDisabledError(OpenScrcpyException):
     """metrics.recording 总开关关闭时请求开启录制（方案 18 状态机，不静默）。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(
             "Metrics recording is disabled by configuration",
             code="RECORDING_DISABLED",

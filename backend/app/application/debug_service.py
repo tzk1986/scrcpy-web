@@ -29,7 +29,7 @@
 import asyncio
 import time
 from contextlib import aclosing
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional, cast
 
 from fastapi import WebSocket
 
@@ -849,7 +849,7 @@ class DebugService:
         async def guarded(step: str, coro: Any) -> int:
             """单段兜底：异常记警告与 errors 并返回 0，不中断清理链。"""
             try:
-                return await coro
+                return cast(int, await coro)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("cleanup_step_failed", step=step, error=str(exc))
                 errors.append({"step": step, "error": str(exc)})

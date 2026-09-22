@@ -429,8 +429,152 @@ async def test_module_init_db_creates_all_tables(tmp_path, monkeypatch):
 
     names = {r[0] for r in await raw_fetchall(
         path, "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"debug_sessions", "debug_logs", "shell_history", "devices"} <= names
+    assert {"debug_sessions", "debug_logs", "shell_history", "devices",
+            "perf_samples", "network_samples"} <= names
 
     # 未显式传路径时，仓库构造器回退到配置值
     assert SqliteDebugRepository().db_path == path
     assert SqliteDeviceRepository().db_path == path
+
+
+# ---------------------------------------------------------------------------
+# SqliteMetricsRepository（方案 18：录制落盘与缓存态导出）
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+async def metrics_repo(db_path):
+    repo = SqliteMetricsRepository(db_path)
+    await repo.init_db()
+    return repo
+
+
+def make_perf_row(device: str = "dev-1", ts: float = 10.0, cpu: float = 20.0):
+    return (device, ts, cpu, 4096.0, 2048.0, 60.0, 0,
+            "com.example/.MainActivity", "com.example")
+
+
+def make_network_row(device: str = "dev-1", ts: float = 10.0, rx: int = 100):
+    return (device, ts, rx, 200, 1.5, 0.5, 2, 1, "MyWiFi")
+
+
+async def test_metrics_init_db_idempotent(metrics_repo):
+    """重复 init_db 幂等（CREATE IF NOT EXISTS）。"""
+    await metrics_repo.init_db()
+    await metrics_repo.init_db()
+
+
+async def test_metrics_save_and_query_roundtrip(metrics_repo):
+    """批量写入后按 (device_id, ts) 升序查询；limit 截断；字段名与列一致。"""
+    await metrics_repo.save_perf_samples_bulk([
+        make_perf_row(ts=30.0, cpu=30.0),
+        make_perf_row(ts=10.0, cpu=10.0),
+        make_perf_row(ts=20.0, cpu=20.0),
+    ])
+
+    rows = await metrics_repo.query_perf_samples("dev-1", limit=2)
+
+    assert [r["ts"] for r in rows] == [10.0, 20.0]
+    assert rows[0]["cpu_percent"] == 10.0
+    assert rows[0]["current_activity"] == "com.example/.MainActivity"
+    assert rows[0]["device_id"] == "dev-1"
+
+
+async def test_metrics_query_range_filter_inclusive(metrics_repo):
+    """from/to 区间过滤为闭区间 [from, to]。"""
+    await metrics_repo.save_network_samples_bulk([
+        make_network_row(ts=10.0, rx=100),
+        make_network_row(ts=20.0, rx=200),
+        make_network_row(ts=30.0, rx=300),
+    ])
+
+    rows = await metrics_repo.query_network_samples("dev-1", from_ts=10.0, to_ts=20.0)
+    assert [r["ts"] for r in rows] == [10.0, 20.0]
+
+    rows = await metrics_repo.query_network_samples("dev-1", from_ts=30.0)
+    assert [r["ts"] for r in rows] == [30.0]
+
+    rows = await metrics_repo.query_network_samples("dev-1", to_ts=10.0)
+    assert [r["ts"] for r in rows] == [10.0]
+
+    # 设备隔离
+    assert await metrics_repo.query_network_samples("other-dev") == []
+
+
+async def test_metrics_sample_stats_aggregates(metrics_repo):
+    """perf/network 聚合 stats：(rows, min_ts, max_ts)，两表相互独立。"""
+    await metrics_repo.save_perf_samples_bulk([
+        make_perf_row(ts=10.0),
+        make_perf_row(ts=30.0),
+    ])
+    await metrics_repo.save_network_samples_bulk([
+        make_network_row(ts=5.0),
+    ])
+
+    assert await metrics_repo.perf_sample_stats("dev-1") == (2, 10.0, 30.0)
+    assert await metrics_repo.network_sample_stats("dev-1") == (1, 5.0, 5.0)
+    assert await metrics_repo.perf_sample_stats("missing") == (0, None, None)
+
+
+async def test_metrics_count_rows_sums_both_tables(metrics_repo):
+    """count_metrics_rows 为两表之和。"""
+    assert await metrics_repo.count_metrics_rows() == 0
+
+    await metrics_repo.save_perf_samples_bulk([make_perf_row(ts=1.0)])
+    await metrics_repo.save_network_samples_bulk([
+        make_network_row(ts=1.0),
+        make_network_row(ts=2.0),
+    ])
+
+    assert await metrics_repo.count_metrics_rows() == 3
+
+
+async def test_delete_old_metrics_removes_expired_only(metrics_repo):
+    """删除超保留期行（ts 早于 cutoff），保留新行，返回删除数。"""
+    now = time.time()
+    await metrics_repo.save_perf_samples_bulk([
+        make_perf_row(ts=now - 7200),   # 超保留期（3600s）
+        make_perf_row(ts=now - 100),    # 保留
+    ])
+    await metrics_repo.save_network_samples_bulk([
+        make_network_row(ts=now - 7200),  # 超期
+    ])
+
+    deleted = await metrics_repo.delete_old_metrics(retention_seconds=3600)
+
+    assert deleted == 2
+    assert await metrics_repo.count_metrics_rows() == 1
+    rows = await metrics_repo.query_perf_samples("dev-1")
+    assert len(rows) == 1 and rows[0]["ts"] == now - 100
+
+
+async def test_trim_metrics_rows_deletes_oldest_cross_table(metrics_repo):
+    """两表合计超 max_rows 时按 ts 删最旧（跨表归并）。"""
+    await metrics_repo.save_perf_samples_bulk([
+        make_perf_row(ts=1.0), make_perf_row(ts=2.0), make_perf_row(ts=3.0),
+        make_perf_row(ts=7.0), make_perf_row(ts=8.0),
+    ])
+    await metrics_repo.save_network_samples_bulk([
+        make_network_row(ts=4.0), make_network_row(ts=5.0), make_network_row(ts=6.0),
+    ])
+    assert await metrics_repo.count_metrics_rows() == 8
+
+    deleted = await metrics_repo.trim_metrics_rows(max_rows=3)
+
+    assert deleted == 5
+    assert await metrics_repo.count_metrics_rows() == 3
+    remaining_ts = sorted([
+        r["ts"] for r in await metrics_repo.query_perf_samples("dev-1", limit=100)
+    ] + [
+        r["ts"] for r in await metrics_repo.query_network_samples("dev-1", limit=100)
+    ])
+    assert remaining_ts == [6.0, 7.0, 8.0]  # 保留最新 3 条（跨表）
+
+
+async def test_trim_metrics_rows_noop_under_limit(metrics_repo):
+    """未超限时返回 0 且不删数据。"""
+    await metrics_repo.save_perf_samples_bulk([
+        make_perf_row(ts=1.0), make_perf_row(ts=2.0),
+    ])
+
+    assert await metrics_repo.trim_metrics_rows(max_rows=10) == 0
+    assert await metrics_repo.count_metrics_rows() == 2
