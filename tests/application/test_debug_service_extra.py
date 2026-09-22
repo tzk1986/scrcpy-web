@@ -125,6 +125,58 @@ class ClockAdb(FakeAdb):
             yield line
 
 
+class ConcurrencyRecorder:
+    """记录同时在执行中的命令数峰值，用于断言会话锁的串行化效果。"""
+
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+
+    def enter(self):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+
+    def exit(self):
+        self.active -= 1
+
+
+class SlowAdb(FakeAdb):
+    """shell() 带延迟并计入并发记录器。"""
+
+    def __init__(self, recorder, delay=0.02, shell=None):
+        super().__init__(shell=shell, shell_out="pong")
+        self._recorder = recorder
+        self._delay = delay
+
+    async def shell(self, device_id, cmd):
+        self.shell_calls.append((device_id, cmd))
+        self._recorder.enter()
+        try:
+            await asyncio.sleep(self._delay)
+            return self._shell_out
+        finally:
+            self._recorder.exit()
+
+
+class SlowShell(FakeShell):
+    """execute() 逐行带延迟并计入并发记录器。"""
+
+    def __init__(self, recorder, lines=("x", "y", "z"), delay=0.01):
+        super().__init__(lines=list(lines))
+        self._recorder = recorder
+        self._delay = delay
+
+    async def execute(self, cmd):
+        self.executed.append(cmd)
+        self._recorder.enter()
+        try:
+            for line in self._lines:
+                await asyncio.sleep(self._delay)
+                yield line
+        finally:
+            self._recorder.exit()
+
+
 class FakeRepo:
     def __init__(self):
         self.bulk = []
@@ -649,6 +701,75 @@ async def test_exec_shell_stream_raw_missing_session_raises():
     with pytest.raises(SessionNotFoundError):
         async for _line in svc._exec_shell_stream_raw("nope", "ls"):
             pass
+
+
+# ---------------------------------------------------------------------------
+# 并发控制（会话锁）
+# ---------------------------------------------------------------------------
+
+async def test_exec_shell_serializes_same_session():
+    rec = ConcurrencyRecorder()
+    svc = DebugService(adb=SlowAdb(rec), repo=FakeRepo())
+    session = make_session()
+    svc.sessions[session.id] = session
+
+    await asyncio.gather(
+        svc.exec_shell(session.id, "a"),
+        svc.exec_shell(session.id, "b"),
+    )
+    assert rec.max_active == 1  # 同一会话的命令不重叠
+
+
+async def test_exec_shell_parallel_across_sessions():
+    rec = ConcurrencyRecorder()
+    svc = DebugService(adb=SlowAdb(rec), repo=FakeRepo())
+    s1, s2 = make_session("s1", "dev1"), make_session("s2", "dev2")
+    svc.sessions[s1.id] = s1
+    svc.sessions[s2.id] = s2
+
+    await asyncio.gather(
+        svc.exec_shell(s1.id, "a"),
+        svc.exec_shell(s2.id, "b"),
+    )
+    assert rec.max_active == 2  # 不同会话互不阻塞
+
+
+async def test_exec_shell_and_stream_raw_share_session_lock():
+    rec = ConcurrencyRecorder()
+    shell = SlowShell(rec)
+    svc = DebugService(adb=SlowAdb(rec, shell=shell), repo=FakeRepo())
+    session = make_session()
+    svc.sessions[session.id] = session
+
+    async def consume_raw():
+        return [line async for line in svc._exec_shell_stream_raw(session.id, "ls")]
+
+    _, lines = await asyncio.gather(
+        svc.exec_shell(session.id, "http-cmd"),
+        consume_raw(),
+    )
+    assert lines == ["x", "y", "z"]
+    assert rec.max_active == 1  # HTTP exec 与 WS 流式 exec 也互斥
+    await svc.stop_output_forwarding(session.id)
+
+
+async def test_stream_raw_releases_lock_when_consumer_closes():
+    rec = ConcurrencyRecorder()
+    shell = SlowShell(rec, lines=["x", "y", "z"], delay=0.01)
+    repo = FakeRepo()
+    svc = DebugService(adb=SlowAdb(rec, shell=shell), repo=repo)
+    session = make_session()
+    svc.sessions[session.id] = session
+
+    gen = svc._exec_shell_stream_raw(session.id, "ls")
+    assert await anext(gen) == "x"  # 已进入执行、持锁
+    await gen.aclose()              # 模拟消费者中断（WS 断开）
+
+    # aclose 触发 finally：历史已记录，锁已释放（后续命令不被阻塞）
+    assert repo.shell_history == [(session.id, "ls", "x")]
+    out = await asyncio.wait_for(svc.exec_shell(session.id, "next"), timeout=1.0)
+    assert out == "pong"
+    await svc.stop_output_forwarding(session.id)
 
 
 # ---------------------------------------------------------------------------

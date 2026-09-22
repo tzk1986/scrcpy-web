@@ -28,7 +28,7 @@
 
 import asyncio
 import time
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from fastapi import WebSocket
 
@@ -72,6 +72,8 @@ class DebugService:
         self.shell_sessions: dict[str, "ShellSession"] = {}
         # Shell 输出转发任务，按 session_id 索引
         self.shell_output_forwarding_tasks: dict[str, asyncio.Task[None]] = {}
+        # 会话级命令锁：串行化同一会话的 shell 执行（HTTP exec 与 WS 流式 exec 共享）
+        self._session_locks: dict[str, asyncio.Lock] = {}
         # 日志批量写入器（满批/定时 executemany 落库，摊薄逐条 commit 开销）
         from app.core.config import settings as get_settings
         self.writer = BatchLogWriter(repo, batch_size=get_settings().debug.log_batch_size)
@@ -144,6 +146,10 @@ class DebugService:
                 logger.warning("shell_stop_failed", session=session_id, error=str(e))
         await self.writer.flush()
         self.sessions.pop(session_id, None)
+        # 清理未被持有的会话锁；仍被命令持有时保留（避免等待者与新建锁不一致）
+        lock = self._session_locks.get(session_id)
+        if lock is not None and not lock.locked():
+            self._session_locks.pop(session_id, None)
         # 清理订阅者
         if session_id in self.subscribers:
             # 通知订阅者会话已关闭
@@ -494,9 +500,24 @@ class DebugService:
         rows = await self.repo.query_logs_since(session_id, from_seq, limit)
         return rows, 0
 
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """
+        获取（或惰性创建）会话级命令锁。
+
+        同一会话的 shell 命令串行执行（多用户同时操作同一设备时
+        避免命令输出交错与设备端状态竞争）；不同会话互不阻塞。
+        """
+        lock = self._session_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[session_id] = lock
+        return lock
+
     async def exec_shell(self, session_id: str, cmd: str) -> str:
         """
         在设备上执行 shell 命令并记录到历史。
+
+        执行前获取会话锁（与流式执行共享），保证同一会话命令串行。
 
         参数：
             session_id: 活跃的调试会话。
@@ -513,11 +534,12 @@ class DebugService:
         if not session:
             raise SessionNotFoundError(session_id)
 
-        output = await self.adb.shell(session.device_id, cmd)
-        await self.repo.save_shell_history(session_id, cmd, output)
-        session.shell_history.append(cmd)
-        session.touch()
-        return output
+        async with self._get_session_lock(session_id):
+            output = await self.adb.shell(session.device_id, cmd)
+            await self.repo.save_shell_history(session_id, cmd, output)
+            session.shell_history.append(cmd)
+            session.touch()
+            return output
 
     async def get_or_create_shell(self, session_id: str) -> ShellSession:
         """
@@ -660,10 +682,11 @@ class DebugService:
         collected_output = []
         success = True
         try:
-            # 使用 InteractiveShell（PTY 模式）
-            shell = await self.get_or_create_shell(session_id)
-            async for line in shell.execute(cmd):
-                collected_output.append(line)
+            async with self._get_session_lock(session_id):
+                # 使用 InteractiveShell（PTY 模式）
+                shell = await self.get_or_create_shell(session_id)
+                async for line in shell.execute(cmd):
+                    collected_output.append(line)
         except Exception as e:
             collected_output.append(str(e))
             success = False
@@ -676,12 +699,15 @@ class DebugService:
 
         return {"output": full_output, "success": success}
 
-    async def _exec_shell_stream_raw(self, session_id: str, cmd: str) -> AsyncIterator[str]:
+    async def _exec_shell_stream_raw(self, session_id: str, cmd: str) -> AsyncGenerator[str, None]:
         """
         流式执行 shell 命令，逐行产出输出（供 WebSocket 使用）。
 
         与 exec_shell_stream 类似，但以异步迭代器形式逐行产出，
         而不是收集完整输出。WebSocket 处理器使用此方法实时转发输出。
+
+        执行期间持有会话锁；消费者提前中断时必须以 aclose 关闭生成器
+        （WS 层用 contextlib.aclosing 包裹），否则锁滞留到生成器被 GC。
 
         参数：
             session_id: 活跃的调试会话。
@@ -698,18 +724,19 @@ class DebugService:
         if not session:
             raise SessionNotFoundError(session_id)
 
-        shell = await self.get_or_create_shell(session_id)
         collected_output = []
-        try:
-            async for line in shell.execute(cmd):
-                collected_output.append(line)
-                yield line
-        finally:
-            # 命令完成后，记录到历史
-            full_output = "".join(collected_output)
-            await self.repo.save_shell_history(session_id, cmd, full_output)
-            session.shell_history.append(cmd)
-            session.touch()
+        async with self._get_session_lock(session_id):
+            shell = await self.get_or_create_shell(session_id)
+            try:
+                async for line in shell.execute(cmd):
+                    collected_output.append(line)
+                    yield line
+            finally:
+                # 命令完成后（含消费者中断），记录到历史
+                full_output = "".join(collected_output)
+                await self.repo.save_shell_history(session_id, cmd, full_output)
+                session.shell_history.append(cmd)
+                session.touch()
 
     # -------------------------------------------------------------------
     # 日志清理

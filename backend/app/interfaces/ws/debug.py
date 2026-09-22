@@ -40,6 +40,7 @@ PTY 模式 input 操作：
 """
 
 import base64
+from contextlib import aclosing
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -110,14 +111,18 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
 
             elif op == "exec":
                 # 流式执行 shell 命令
+                # aclosing：客户端中断时立即关闭生成器，释放会话锁并落盘历史
                 cmd = data.get("command", "")
                 try:
-                    async for line in debug_service._exec_shell_stream_raw(session_id, cmd):
-                        await websocket.send_json({
-                            "type": "shell_stream",
-                            "line": line,
-                            "done": False,
-                        })
+                    async with aclosing(
+                        debug_service._exec_shell_stream_raw(session_id, cmd)
+                    ) as stream:
+                        async for line in stream:
+                            await websocket.send_json({
+                                "type": "shell_stream",
+                                "line": line,
+                                "done": False,
+                            })
                     # 命令完成
                     await websocket.send_json({
                         "type": "shell_output",
