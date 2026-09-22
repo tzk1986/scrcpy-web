@@ -19,6 +19,33 @@
 
 <template>
   <div class="perf-view">
+    <!-- 工具栏：导出（暂存/缓存 × CSV/JSON）与录制开关（方案 18 Step 6） -->
+    <div class="toolbar">
+      <el-dropdown size="small" @command="handleExport" trigger="click">
+        <el-button size="small">导出</el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="buffer-csv">导出 CSV（暂存）</el-dropdown-item>
+            <el-dropdown-item command="buffer-json">导出 JSON（暂存）</el-dropdown-item>
+            <el-dropdown-item command="cache-csv" divided>导出 CSV（缓存）</el-dropdown-item>
+            <el-dropdown-item command="cache-json">导出 JSON（缓存）</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+      <el-button
+        :type="isRecording ? 'success' : 'info'"
+        size="small"
+        :loading="recordBusy"
+        @click="toggleRecording"
+      >
+        <span v-if="isRecording">⏸ 停止录制</span>
+        <span v-else>▶ 开始录制</span>
+      </el-button>
+      <div v-if="isRecording" class="status-indicator live rec-indicator" :title="recordReason">
+        REC · {{ recordRows }} 行
+      </div>
+    </div>
+
     <!-- 实时指标卡片 -->
     <div class="metrics-grid">
       <div class="metric-card">
@@ -97,11 +124,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import type { AxiosResponse } from 'axios'
+import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, DataZoomComponent } from 'echarts/components'
+import { api } from '@/services/api'
 import { WebSocketService } from '@/services/websocket'
 
 // 注册 ECharts 组件
@@ -125,6 +155,13 @@ const props = defineProps<{
 const metricsHistory = ref<PerfMetrics[]>([])
 const wsConnected = ref(false)
 let ws: WebSocketService | null = null
+
+/** 录制状态（LIVE 徽标同源样式，方案 18 Step 6）。 */
+const isRecording = ref(false)
+const recordReason = ref('')
+const recordRows = ref(0)
+const recordBusy = ref(false)
+let statusTimer: ReturnType<typeof setInterval> | null = null
 
 // 最新指标
 const latestMetrics = computed(() => {
@@ -248,11 +285,104 @@ const memoryChartOption = computed(() => ({
 
 onMounted(() => {
   connectWebSocket()
+  refreshRecordStatus()
+  // 轮询录制状态：捕获设备失联/配置热重载等外部终止（§3.6 状态机）
+  statusTimer = setInterval(refreshRecordStatus, 3000)
 })
 
 onUnmounted(() => {
   disconnectWebSocket()
+  if (statusTimer) {
+    clearInterval(statusTimer)
+    statusTimer = null
+  }
 })
+
+/** 拉取录制状态（失败静默保持现状，下一轮再试）。 */
+async function refreshRecordStatus() {
+  try {
+    const status = await api.getPerfRecordStatus(props.deviceId)
+    isRecording.value = status.recording
+    recordReason.value = status.reason
+    recordRows.value = status.rows
+  } catch (e) {
+    console.error('[PerfView] Failed to load record status:', e)
+  }
+}
+
+/** 录制开关：成功后刷新状态徽标。 */
+async function toggleRecording() {
+  recordBusy.value = true
+  try {
+    if (isRecording.value) {
+      const s = await api.stopPerfRecording(props.deviceId)
+      ElMessage.success(`录制已停止，本次落盘 ${s.rows} 行`)
+    } else {
+      await api.startPerfRecording(props.deviceId)
+      ElMessage.success('录制已开启')
+    }
+    await refreshRecordStatus()
+  } catch (e) {
+    ElMessage.error(`录制操作失败: ${errText(e, '未知错误')}`)
+  } finally {
+    recordBusy.value = false
+  }
+}
+
+type ExportCommand = 'buffer-csv' | 'buffer-json' | 'cache-csv' | 'cache-json'
+
+/** 导出指标：blob 范式下载 + 行数/区间回显（方案 18 O2）。 */
+async function handleExport(command: ExportCommand) {
+  const [source, format] = command.split('-') as ['buffer' | 'cache', 'csv' | 'json']
+  try {
+    const res = await api.exportPerfMetrics(props.deviceId, format, source)
+    triggerDownload(res.data, `perf_${props.deviceId}_${source}.${format}`)
+    ElMessage.success(formatExportMessage(res))
+  } catch (e) {
+    if ((e as AxiosErrorLike).response?.status === 404) {
+      ElMessage.warning('暂无数据可导出')
+    } else {
+      ElMessage.error(`导出失败: ${errText(e, '未知错误')}`)
+    }
+  }
+}
+
+interface AxiosErrorLike {
+  response?: { status?: number }
+}
+
+/** 从响应头提取导出元数据（后端 X-Export-* 头）。 */
+function formatExportMessage(res: AxiosResponse<Blob>): string {
+  const count = res.headers['x-export-count']
+  const oldest = res.headers['x-export-oldest-ts']
+  const newest = res.headers['x-export-newest-ts']
+  if (!count) return '导出完成'
+  const range =
+    oldest && newest
+      ? `（${formatTs(Number(oldest))} – ${formatTs(Number(newest))}）`
+      : ''
+  return `导出完成：${count} 条${range}`
+}
+
+function formatTs(ts: number): string {
+  if (!Number.isFinite(ts)) return '-'
+  return new Date(ts * 1000).toLocaleTimeString()
+}
+
+function errText(e: unknown, fallback: string): string {
+  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+  return detail || fallback
+}
+
+/** Blob 下载（LogcatView 同款范式）。 */
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 function connectWebSocket() {
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -306,6 +436,17 @@ function disconnectWebSocket() {
   padding: 12px;
   gap: 12px;
   overflow-y: auto;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rec-indicator {
+  margin-left: auto;
 }
 
 .metrics-grid {

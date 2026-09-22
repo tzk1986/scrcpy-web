@@ -8,8 +8,8 @@
  *   - 非法 JSON 不影响已有数据点；卸载时关闭 WebSocket
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { shallowMount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { flushPromises, shallowMount } from '@vue/test-utils'
+import { defineComponent, h as hVue, nextTick } from 'vue'
 
 const h = vi.hoisted(() => {
   class MockWebSocketService {
@@ -43,6 +43,28 @@ const h = vi.hoisted(() => {
 
 vi.mock('@/services/websocket', () => ({ WebSocketService: h.MockWebSocketService }))
 
+const mockApi = vi.hoisted(() => ({
+  getPerfRecordStatus: vi.fn().mockResolvedValue({
+    recording: false, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  }),
+  startPerfRecording: vi.fn().mockResolvedValue({
+    recording: true, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  }),
+  stopPerfRecording: vi.fn().mockResolvedValue({
+    recording: false, reason: 'stopped', rows: 12, oldest_ts: null, newest_ts: null,
+  }),
+  exportPerfMetrics: vi.fn().mockResolvedValue({
+    data: new Blob(['x']),
+    headers: { 'x-export-count': '42', 'x-export-oldest-ts': '1710000000', 'x-export-newest-ts': '1710003600' },
+  }),
+}))
+vi.mock('@/services/api', () => ({ api: mockApi }))
+
+const elMessage = vi.hoisted(() => ({
+  success: vi.fn(), error: vi.fn(), warning: vi.fn(),
+}))
+vi.mock('element-plus', () => ({ ElMessage: elMessage }))
+
 import PerfView from './PerfView.vue'
 
 const metrics = {
@@ -56,8 +78,71 @@ const metrics = {
   top_package: 'com.example.app',
 }
 
+const ElButton = defineComponent({
+  name: 'ElButton',
+  props: { loading: Boolean },
+  inheritAttrs: false,
+  setup(props, { slots, attrs }) {
+    return () =>
+      hVue('button', { ...attrs, 'data-loading': String(!!props.loading) }, slots.default?.())
+  },
+})
+
+const ElDropdown = defineComponent({
+  name: 'ElDropdown',
+  emits: ['command'],
+  setup(_, { slots }) {
+    return () => hVue('div', { class: 'el-dropdown' }, [slots.default?.(), slots.dropdown?.()])
+  },
+})
+
+const ElDropdownMenu = defineComponent({
+  name: 'ElDropdownMenu',
+  setup(_, { slots }) {
+    return () => hVue('div', { class: 'el-dropdown-menu' }, slots.default?.())
+  },
+})
+
+const ElDropdownItem = defineComponent({
+  name: 'ElDropdownItem',
+  props: { command: String },
+  setup(props, { slots }) {
+    return () =>
+      hVue('div', { class: 'el-dropdown-item', 'data-command': props.command }, slots.default?.())
+  },
+})
+
+function elStubs() {
+  return { ElButton, ElDropdown, ElDropdownMenu, ElDropdownItem }
+}
+
 function mountView() {
-  return shallowMount(PerfView, { props: { deviceId: 'dev1' } })
+  return shallowMount(PerfView, {
+    props: { deviceId: 'dev1' },
+    global: { stubs: elStubs() },
+  })
+}
+
+/** 按可见文本找按钮（stub 按钮渲染为原生 <button>）。 */
+function findButton(wrapper: ReturnType<typeof mountView>, text: string) {
+  const btn = wrapper.findAll('button').find((b) => b.text().includes(text))
+  if (!btn) throw new Error(`button not found: ${text}`)
+  return btn
+}
+
+/** Blob 下载环境 stub（happy-dom 无 createObjectURL / anchor.click 实现）。 */
+function stubBlobDownload() {
+  const createObjectURL = vi.fn(() => 'blob:mock-url')
+  const revokeObjectURL = vi.fn()
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL })
+  let clickedAnchor: HTMLAnchorElement | null = null
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      clickedAnchor = this
+    })
+  return { createObjectURL, revokeObjectURL, clickSpy, getAnchor: () => clickedAnchor }
 }
 
 function latestWs() {
@@ -66,6 +151,30 @@ function latestWs() {
 
 beforeEach(() => {
   h.MockWebSocketService.instances = []
+  mockApi.getPerfRecordStatus.mockClear()
+  mockApi.getPerfRecordStatus.mockResolvedValue({
+    recording: false, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  })
+  mockApi.startPerfRecording.mockClear()
+  mockApi.startPerfRecording.mockResolvedValue({
+    recording: true, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  })
+  mockApi.stopPerfRecording.mockClear()
+  mockApi.stopPerfRecording.mockResolvedValue({
+    recording: false, reason: 'stopped', rows: 12, oldest_ts: null, newest_ts: null,
+  })
+  mockApi.exportPerfMetrics.mockClear()
+  mockApi.exportPerfMetrics.mockResolvedValue({
+    data: new Blob(['x']),
+    headers: {
+      'x-export-count': '42',
+      'x-export-oldest-ts': '1710000000',
+      'x-export-newest-ts': '1710003600',
+    },
+  })
+  elMessage.success.mockClear()
+  elMessage.error.mockClear()
+  elMessage.warning.mockClear()
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -157,5 +266,109 @@ describe('PerfView', () => {
 
     wrapper.unmount()
     expect(ws.close).toHaveBeenCalled()
+  })
+
+  it('挂载拉取录制状态；未录制时无 REC 徽标', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    expect(mockApi.getPerfRecordStatus).toHaveBeenCalledWith('dev1')
+    expect(wrapper.find('.rec-indicator').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('录制徽标：录制中显示 REC 与行数', async () => {
+    mockApi.getPerfRecordStatus.mockResolvedValue({
+      recording: true, reason: '', rows: 7, oldest_ts: null, newest_ts: null,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    const badge = wrapper.find('.rec-indicator')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('REC')
+    expect(badge.text()).toContain('7 行')
+    expect(findButton(wrapper, '停止录制').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('点击开始录制：调用 startPerfRecording 并刷新状态', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await findButton(wrapper, '开始录制').trigger('click')
+    await flushPromises()
+
+    expect(mockApi.startPerfRecording).toHaveBeenCalledWith('dev1')
+    expect(elMessage.success).toHaveBeenCalledWith('录制已开启')
+    expect(mockApi.getPerfRecordStatus).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('点击停止录制：调用 stopPerfRecording 并提示落盘行数', async () => {
+    mockApi.getPerfRecordStatus.mockResolvedValue({
+      recording: true, reason: '', rows: 7, oldest_ts: null, newest_ts: null,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await findButton(wrapper, '停止录制').trigger('click')
+    await flushPromises()
+
+    expect(mockApi.stopPerfRecording).toHaveBeenCalledWith('dev1')
+    expect(elMessage.success).toHaveBeenCalledWith('录制已停止，本次落盘 12 行')
+    wrapper.unmount()
+  })
+
+  it('录制操作失败：弹错误提示', async () => {
+    mockApi.startPerfRecording.mockRejectedValueOnce({ response: { data: { detail: 'RECORDING_DISABLED' } } })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await findButton(wrapper, '开始录制').trigger('click')
+    await flushPromises()
+
+    expect(elMessage.error).toHaveBeenCalledWith('录制操作失败: RECORDING_DISABLED')
+    wrapper.unmount()
+  })
+
+  it('导出：下拉选择 CSV/JSON 触发 blob 下载并回显行数', async () => {
+    const { createObjectURL, revokeObjectURL, getAnchor } = stubBlobDownload()
+    const wrapper = mountView()
+    await flushPromises()
+    const dropdown = wrapper.findComponent(ElDropdown)
+
+    dropdown.vm.$emit('command', 'buffer-json')
+    await flushPromises()
+
+    expect(mockApi.exportPerfMetrics).toHaveBeenCalledWith('dev1', 'json', 'buffer')
+    expect(createObjectURL).toHaveBeenCalled()
+    expect(getAnchor()!.download).toBe('perf_dev1_buffer.json')
+    expect(getAnchor()!.href).toContain('blob:mock-url')
+    expect(revokeObjectURL).toHaveBeenCalled()
+    expect(elMessage.success.mock.calls[0][0]).toContain('42 条')
+    expect(String(elMessage.success.mock.calls[0][0])).toContain('导出完成')
+
+    dropdown.vm.$emit('command', 'cache-csv')
+    await flushPromises()
+    expect(mockApi.exportPerfMetrics).toHaveBeenCalledWith('dev1', 'csv', 'cache')
+    expect(getAnchor()!.download).toBe('perf_dev1_cache.csv')
+    wrapper.unmount()
+  })
+
+  it('导出空数据（404）与失败分别提示', async () => {
+    mockApi.exportPerfMetrics.mockRejectedValueOnce({ response: { status: 404 } })
+    mockApi.exportPerfMetrics.mockRejectedValueOnce({ response: { status: 500, data: { detail: 'boom' } } })
+    const wrapper = mountView()
+    await flushPromises()
+    const dropdown = wrapper.findComponent(ElDropdown)
+
+    dropdown.vm.$emit('command', 'buffer-csv')
+    await flushPromises()
+    expect(elMessage.warning).toHaveBeenCalledWith('暂无数据可导出')
+
+    dropdown.vm.$emit('command', 'buffer-csv')
+    await flushPromises()
+    expect(elMessage.error).toHaveBeenCalledWith('导出失败: boom')
+    wrapper.unmount()
   })
 })

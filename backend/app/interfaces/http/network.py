@@ -192,7 +192,13 @@ async def export_stats(
     return StreamingResponse(
         io.BytesIO(content.encode("utf-8")),
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # 导出元数据（方案 18 O2）：前端回显行数与区间（rows 已按 ts 升序）
+            "X-Export-Count": str(len(rows)),
+            "X-Export-Oldest-Ts": str(rows[0]["ts"]),
+            "X-Export-Newest-Ts": str(rows[-1]["ts"]),
+        },
     )
 
 

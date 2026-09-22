@@ -10,13 +10,31 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 
 const mockApi = vi.hoisted(() => ({
   getNetworkStats: vi.fn(),
   getNetworkConnections: vi.fn(),
+  getNetworkRecordStatus: vi.fn().mockResolvedValue({
+    recording: false, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  }),
+  startNetworkRecording: vi.fn().mockResolvedValue({
+    recording: true, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  }),
+  stopNetworkRecording: vi.fn().mockResolvedValue({
+    recording: false, reason: 'stopped', rows: 9, oldest_ts: null, newest_ts: null,
+  }),
+  exportNetworkStats: vi.fn().mockResolvedValue({
+    data: new Blob(['x']),
+    headers: { 'x-export-count': '30', 'x-export-oldest-ts': '1710000000', 'x-export-newest-ts': '1710007200' },
+  }),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
+
+const elMessage = vi.hoisted(() => ({
+  success: vi.fn(), error: vi.fn(), warning: vi.fn(),
+}))
+vi.mock('element-plus', () => ({ ElMessage: elMessage }))
 
 import NetworkView from './NetworkView.vue'
 
@@ -64,6 +82,40 @@ const ElSelectStub = {
   template: '<div class="stub-select"><slot /></div>',
 }
 
+const ElButton = defineComponent({
+  name: 'ElButton',
+  props: { loading: Boolean },
+  inheritAttrs: false,
+  setup(props, { slots, attrs }) {
+    return () =>
+      h('button', { ...attrs, 'data-loading': String(!!props.loading) }, slots.default?.())
+  },
+})
+
+const ElDropdown = defineComponent({
+  name: 'ElDropdown',
+  emits: ['command'],
+  setup(_, { slots }) {
+    return () => h('div', { class: 'el-dropdown' }, [slots.default?.(), slots.dropdown?.()])
+  },
+})
+
+const ElDropdownMenu = defineComponent({
+  name: 'ElDropdownMenu',
+  setup(_, { slots }) {
+    return () => h('div', { class: 'el-dropdown-menu' }, slots.default?.())
+  },
+})
+
+const ElDropdownItem = defineComponent({
+  name: 'ElDropdownItem',
+  props: { command: String },
+  setup(props, { slots }) {
+    return () =>
+      h('div', { class: 'el-dropdown-item', 'data-command': props.command }, slots.default?.())
+  },
+})
+
 function mountView() {
   return shallowMount(NetworkView, {
     props: { deviceId: 'dev1' },
@@ -72,14 +124,64 @@ function mountView() {
         'el-tag': ElTagStub,
         'el-select': ElSelectStub,
         'el-option': true,
+        ElButton,
+        ElDropdown,
+        ElDropdownMenu,
+        ElDropdownItem,
       },
     },
   })
 }
 
+/** 按可见文本找按钮（stub 按钮渲染为原生 <button>）。 */
+function findButton(wrapper: ReturnType<typeof mountView>, text: string) {
+  const btn = wrapper.findAll('button').find((b) => b.text().includes(text))
+  if (!btn) throw new Error(`button not found: ${text}`)
+  return btn
+}
+
+/** Blob 下载环境 stub（happy-dom 无 createObjectURL / anchor.click 实现）。 */
+function stubBlobDownload() {
+  const createObjectURL = vi.fn(() => 'blob:mock-url')
+  const revokeObjectURL = vi.fn()
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL })
+  let clickedAnchor: HTMLAnchorElement | null = null
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      clickedAnchor = this
+    })
+  return { createObjectURL, revokeObjectURL, clickSpy, getAnchor: () => clickedAnchor }
+}
+
 beforeEach(() => {
   mockApi.getNetworkStats.mockReset()
   mockApi.getNetworkConnections.mockReset()
+  mockApi.getNetworkRecordStatus.mockClear()
+  mockApi.getNetworkRecordStatus.mockResolvedValue({
+    recording: false, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  })
+  mockApi.startNetworkRecording.mockClear()
+  mockApi.startNetworkRecording.mockResolvedValue({
+    recording: true, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+  })
+  mockApi.stopNetworkRecording.mockClear()
+  mockApi.stopNetworkRecording.mockResolvedValue({
+    recording: false, reason: 'stopped', rows: 9, oldest_ts: null, newest_ts: null,
+  })
+  mockApi.exportNetworkStats.mockClear()
+  mockApi.exportNetworkStats.mockResolvedValue({
+    data: new Blob(['x']),
+    headers: {
+      'x-export-count': '30',
+      'x-export-oldest-ts': '1710000000',
+      'x-export-newest-ts': '1710007200',
+    },
+  })
+  elMessage.success.mockClear()
+  elMessage.error.mockClear()
+  elMessage.warning.mockClear()
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -169,6 +271,118 @@ describe('NetworkView', () => {
     expect(cards[0].text()).toContain('0 KB/s')
     expect(wrapper.find('.empty').text()).toBe('无连接')
 
+    wrapper.unmount()
+  })
+
+  it('轮询拉取录制状态；未录制时无 REC 徽标', async () => {
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(mockApi.getNetworkRecordStatus).toHaveBeenCalledWith('dev1')
+    expect(wrapper.find('.rec-indicator').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('录制中显示 REC 徽标与行数', async () => {
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    mockApi.getNetworkRecordStatus.mockResolvedValue({
+      recording: true, reason: '', rows: 5, oldest_ts: null, newest_ts: null,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    const badge = wrapper.find('.rec-indicator')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('REC')
+    expect(badge.text()).toContain('5 行')
+    expect(findButton(wrapper, '停止录制').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('点击开始/停止录制并刷新状态', async () => {
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    const wrapper = mountView()
+    await flushPromises()
+
+    // 第二次 getNetworkRecordStatus（点击开始后的刷新）返回录制中
+    mockApi.getNetworkRecordStatus.mockResolvedValueOnce({
+      recording: true, reason: '', rows: 5, oldest_ts: null, newest_ts: null,
+    })
+    await findButton(wrapper, '开始录制').trigger('click')
+    await flushPromises()
+    expect(mockApi.startNetworkRecording).toHaveBeenCalledWith('dev1')
+    expect(elMessage.success).toHaveBeenCalledWith('录制已开启')
+
+    await findButton(wrapper, '停止录制').trigger('click')
+    await flushPromises()
+    expect(mockApi.stopNetworkRecording).toHaveBeenCalledWith('dev1')
+    expect(elMessage.success).toHaveBeenCalledWith('录制已停止，本次落盘 9 行')
+    wrapper.unmount()
+  })
+
+  it('录制操作失败：弹错误提示', async () => {
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    mockApi.startNetworkRecording.mockRejectedValueOnce({
+      response: { data: { detail: 'RECORDING_DISABLED' } },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await findButton(wrapper, '开始录制').trigger('click')
+    await flushPromises()
+
+    expect(elMessage.error).toHaveBeenCalledWith('录制操作失败: RECORDING_DISABLED')
+    wrapper.unmount()
+  })
+
+  it('导出：下拉选择触发 blob 下载并回显行数', async () => {
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    const { createObjectURL, revokeObjectURL, getAnchor } = stubBlobDownload()
+    const wrapper = mountView()
+    await flushPromises()
+    const dropdown = wrapper.findComponent(ElDropdown)
+
+    dropdown.vm.$emit('command', 'buffer-csv')
+    await flushPromises()
+
+    expect(mockApi.exportNetworkStats).toHaveBeenCalledWith('dev1', 'csv', 'buffer')
+    expect(createObjectURL).toHaveBeenCalled()
+    expect(getAnchor()!.download).toBe('network_dev1_buffer.csv')
+    expect(getAnchor()!.href).toContain('blob:mock-url')
+    expect(revokeObjectURL).toHaveBeenCalled()
+    expect(String(elMessage.success.mock.calls[0][0])).toContain('30 条')
+
+    dropdown.vm.$emit('command', 'cache-json')
+    await flushPromises()
+    expect(mockApi.exportNetworkStats).toHaveBeenCalledWith('dev1', 'json', 'cache')
+    expect(getAnchor()!.download).toBe('network_dev1_cache.json')
+    wrapper.unmount()
+  })
+
+  it('导出空数据（404）与失败分别提示', async () => {
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    mockApi.exportNetworkStats.mockRejectedValueOnce({ response: { status: 404 } })
+    mockApi.exportNetworkStats.mockRejectedValueOnce({
+      response: { status: 500, data: { detail: 'boom' } },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const dropdown = wrapper.findComponent(ElDropdown)
+
+    dropdown.vm.$emit('command', 'buffer-csv')
+    await flushPromises()
+    expect(elMessage.warning).toHaveBeenCalledWith('暂无数据可导出')
+
+    dropdown.vm.$emit('command', 'buffer-csv')
+    await flushPromises()
+    expect(elMessage.error).toHaveBeenCalledWith('导出失败: boom')
     wrapper.unmount()
   })
 })

@@ -16,6 +16,15 @@
 
 import axios from 'axios'
 
+/** 录制状态（后端 record/status 返回结构，方案 18 Step 3）。 */
+export interface RecordStatus {
+  recording: boolean
+  reason: string
+  rows: number
+  oldest_ts: number | null
+  newest_ts: number | null
+}
+
 // 创建 axios 实例，配置基础 URL 和超时
 const client = axios.create({
   baseURL: '/api',
@@ -232,6 +241,51 @@ export const api = {
     return res.data
   },
 
+  /**
+   * 导出设备性能指标为文件（Blob）。
+   * 对应：GET /api/perf/{deviceId}/export?format=...&source=...&limit=...
+   * 返回 axios 响应：res.data 为 Blob，res.headers 携带
+   * X-Export-Count / X-Export-Oldest-Ts / X-Export-Newest-Ts 元数据。
+   */
+  async exportPerfMetrics(
+    deviceId: string,
+    format: 'csv' | 'json' = 'csv',
+    source: 'buffer' | 'cache' = 'buffer',
+    limit = 50000
+  ): Promise<import('axios').AxiosResponse<Blob>> {
+    return client.get(`/perf/${encodeURIComponent(deviceId)}/export`, {
+      params: { format, source, limit },
+      responseType: 'blob',
+    })
+  },
+
+  /**
+   * 开启性能指标录制。
+   * 对应：POST /api/perf/{deviceId}/record/start
+   */
+  async startPerfRecording(deviceId: string) {
+    const res = await client.post(`/perf/${encodeURIComponent(deviceId)}/record/start`)
+    return res.data as RecordStatus
+  },
+
+  /**
+   * 停止性能指标录制。
+   * 对应：POST /api/perf/{deviceId}/record/stop
+   */
+  async stopPerfRecording(deviceId: string) {
+    const res = await client.post(`/perf/${encodeURIComponent(deviceId)}/record/stop`)
+    return res.data as RecordStatus
+  },
+
+  /**
+   * 查询性能指标录制状态。
+   * 对应：GET /api/perf/{deviceId}/record/status
+   */
+  async getPerfRecordStatus(deviceId: string) {
+    const res = await client.get(`/perf/${encodeURIComponent(deviceId)}/record/status`)
+    return res.data as RecordStatus
+  },
+
   // ==================== 应用管理 API ====================
 
   /**
@@ -319,5 +373,50 @@ export const api = {
       params: { protocol },
     })
     return res.data
+  },
+
+  /**
+   * 导出设备网络统计为文件（Blob）。
+   * 对应：GET /api/network/{deviceId}/export?format=...&source=...&limit=...
+   * 返回 axios 响应：res.data 为 Blob，res.headers 携带
+   * X-Export-Count / X-Export-Oldest-Ts / X-Export-Newest-Ts 元数据。
+   */
+  async exportNetworkStats(
+    deviceId: string,
+    format: 'csv' | 'json' = 'csv',
+    source: 'buffer' | 'cache' = 'buffer',
+    limit = 50000
+  ): Promise<import('axios').AxiosResponse<Blob>> {
+    return client.get(`/network/${encodeURIComponent(deviceId)}/export`, {
+      params: { format, source, limit },
+      responseType: 'blob',
+    })
+  },
+
+  /**
+   * 开启网络统计录制。
+   * 对应：POST /api/network/{deviceId}/record/start
+   */
+  async startNetworkRecording(deviceId: string) {
+    const res = await client.post(`/network/${encodeURIComponent(deviceId)}/record/start`)
+    return res.data as RecordStatus
+  },
+
+  /**
+   * 停止网络统计录制。
+   * 对应：POST /api/network/{deviceId}/record/stop
+   */
+  async stopNetworkRecording(deviceId: string) {
+    const res = await client.post(`/network/${encodeURIComponent(deviceId)}/record/stop`)
+    return res.data as RecordStatus
+  },
+
+  /**
+   * 查询网络统计录制状态。
+   * 对应：GET /api/network/{deviceId}/record/status
+   */
+  async getNetworkRecordStatus(deviceId: string) {
+    const res = await client.get(`/network/${encodeURIComponent(deviceId)}/record/status`)
+    return res.data as RecordStatus
   },
 }
