@@ -93,8 +93,16 @@
 | GET | `/api/perf/{device_id}/metrics` | 历史性能指标 | `api.getPerfMetrics` |
 | POST | `/api/perf/{device_id}/start` | 启动性能监控 | `api.startPerfMonitoring` |
 | POST | `/api/perf/{device_id}/stop` | 停止性能监控 | `api.stopPerfMonitoring` |
+| GET | `/api/perf/{device_id}/export` | 导出性能指标（buffer/cache × csv/json） | `api.exportPerf` |
+| POST | `/api/perf/{device_id}/record/start` | 开启性能录制（缓存态落盘） | `api.recordPerf` |
+| POST | `/api/perf/{device_id}/record/stop` | 停止性能录制 | `api.recordPerf` |
+| GET | `/api/perf/{device_id}/record/status` | 性能录制状态 | `api.recordPerf` |
 | GET | `/api/network/{device_id}/stats` | 网络统计 | `api.getNetworkStats` |
 | GET | `/api/network/{device_id}/connections` | 活跃连接列表 | `api.getNetworkConnections` |
+| GET | `/api/network/{device_id}/export` | 导出网络指标（buffer/cache × csv/json） | `api.exportNetwork` |
+| POST | `/api/network/{device_id}/record/start` | 开启网络录制（缓存态落盘） | `api.recordNetwork` |
+| POST | `/api/network/{device_id}/record/stop` | 停止网络录制 | `api.recordNetwork` |
+| GET | `/api/network/{device_id}/record/status` | 网络录制状态 | `api.recordNetwork` |
 | POST | `/api/sessions` | 创建协作会话 | — |
 | GET | `/api/sessions/{session_id}` | 协作会话信息 | — |
 | POST | `/api/sessions/{session_id}/join` | 加入协作会话 | — |
@@ -301,7 +309,18 @@ data: {"type": "disconnected", "device_id": "..."}
 
 #### POST /api/debug/cleanup
 
-手动触发一次日志清理：删除超过 `log_retention_days`（默认 7 天）的日志、超过 `shell_history_days`（默认 30 天）的 shell 历史；数据库超过 `max_db_size_mb` 时删除最旧日志。
+手动触发一次清理（后台清理循环每小时同流程）。清理步骤（每步独立兜底，单步失败记入 `errors` 不中断整链）：
+
+1. 删除超过 `log_retention_days`（默认 7 天）的调试日志
+2. 删除超过 `shell_history_days`（默认 30 天）的 shell 历史
+3. 删除超过 `metrics.retention_days`（默认 7 天）的指标采样（`perf_samples` / `network_samples`）
+4. 指标总行数超过 `metrics.max_rows_total`（默认 50 万）时按行数裁剪最旧（**双限取先到者**，时间限与行数限各自独立生效）
+5. 库仍超过 `max_db_size_mb` 时字节兜底，按优先级删除：**指标 → shell 历史 → 调试日志**（方案 18 D5）
+6. 本轮确有删除才 `VACUUM`（无删除跳过，避免空转重建库）；VACUUM 失败记警告不影响其余步骤与后续循环
+
+删除按行数分段提交（每段 5 万行）防止长事务。**WAL 下字节兜底语义**：`max_db_size_mb` 只按主库文件计算，未 checkpoint 的 `-wal` 不计入，主库已达标仍可能低估真实占用；字节兜底以「主库文件不超过上限」为唯一目标，最低优先级的调试日志可能被删光。
+
+**手动 cleanup 与录制的并发说明（O4）**：手动触发与后台循环同走 `DebugService.run_cleanup`，进程内锁串行；指标批量写与清理删除在 SQLite 层串行化，录制中的设备数据不会被清理误删或并发覆盖。
 
 - 响应 200：
 
@@ -309,9 +328,13 @@ data: {"type": "disconnected", "device_id": "..."}
 {
   "logs_deleted": 0,
   "shell_deleted": 0,
+  "metrics_deleted": 0,
+  "metrics_trimmed": 0,
   "size_trimmed": 0,
+  "vacuumed": false,
   "db_size_bytes": 1234567,
-  "db_size_mb": 1.18
+  "db_size_mb": 1.18,
+  "errors": []
 }
 ```
 
@@ -341,6 +364,39 @@ data: {"type": "disconnected", "device_id": "..."}
 #### POST /api/perf/{device_id}/stop
 
 - 响应 200：`{"success": true, "device_id": "..."}`
+
+#### GET /api/perf/{device_id}/export
+
+导出性能指标为文件下载（流式生成，不留服务端临时文件）。
+
+- 查询参数：
+  - `format`：`csv` / `json`，默认 `csv`
+  - `source`：`buffer`（内存暂存快照，忽略 from/to）/ `cache`（SQLite 缓存态，支持区间），默认 `buffer`
+  - `from` / `to`：`source=cache` 时的 ts 区间（epoch 秒，含边界）
+  - `limit`：最大导出条数，默认 `50000`，上界 `200000`
+- 响应 200：文件下载（`Content-Disposition: attachment`，文件名中 device_id 的 `:` 净化为 `_`）
+  - CSV 列序：`ts,ts_iso,cpu_percent,total_memory_mb,used_memory_mb,fps,jank_count,current_activity,top_package`
+  - 元数据响应头：`X-Export-Count`、`X-Export-Oldest-Ts`、`X-Export-Newest-Ts`（行按 ts 升序）
+- 错误：400 `HTTP_ERROR`（format/source/limit 越界）；404 `HTTP_ERROR`，`message = "NO_DATA"`（两来源均无数据）
+
+#### POST /api/perf/{device_id}/record/start
+
+开启性能录制（缓存态落盘，幂等；未启动监控时自动拉起采样）。
+
+- 响应 200：录制状态 `{recording, reason, rows, oldest_ts, newest_ts}`（同 record/status）
+- 错误：400 `RECORDING_DISABLED`（`metrics.recording=false` 时，不静默）
+
+#### POST /api/perf/{device_id}/record/stop
+
+停止录制并停采（幂等）。
+
+- 响应 200：`{"recording": false, "reason": "stopped", "rows": <本次录制落盘行数>}`
+
+#### GET /api/perf/{device_id}/record/status
+
+- 响应 200：`{"recording": bool, "reason": string|null, "rows": int, "oldest_ts": float|null, "newest_ts": float|null}`
+  - `rows`/`oldest_ts`/`newest_ts` 为跨批次聚合值（多次录制叠加）；进程重启后 `recording: false`（运行态丢失，数据行保留）
+  - `reason`：`stopped` / `device_lost` / `config` / `shutdown`（§3.6 状态机停止原因）
 
 ### 2.7 网络（`/api/network`）
 
@@ -386,6 +442,18 @@ data: {"type": "disconnected", "device_id": "..."}
   "total": 1
 }
 ```
+
+#### GET /api/network/{device_id}/export
+
+导出网络指标为文件下载（与 perf 导出对称）。
+
+- 查询参数：同 perf 导出（`format` csv/json、`source` buffer/cache、`from`/`to`、`limit` 1–200000）
+- 响应 200：文件下载，CSV 列序 `ts,ts_iso,rx_bytes,tx_bytes,rx_rate_kbps,tx_rate_kbps,active_connections,wifi_connected,wifi_ssid`；元数据响应头同 perf 导出
+- 错误：400 `HTTP_ERROR`（参数越界）；404 `HTTP_ERROR`，`message = "NO_DATA"`
+
+#### POST /api/network/{device_id}/record/start · /record/stop · GET /record/status
+
+与 perf 录制端点对称；`record/start` 在 `metrics.recording=false` 时同样返回 400 `RECORDING_DISABLED`。
 
 ### 2.8 协作会话（`/api/sessions`）
 
