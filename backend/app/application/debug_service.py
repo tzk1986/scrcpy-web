@@ -28,6 +28,7 @@
 
 import asyncio
 import time
+from contextlib import aclosing
 from typing import Any, AsyncGenerator, Optional
 
 from fastapi import WebSocket
@@ -708,6 +709,9 @@ class DebugService:
 
         执行期间持有会话锁；消费者提前中断时必须以 aclose 关闭生成器
         （WS 层用 contextlib.aclosing 包裹），否则锁滞留到生成器被 GC。
+        内层 `shell.execute(cmd)` 同样以 aclosing 包裹：消费者中断时立即
+        触发 InteractiveShell 自身的收尾（`_executing` 复位等），
+        而不是等异步生成器 finalizer 延迟回收。
 
         参数：
             session_id: 活跃的调试会话。
@@ -728,9 +732,10 @@ class DebugService:
         async with self._get_session_lock(session_id):
             shell = await self.get_or_create_shell(session_id)
             try:
-                async for line in shell.execute(cmd):
-                    collected_output.append(line)
-                    yield line
+                async with aclosing(shell.execute(cmd)) as lines:
+                    async for line in lines:
+                        collected_output.append(line)
+                        yield line
             finally:
                 # 命令完成后（含消费者中断），记录到历史
                 full_output = "".join(collected_output)

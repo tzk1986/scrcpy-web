@@ -84,6 +84,26 @@ def test_reload_failure_keeps_old_config(monkeypatch):
     assert settings() is old  # 旧配置保持生效
 
 
+def test_reload_rejects_missing_or_empty_base_yaml(monkeypatch):
+    """base.yaml 缺失/为空视为失败路径，保留旧配置（不静默回落内置默认值）。"""
+    old = settings()
+
+    monkeypatch.setattr(config_settings, "load_yaml_config", lambda env="base": {})
+    result = reload_config()
+
+    assert result["reloaded"] is False
+    assert "base.yaml" in result["error"]
+    assert settings() is old
+
+
+def test_reload_endpoint_rejects_empty_base_yaml(monkeypatch):
+    monkeypatch.setattr(config_settings, "load_yaml_config", lambda env="base": {})
+    res = make_client().post("/api/system/config/reload")
+
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "CONFIG_RELOAD_FAILED"
+
+
 def test_reload_config_reports_restart_when_bind_changed(monkeypatch):
     monkeypatch.setattr(
         config_settings, "load_yaml_config",

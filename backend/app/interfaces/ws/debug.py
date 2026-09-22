@@ -41,6 +41,7 @@ PTY 模式 input 操作：
 
 import base64
 from contextlib import aclosing
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -50,6 +51,14 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["debug"])
+
+
+async def _safe_send_json(websocket: WebSocket, payload: dict[str, Any]) -> None:
+    """尽力回发消息；客户端已断开时静默忽略（断线清理由外层 finally 负责）。"""
+    try:
+        await websocket.send_json(payload)
+    except Exception:
+        pass
 
 
 async def debug_stream(websocket: WebSocket, session_id: str, debug_service: DebugService) -> None:
@@ -130,8 +139,11 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                         "success": True,
                         "done": True,
                     })
+                except WebSocketDisconnect:
+                    # 客户端中途断开：不是命令执行错误，交由外层 finally 清理
+                    raise
                 except Exception as e:
-                    await websocket.send_json({
+                    await _safe_send_json(websocket, {
                         "type": "shell_output",
                         "output": str(e),
                         "success": False,
@@ -164,6 +176,10 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                 await websocket.send_json({"type": "unsubscribed"})
 
     except WebSocketDisconnect:
-        # 断开时清理订阅和输出转发
+        # 客户端断开属正常退出路径，清理由 finally 统一执行
+        pass
+    finally:
+        # 任何退出路径（客户端断开 / 其它异常）都清理订阅与输出转发，
+        # 避免残留订阅者与转发任务（曾因二次 send 抛错绕过清理而泄漏）
         await debug_service.unsubscribe(session_id, websocket)
         await debug_service.stop_output_forwarding(session_id)

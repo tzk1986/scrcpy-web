@@ -177,6 +177,22 @@ class SlowShell(FakeShell):
             self._recorder.exit()
 
 
+class TrackingShell(FakeShell):
+    """记录 execute() 生成器是否已被显式关闭（finally 已执行）。"""
+
+    def __init__(self, lines=("x", "y", "z")):
+        super().__init__(lines=list(lines))
+        self.generator_closed = False
+
+    async def execute(self, cmd):
+        self.executed.append(cmd)
+        try:
+            for line in self._lines:
+                yield line
+        finally:
+            self.generator_closed = True
+
+
 class FakeRepo:
     def __init__(self):
         self.bulk = []
@@ -770,6 +786,21 @@ async def test_stream_raw_releases_lock_when_consumer_closes():
     out = await asyncio.wait_for(svc.exec_shell(session.id, "next"), timeout=1.0)
     assert out == "pong"
     await svc.stop_output_forwarding(session.id)
+
+
+async def test_stream_raw_closes_inner_generator_on_consumer_close():
+    """消费者中断时内层 shell.execute() 生成器被立即关闭（aclosing），不等 GC。"""
+    shell = TrackingShell()
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo())
+    session = make_session()
+    svc.sessions[session.id] = session
+
+    gen = svc._exec_shell_stream_raw(session.id, "ls")
+    assert await anext(gen) == "x"
+    assert shell.generator_closed is False  # 尚在执行中
+
+    await gen.aclose()  # 模拟消费者中断（WS 断开）
+    assert shell.generator_closed is True  # 内层生成器已显式收尾
 
 
 # ---------------------------------------------------------------------------

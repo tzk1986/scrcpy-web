@@ -24,7 +24,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Protocol, runtime_checkable
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from app.domain.device import DeviceInfo
 from app.domain.session import DebugSession
@@ -141,9 +141,12 @@ class ShellSession(Protocol):
         """
         ...
 
-    def execute(self, cmd: str) -> AsyncIterator[str]:
+    def execute(self, cmd: str) -> AsyncGenerator[str, None]:
         """
         执行命令并流式返回输出（用于 HTTP API 降级）。
+
+        返回异步生成器（而非仅 AsyncIterator）：调用方可在消费者中断时
+        `aclose()` 显式收尾（释放会话锁、复位执行状态），不必等 GC。
 
         参数：
             cmd: 要执行的 shell 命令。

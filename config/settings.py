@@ -207,9 +207,14 @@ def reload_settings() -> Settings:
 
     重新执行 get_settings()（YAML / 环境变量全部重读），成功则替换缓存
     并返回新实例；解析失败时抛出异常，旧缓存保持不变（服务继续用
-    旧配置运行）。仅对运行时读取 settings() 的消费点生效；数据库路径、
-    连接池大小等构造时读取的资源不会热切换。
+    旧配置运行）。base.yaml 缺失或内容为空同样视为失败：否则会静默回落
+    到内置默认值，与「失败保留旧配置」的语义不符（空/清空/误删文件
+    都可能触发大规模配置漂移）。仅对运行时读取 settings() 的消费点生效；
+    数据库路径、连接池大小等构造时读取的资源不会热切换。
     """
+    if not load_yaml_config("base"):
+        raise ValueError("config/base.yaml missing or empty; keeping previous settings")
+
     global _settings
     _settings = get_settings()
     return _settings

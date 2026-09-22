@@ -37,7 +37,7 @@ import asyncio
 import re
 import sys
 import uuid
-from typing import AsyncIterator, Callable
+from typing import AsyncGenerator, Callable
 
 from app.core.config import settings
 from app.core.exceptions import AdbError
@@ -229,7 +229,7 @@ class InteractiveShell:
         await self._output_queue.put(None)
         logger.info("background_reader_exited", device=self._device_id)
 
-    async def execute(self, cmd: str) -> AsyncIterator[str]:
+    async def execute(self, cmd: str) -> AsyncGenerator[str, None]:
         """
         执行命令并流式返回输出。
 
