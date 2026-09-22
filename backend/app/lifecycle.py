@@ -16,8 +16,10 @@
 
 关闭顺序：
     1. config_watcher.stop() — 停止配置热重载监听
-    2. stop_cleanup_task() — 停止日志清理任务
-    3. writer.flush()      — 冲刷批量日志缓冲
+    2. performance_service.cleanup() / network_service.cleanup() — 停止采样并
+       释放内存暂存（含录制 final flush，方案 18 §3.7）
+    3. stop_cleanup_task() — 停止日志清理任务
+    4. writer.flush()      — 冲刷批量日志缓冲
 
 添加新的启动工作时（如连接池、后台任务），放在 `yield` 之前。
 添加关闭工作时，放在 `yield` 之后。
@@ -52,7 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
 
     # 恢复上次进程遗留的活跃调试会话（续跑 logcat 采集）
-    from app.deps import get_debug_service
+    from app.deps import get_debug_service, get_network_service, get_performance_service
     debug_service = get_debug_service()
     await debug_service.restore_sessions()
 
@@ -74,6 +76,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 停止配置热重载监听
     if config_watcher is not None:
         await config_watcher.stop()
+
+    # 停止性能/网络采样并释放内存暂存（均幂等，见方案 18 §3.7）
+    await get_performance_service().cleanup()
+    await get_network_service().cleanup()
 
     # 停止日志清理任务
     await debug_service.stop_cleanup_task()

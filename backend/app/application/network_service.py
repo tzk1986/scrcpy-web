@@ -216,6 +216,11 @@ class NetworkService:
 
         守卫复查路径的调用者就是守卫任务自身：此时只注销、不取消，
         否则 cancel 自身再 await 自身会自死锁。
+
+        等待守卫退出时不用 await guard：Py 3.10 会把调用者的取消经
+        _fut_waiter 转嫁给被等待的 guard 任务，其 CancelledError 抛回
+        调用者后若被吞掉，调用者的取消请求也随之丢失。改为轮询 done，
+        挂起点是 sleep(0) 而非 guard 任务，取消可正常注入调用者。
         """
         guard = self._idle_guards.pop(device_id, None)
         if guard is None or guard.done():
@@ -223,10 +228,8 @@ class NetworkService:
         if guard is asyncio.current_task():
             return
         guard.cancel()
-        try:
-            await guard
-        except asyncio.CancelledError:
-            pass
+        while not guard.done():
+            await asyncio.sleep(0)
 
     async def _idle_guard(self, device_id: str) -> None:
         """空闲复查：idle_ttl 后仍无录制且无访问 → stop_monitoring。"""
