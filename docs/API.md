@@ -65,6 +65,7 @@
 | 方法 | 路径 | 说明 | 前端调用方 |
 |------|------|------|-----------|
 | GET | `/health` | 健康检查 | —（容器/脚本） |
+| POST | `/api/system/config/reload` | 手动触发配置热重载 | —（运维/脚本） |
 | GET | `/api/devices` | 设备列表 | `api.listDevices` |
 | GET | `/api/devices/{device_id}` | 单设备信息 | `api.getDevice` |
 | POST | `/api/devices/connect` | TCP/IP 连接设备 | `api.connectDevice` |
@@ -108,6 +109,21 @@
 
 - 参数：无
 - 响应 200：`{"status": "ok"}`
+
+#### POST /api/system/config/reload
+
+手动触发配置热重载（`config/*.yaml` 重新加载并替换配置缓存单例）。
+
+后台监听（`app.config_watch`，默认开，2s mtime 轮询）之外的补充入口：
+监听关闭或需要不等轮询间隔立即生效时使用。
+
+- 参数：无
+- 响应 200：`{"reloaded": true, "restart_required": false}`
+
+  `restart_required` 为 `true` 表示 `server.host/port` 发生变化，需重启服务
+  才能绑定新地址（uvicorn 已绑定旧地址）；其余配置即时生效。
+- 响应 400：配置文件解析失败，`{"error": {"code": "CONFIG_RELOAD_FAILED", "message": "..."}}`；
+  旧配置保持生效，服务不受影响
 
 ### 2.3 设备（`/api/devices`）
 
