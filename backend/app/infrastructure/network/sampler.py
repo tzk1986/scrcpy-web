@@ -82,12 +82,14 @@ class NetworkSampler:
         self._prev_tx: int | None = None
         self._prev_ts: float | None = None
 
-    async def get_stats(self, device_id: str) -> NetworkStats:
+    async def get_stats(self, device_id: str, strict: bool = False) -> NetworkStats:
         """
         获取当前网络统计。
 
         参数：
             device_id: 设备 ID。
+            strict: True 时任一子采样失败即上抛（供采样循环做失联判定）；
+            False（默认）吞异常返回默认值（HTTP 即时快照路径保持既有行为）。
 
         返回：
             NetworkStats 对象。
@@ -95,7 +97,7 @@ class NetworkSampler:
         now = time.time()
 
         # 获取流量统计
-        rx_bytes, tx_bytes = await self._get_traffic_stats(device_id)
+        rx_bytes, tx_bytes = await self._get_traffic_stats(device_id, strict=strict)
 
         # 计算速率
         rx_rate = 0.0
@@ -121,11 +123,11 @@ class NetworkSampler:
         self._prev_ts = now
 
         # 获取连接数
-        connections = await self.get_connections(device_id)
+        connections = await self.get_connections(device_id, strict=strict)
         active_count = len([c for c in connections if c.state == "ESTABLISHED"])
 
         # 获取 WiFi 状态
-        wifi_connected, wifi_ssid = await self._get_wifi_status(device_id)
+        wifi_connected, wifi_ssid = await self._get_wifi_status(device_id, strict=strict)
 
         return NetworkStats(
             ts=now,
@@ -138,12 +140,17 @@ class NetworkSampler:
             wifi_ssid=wifi_ssid,
         )
 
-    async def _get_traffic_stats(self, device_id: str) -> tuple[int, int]:
+    async def _get_traffic_stats(
+        self, device_id: str, strict: bool = False
+    ) -> tuple[int, int]:
         """
         获取网络流量统计。
 
         从 /proc/net/dev 读取 wlan（WiFi）接口的收发字节数。
         如果没有 WiFi 接口，则使用所有接口的总和。
+
+        参数：
+            strict: True 时失败即上抛（失联判定），False 返回 (0, 0)。
 
         返回：
             (rx_bytes, tx_bytes) 元组。
@@ -181,10 +188,14 @@ class NetworkSampler:
             return total_rx, total_tx
 
         except Exception as e:
+            if strict:
+                raise
             logger.warning("get_traffic_stats_failed", device=device_id, error=str(e))
             return 0, 0
 
-    async def get_connections(self, device_id: str) -> list[NetworkConnection]:
+    async def get_connections(
+        self, device_id: str, strict: bool = False
+    ) -> list[NetworkConnection]:
         """
         获取活跃连接列表。
 
@@ -192,6 +203,8 @@ class NetworkSampler:
 
         参数：
             device_id: 设备 ID。
+            strict: True 时任一 shell 失败即上抛（失联判定），
+            False 时中途失败保留已解析结果/返回空列表。
 
         返回：
             NetworkConnection 列表。
@@ -212,6 +225,8 @@ class NetworkSampler:
             connections.extend(self._parse_proc_net(udp_output, "udp"))
 
         except Exception as e:
+            if strict:
+                raise
             logger.warning("get_connections_failed", device=device_id, error=str(e))
 
         return connections
@@ -309,9 +324,14 @@ class NetworkSampler:
 
         return ip_addr, port
 
-    async def _get_wifi_status(self, device_id: str) -> tuple[bool, str | None]:
+    async def _get_wifi_status(
+        self, device_id: str, strict: bool = False
+    ) -> tuple[bool, str | None]:
         """
         获取 WiFi 连接状态。
+
+        参数：
+            strict: True 时失败即上抛（失联判定），False 返回 (False, None)。
 
         返回：
             (connected, ssid) 元组。
@@ -332,6 +352,8 @@ class NetworkSampler:
             return connected, ssid
 
         except Exception as e:
+            if strict:
+                raise
             logger.warning("get_wifi_status_failed", device=device_id, error=str(e))
             return False, None
 

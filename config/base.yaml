@@ -38,6 +38,16 @@ debug:
   min_log_level: V  # Default: All logs (Verbose+) - 这是调试工具，应显示完整日志
   log_rate_limit: 500  # Max 500 logs per second
 
+metrics:
+  buffer_size: 3600           # Perf 内存暂存条数（@1s 采样约 1 小时/设备）
+  network_buffer_size: 1800   # Network 内存暂存条数（@2s 采样约 1 小时/设备）
+  network_interval: 2.0       # Network 采样间隔（秒）
+  idle_ttl_seconds: 300       # 无订阅者/访问且未录制时的空闲停采宽限（秒）
+  lost_failures: 3            # 连续采样失败阈值 → 判定设备失联
+  recording: false            # 录制（落盘暂存）总开关，默认关闭
+  retention_days: 3           # 缓存态保留期（天）
+  max_rows_total: 500000      # 缓存态容量上限（Perf+Network 合计行数）
+
 security:
   jwt_algorithm: HS256
   jwt_expire_minutes: 1440

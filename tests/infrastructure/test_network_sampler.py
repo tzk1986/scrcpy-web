@@ -512,6 +512,47 @@ async def test_wifi_status_adb_error_returns_false_none():
 
 
 # ---------------------------------------------------------------------------
+# strict 采样入口（方案 18 Step 1：失联判定信号）
+# ---------------------------------------------------------------------------
+
+async def test_get_stats_strict_raises_on_traffic_failure():
+    """strict=True：流量命令失败即上抛，供采样循环计连续失败。"""
+    adb, sampler = make_sampler()
+    adb.fail_on.add("cat /proc/net/dev")
+
+    with pytest.raises(AdbError):
+        await sampler.get_stats(DEV, strict=True)
+
+
+async def test_get_stats_strict_raises_on_connections_failure():
+    """strict=True：连接采样首命令失败即上抛。"""
+    adb, sampler = make_sampler()
+    adb.fail_on.add("cat /proc/net/tcp")
+
+    with pytest.raises(AdbError):
+        await sampler.get_stats(DEV, strict=True)
+
+
+async def test_get_stats_strict_raises_on_wifi_failure():
+    """strict=True：WiFi 命令失败即上抛。"""
+    adb, sampler = make_sampler()
+    adb.fail_on.add("dumpsys wifi")
+
+    with pytest.raises(AdbError):
+        await sampler.get_stats(DEV, strict=True)
+
+
+async def test_get_stats_non_strict_keeps_defaults_on_failure():
+    """strict=False（默认）仍吞异常回默认值（HTTP 即时快照契约不变）。"""
+    adb, sampler = make_sampler()
+    adb.fail_on.add("cat /proc/net/dev")
+
+    stats = await sampler.get_stats(DEV)
+
+    assert (stats.rx_bytes, stats.tx_bytes) == (0, 0)
+
+
+# ---------------------------------------------------------------------------
 # stream_stats（生命周期 / 异常吞掉）
 # ---------------------------------------------------------------------------
 

@@ -111,6 +111,17 @@ class DebugConfig(BaseSettings):
     restore_max_sessions: int = 20  # 重启最多恢复的会话数（限制恢复时间）
 
 
+class MetricsConfig(BaseSettings):
+    buffer_size: int = 3600  # Perf 内存暂存条数（@1s 采样约 1 小时/设备）
+    network_buffer_size: int = 1800  # Network 内存暂存条数（@2s 采样约 1 小时/设备）
+    network_interval: float = 2.0  # Network 采样间隔（秒）
+    idle_ttl_seconds: int = 300  # 无订阅者/访问且未录制时的空闲停采宽限（秒）
+    lost_failures: int = 3  # 连续采样失败阈值 → 判定设备失联
+    recording: bool = False  # 录制（落盘暂存）总开关，默认关闭
+    retention_days: int = 3  # 缓存态保留期（天）
+    max_rows_total: int = 500000  # 缓存态容量上限（Perf+Network 合计行数）
+
+
 class SecurityConfig(BaseSettings):
     jwt_secret: str = Field(default="change-me-in-production")
     jwt_algorithm: str = "HS256"
@@ -125,6 +136,7 @@ class Settings(BaseSettings):
     adb: AdbConfig = Field(default_factory=AdbConfig)
     stream: StreamConfig = Field(default_factory=StreamConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
 
     model_config = SettingsConfigDict(

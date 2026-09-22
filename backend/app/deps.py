@@ -30,6 +30,7 @@ from functools import lru_cache
 from app.application.app_service import AppService
 from app.application.debug_service import DebugService
 from app.application.device_service import DeviceService
+from app.application.network_service import NetworkService
 from app.application.performance_service import PerformanceService
 from app.application.session_service import SessionService
 from app.application.stream_service import StreamService
@@ -100,6 +101,12 @@ def get_debug_service() -> DebugService:
 def get_performance_service() -> PerformanceService:
     """返回进程级 PerformanceService 单例。"""
     return PerformanceService(adb=get_adb_driver())
+
+
+@lru_cache()
+def get_network_service() -> NetworkService:
+    """返回进程级 NetworkService 单例。"""
+    return NetworkService(adb=get_adb_driver())
 
 
 @lru_cache()
