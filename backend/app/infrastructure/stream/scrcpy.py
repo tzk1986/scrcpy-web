@@ -599,6 +599,11 @@ class ScrcpyEncoder:
             # 回退到 adb shell input
             await self._fallback_adb_input(data)
 
+    async def request_keyframe(self) -> None:
+        """立即催出新 IDR（前端回切场景，方案 19 实施项 3）；无控制通道时 no-op。"""
+        if self._control_sender is not None:
+            await self._control_sender.reset_video()
+
     async def _send_swipe(self, data: dict[str, Any]) -> None:
         """
         连续 MOVE 事件滑动（参考 py-scrcpy-client swipe()）。

@@ -84,10 +84,16 @@ class FakeWs {
   handler: ((data: unknown) => void) | null = null
   ws: WebSocket | null = null
   handlerSetCount = 0
+  /** 客户端发出的消息（WebSocketService.send 收到后解析记录） */
+  sent: unknown[] = []
 
   setMessageHandler(handler: (data: unknown) => void) {
     this.handler = handler
     this.handlerSetCount++
+  }
+
+  send(data: unknown) {
+    this.sent.push(typeof data === 'string' ? JSON.parse(data as string) : data)
   }
 }
 
@@ -702,6 +708,32 @@ describe('suspend / resume 探测模式', () => {
     expect(stream.suspended).toBe(false)
     expect(stream.state).toBe('configuring')
     expect(FakeVideoDecoder.instances).toHaveLength(0)
+  })
+
+  it('resume 发送 request_keyframe（每次 resume 周期恰一次）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    const frame = {
+      displayWidth: 640, displayHeight: 480, close: vi.fn(),
+    } as unknown as VideoFrame
+    dec.init.output(frame) // 进入 streaming
+
+    stream.suspend()
+    stream.resume()
+
+    expect(ws.sent).toEqual([{ op: 'request_keyframe' }])
+
+    // 未 suspend 时 resume 早退，不重复发送
+    stream.resume()
+    expect(ws.sent).toEqual([{ op: 'request_keyframe' }])
+
+    // 新一轮 suspend/resume 周期再发一次
+    stream.suspend()
+    stream.resume()
+    expect(ws.sent).toEqual([{ op: 'request_keyframe' }, { op: 'request_keyframe' }])
+
+    stream.stop()
   })
 
   it('未 suspend 时 resume 无操作', () => {

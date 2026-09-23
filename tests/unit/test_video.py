@@ -130,6 +130,7 @@ class FakeStreamService:
         self.epoch = 0
         self.pending: dict[str, int | None] = {}
         self.reported_fps: list[tuple[str, float]] = []
+        self.keyframe_requests: list[str] = []
         self.stop_calls: list[str] = []
 
     # --- StreamService 接口 -------------------------------------------------
@@ -153,6 +154,10 @@ class FakeStreamService:
 
     def peek_pending_bitrate(self, device_id: str) -> int | None:
         return self.pending.get(device_id)
+
+    async def request_keyframe(self, device_id: str, now: float | None = None) -> bool:
+        self.keyframe_requests.append(device_id)
+        return True
 
     async def stop_stream(self, device_id: str) -> None:
         self.stop_calls.append(device_id)
@@ -506,6 +511,24 @@ def test_input_touch_forwarded_and_restarting_notified(video_client):
         assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
         assert encoder.inputs == [{"action": "touch", "x": 1, "y": 2}]
         assert svc.reported_fps == [(DEV, 25.0)]
+        gate.set()
+    assert wait_for(lambda: svc.stop_calls == [DEV])
+
+
+def test_request_keyframe_op_dispatched(video_client):
+    """客户端发送 {"op":"request_keyframe"} → 服务层 request_keyframe 被调用，
+    记录设备 ID（方案 19 实施项 3：resume 回切请求关键帧）。"""
+    gate = threading.Event()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=FakeEncoder(),
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        session.send_json({"op": "request_keyframe"})
+        # 输入任务在服务端事件循环处理，测试线程轮询等待记录写入
+        assert wait_for(lambda: svc.keyframe_requests == [DEV])
         gate.set()
     assert wait_for(lambda: svc.stop_calls == [DEV])
 

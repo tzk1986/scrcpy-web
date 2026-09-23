@@ -301,7 +301,14 @@ async def _handle_input(device_id: str, data: dict[str, Any], stream_service: St
 
     另外支持客户端 1Hz 帧率上报（用于自适应码率决策）：
         { "op": "stats", "fps": 25 }
+
+    以及 resume 回切时的关键帧请求（方案 19 实施项 3）：
+        { "op": "request_keyframe" }
     """
+    if data.get("op") == "request_keyframe":
+        await stream_service.request_keyframe(device_id)
+        return
+
     if data.get("op") == "stats":
         try:
             fps = float(data.get("fps", 0))

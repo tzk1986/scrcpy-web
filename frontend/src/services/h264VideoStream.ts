@@ -256,6 +256,8 @@ export class H264VideoStream {
   resume() {
     if (!this._suspended) return
     this._suspended = false
+    // 回切即新接收端加入：请求服务端立即产出 IDR，消灭 configuring 长等待
+    this.ws.send({ op: 'request_keyframe' })
     this._error = null
     this._frameCount = 0
     this._droppedFrames = 0

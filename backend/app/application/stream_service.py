@@ -66,6 +66,8 @@ class StreamService:
         self._restart_events: dict[str, asyncio.Event] = {}
         # 卡死自愈（方案 19 实施项 1b）：device → 最近卡死重启时刻（60s 滑窗防风暴）
         self._stall_restarts: dict[str, deque[float]] = {}
+        # 关键帧请求冷却（方案 19 实施项 3）：device → 最近一次实际发送时刻（1s 防抖）
+        self._last_keyframe_at: dict[str, float] = {}
 
     async def start_stream(self, device_id: str) -> AsyncIterator[bytes]:
         """
@@ -208,6 +210,7 @@ class StreamService:
             self._restart_events.pop(device_id, None)
             self._epoch.pop(device_id, None)
             self._stall_restarts.pop(device_id, None)
+            self._last_keyframe_at.pop(device_id, None)
             logger.info("video_stream_stopped", device=device_id)
 
     def get_stream_epoch(self, device_id: str) -> int:
@@ -258,6 +261,24 @@ class StreamService:
                 fps=fps,
                 bit_rate=new_bps,
             )
+
+    async def request_keyframe(self, device_id: str, now: float | None = None) -> bool:
+        """
+        客户端请求关键帧（resume 回切），经 RESET_VIDEO 实现。
+
+        最小间隔 1s 防抖（方案 19 实施项 3 冷却约定）；返回是否实际发送。
+        """
+        encoder = self.encoders.get(device_id)
+        if encoder is None:
+            return False
+        if now is None:
+            now = time.monotonic()
+        last = self._last_keyframe_at.get(device_id)
+        if last is not None and now - last < 1.0:
+            return False
+        self._last_keyframe_at[device_id] = now
+        await encoder.request_keyframe()
+        return True
 
     async def stop_stream(self, device_id: str) -> None:
         """
