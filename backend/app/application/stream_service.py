@@ -196,6 +196,10 @@ class StreamService:
         """
         return not settings().stream.raw_stream_fallback
 
+    def idle_reset_seconds(self) -> float:
+        """当前空闲保活间隔（秒），0=关闭；随 config 消息下发给前端联动回退阈值。"""
+        return float(settings().stream.idle_reset_seconds)
+
     def peek_pending_bitrate(self, device_id: str) -> int | None:
         """查看待生效的码率切换（帧循环消费前可被 WS 层读到以通知客户端）。"""
         return self._pending_bitrate.get(device_id)

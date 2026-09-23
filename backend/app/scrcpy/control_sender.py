@@ -33,6 +33,7 @@ TYPE_EXPAND_NOTIFICATION_PANEL = 5
 TYPE_EXPAND_SETTINGS_PANEL = 6
 TYPE_COLLAPSE_PANELS = 7
 TYPE_SET_DISPLAY_POWER = 10
+TYPE_RESET_VIDEO = 17
 
 # ---------------------------------------------------------------------------
 # 触摸/按键动作
@@ -72,6 +73,11 @@ class ControlSender:
         """更新屏幕分辨率（屏幕旋转时调用）。"""
         self._resolution = resolution
         logger.info("control_resolution_updated", resolution=resolution)
+
+    async def reset_video(self) -> None:
+        """发送 RESET_VIDEO(type=17)：服务端复位视频管线，0.1-0.4s 内产出
+        新 IDR 并重发 SESSION/CONFIG 包（方案 19 实测）。"""
+        await self._send(struct.pack(">B", TYPE_RESET_VIDEO))
 
     async def touch(
         self,

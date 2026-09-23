@@ -20,6 +20,7 @@ mock 策略（沿用 test_encoder.py / test_stream_adaptive.py 风格）：
 
 import asyncio
 import struct
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -928,3 +929,76 @@ async def test_stop_swallows_terminate_errors():
         await encoder.stop()  # 不抛异常
 
     assert encoder.process is None
+
+
+# ---------------------------------------------------------------------------
+# RESET_VIDEO 与空闲保活（方案 19 实施项 1a）
+# ---------------------------------------------------------------------------
+
+async def test_reset_video_sends_type17():
+    from app.scrcpy.control_sender import ControlSender
+    writer = FakeWriter()
+    sender = ControlSender(writer, (1360, 768))
+    await sender.reset_video()
+    assert bytes(writer.written) == bytes([17])
+
+
+async def wait_until(pred, timeout: float = 1.5) -> bool:
+    """轮询等待 pred() 为真（默认 1.5s 超时；pred 为同步谓词）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        await asyncio.sleep(0.02)
+    return bool(pred())
+
+
+async def test_idle_keepalive_sends_reset_video(monkeypatch):
+    """静止超过 idle_reset_seconds 后经控制 socket 发出 type=17，收到帧后计时复位。"""
+    import types
+
+    fake = types.SimpleNamespace(stream=types.SimpleNamespace(
+        idle_reset_seconds=0.2, raw_stream_fallback=False))
+    monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
+
+    encoder = ScrcpyEncoder()
+    payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))  # 1 帧后视频流永久静默
+
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    received: list[bytes] = []
+
+    async def consume() -> None:
+        # 消费端始终挂起在 __anext__ 上（真实调用方 StreamService 即如此），
+        # yield 循环只有在等待下一帧时才空闲并检查静止时长
+        async for chunk in encoder.start(DEVICE_ID, EncoderOpts()):
+            received.append(chunk)
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        task = asyncio.create_task(consume())
+        try:
+            # ① 启动并消费首帧（session 包建立 _control_sender）
+            assert await wait_until(lambda: len(received) == 1)
+            # ② 静默 ≥ 0.2s → ③ 控制 writer 恰为一个 0x11：
+            #    只有「首帧后无数据」才触发（0.2s 阈值下 1.5s 内必达）
+            assert await wait_until(
+                lambda: bytes(conn.control_writer.written) == b"\x11")
+            # 收到新帧 → 计时复位：短暂静默不补发，再次静默超阈值才发第二个 0x11
+            conn.video_reader.feed_data(make_frame_header(0, len(payload)) + payload)
+            assert await wait_until(lambda: len(received) == 2)
+            await asyncio.sleep(0.05)
+            assert bytes(conn.control_writer.written) == b"\x11"
+            assert await wait_until(
+                lambda: bytes(conn.control_writer.written) == b"\x11\x11")
+        finally:
+            encoder._running = False  # 下一个 tick 退出取帧循环 → 消费任务自然结束
+            await task
+    assert harness.server_process.terminate_called

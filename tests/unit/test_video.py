@@ -5,7 +5,9 @@
 用 TestClient（隔离 app + dependency_overrides 注入 FakeStreamService）覆盖：
 
     - packet 模式：SPS/PPS 触发 config 下发、每 chunk 单 AU 发送、
-      同包多 NALU 合并、config 前 VCL 丢弃、config 后 SPS/PPS 不再入帧流；
+      同包多 NALU 合并、config 前 VCL 丢弃、config 后 SPS/PPS 不再入帧流、
+      编码参数变化（SPS/PPS 与已下发不同）重发 config、
+      config 透传 idle_reset_seconds（方案 19 实施项 1a）；
     - epoch 变化：解析器重置并重新下发 config（跨重启半截 NALU 丢弃）；
     - 兜底模式：aggregate_aus 聚帧、跨 chunk 悬空前缀 pending 合并、
       config 前 AU 丢弃；
@@ -137,6 +139,9 @@ class FakeStreamService:
 
     def use_packet_protocol(self) -> bool:
         return self.packet_mode
+
+    def idle_reset_seconds(self) -> float:
+        return 5.0
 
     def get_encoder(self, device_id: str) -> FakeEncoder | None:
         return self.encoder
@@ -288,6 +293,7 @@ def test_packet_mode_config_and_one_au_per_chunk(video_client):
             "width": 1080,
             "height": 1920,
             "description": (SPS_AVC + PPS_MAIN).hex(),
+            "idle_reset_seconds": 5.0,
         }
         assert recv_binary(session) == IDR_0   # chunk2 的包边界闭合 IDR_0
         assert recv_binary(session) == P_1     # chunk3 的包边界闭合 P_1
@@ -296,8 +302,9 @@ def test_packet_mode_config_and_one_au_per_chunk(video_client):
 
 
 def test_packet_mode_merges_nalus_and_intercepts_sps_pps(video_client):
-    """同包多 NALU 合并为单条消息；config 齐备后 SPS/PPS 仍被拦截、
-    不出现在二进制流中，也不再重复下发 config。"""
+    """同包多 NALU 合并为单条消息；config 齐备后 SPS/PPS 仍被拦截、不出现在
+    二进制流中；SPS/PPS 与已下发集合不同（编码参数变化）→ 重发 config
+    （方案 19 实施项 1a：SPS 变更先重发一条、PPS 变更再补一条完整组合）。"""
     svc = FakeStreamService(
         [
             SPS_AVC + PPS_MAIN + IDR_A,
@@ -310,11 +317,17 @@ def test_packet_mode_merges_nalus_and_intercepts_sps_pps(video_client):
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["codec"] == "avc1.42C01E"
         assert recv_binary(session) == IDR_A + IDR_B  # 多 slice 同包 → 单条消息
-        third = recv_binary(session)                  # 含 SPS+PPS 的包 → 只发 VCL
-        assert third == P_A
-        assert SPS_HIGH not in third
-        assert PPS_HIGH not in third
-        assert recv_binary(session) == IDR_C          # 无二次 config 插队
+        resent_sps = recv_json(session)               # SPS 变化 → 重发（PPS 仍旧值）
+        assert resent_sps["type"] == "config"
+        assert resent_sps["description"] == (SPS_HIGH + PPS_MAIN).hex()
+        resent_pps = recv_json(session)               # PPS 变化 → 再补发完整组合
+        assert resent_pps["type"] == "config"
+        assert resent_pps["description"] == (SPS_HIGH + PPS_HIGH).hex()
+        au = recv_binary(session)                     # 含 SPS+PPS 的包 → 只发 VCL
+        assert au == P_A
+        assert SPS_HIGH not in au
+        assert PPS_HIGH not in au
+        assert recv_binary(session) == IDR_C
 
 
 def test_packet_mode_config_sent_when_sps_arrives_last(video_client):
@@ -353,6 +366,26 @@ def test_packet_mode_drops_vcl_before_config(video_client):
         assert recv_json(session)["type"] == "config"
         assert recv_binary(session) == IDR_Y   # IDR_X 已被丢弃
         assert recv_binary(session) == IDR_Z
+
+
+def test_config_carries_idle_reset_and_sps_change_resends(video_client):
+    """config 含 idle_reset_seconds 字段（前端回退阈值联动，方案 19 实施项 1a）；
+    再次喂入不同 SPS + 帧 → 检测到编码参数变化，收到第二条 config。"""
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0, SPS_HIGH + IDR_A, P_1],
+        encoder=FakeEncoder(),
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        first = recv_json(session)
+        assert first["type"] == "config"
+        assert first["idle_reset_seconds"] == 5.0
+        # chunk2 的 SPS 与已下发不同 → 重发 config（SPS 先闭合、bytes IDR_0 随包尾发出）
+        second = recv_json(session)
+        assert second["type"] == "config"
+        assert second["codec"] == "avc1.640028"
+        assert second["description"] == (SPS_HIGH + PPS_MAIN).hex()
+        assert recv_binary(session) == IDR_0
+        assert recv_binary(session) == IDR_A
 
 
 # ---------------------------------------------------------------------------

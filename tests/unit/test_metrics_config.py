@@ -38,3 +38,21 @@ def test_base_yaml_has_metrics_section() -> None:
         "retention_days": 3,
         "max_rows_total": 500000,
     }
+
+
+# ---------------------------------------------------------------------------
+# stream 节：空闲保活配置（方案 19 实施项 1a）
+# ---------------------------------------------------------------------------
+
+def test_stream_idle_reset_seconds_default() -> None:
+    """StreamConfig.idle_reset_seconds 内置默认值 5.0 秒。"""
+    from config.settings import StreamConfig
+
+    assert StreamConfig().idle_reset_seconds == 5.0
+
+
+def test_base_yaml_stream_idle_reset() -> None:
+    """base.yaml 的 stream 节同步声明 idle_reset_seconds（与默认值一致，防漂移）。"""
+    section = load_yaml_config("base").get("stream", {})
+
+    assert section["idle_reset_seconds"] == 5.0

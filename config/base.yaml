@@ -27,6 +27,7 @@ stream:
   bit_rate: 4M
   codec: h264
   fps: 30
+  idle_reset_seconds: 5.0
 
 debug:
   log_buffer_size: 50000

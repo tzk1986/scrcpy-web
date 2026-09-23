@@ -149,6 +149,9 @@ async def video_stream(
                 nalu_type = parser.get_nalu_type(nalu)
 
                 if nalu_type == NALU_TYPE_SPS:
+                    if config_sent and sps_data != nalu:
+                        # 编码参数变化（卡死自愈/复位后重编）：重置标志以重发 config
+                        config_sent = False
                     sps_data = nalu
                     logger.info("sps_received", device=device_id, nalu_size=len(nalu))
                     if sps_data and pps_data and not config_sent:
@@ -157,6 +160,8 @@ async def video_stream(
                         logger.info("config_sent", device=device_id)
 
                 elif nalu_type == NALU_TYPE_PPS:
+                    if config_sent and pps_data != nalu:
+                        config_sent = False
                     pps_data = nalu
                     logger.info("pps_received", device=device_id, nalu_size=len(nalu))
                     if sps_data and pps_data and not config_sent:
@@ -276,6 +281,7 @@ async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes, stream_serv
         "width": width,
         "height": height,
         "description": (sps + pps).hex(),  # Annex B 格式的 SPS+PPS
+        "idle_reset_seconds": stream_service.idle_reset_seconds(),
     })
 
 

@@ -95,6 +95,8 @@ class StreamConfig(BaseSettings):
     # 视频流协议兜底开关：False（默认）走 12 字节包头协议（方案 17 实施项 1b）；
     # 真机验证失败时置 True 回退 raw_stream 裸流 + 启发式解析（实施项 1a/1a 尾步骤路径）
     raw_stream_fallback: bool = False
+    # 空闲保活（方案 19 实施项 1a）：静止无帧超过 N 秒经控制 socket 发 RESET_VIDEO；0=关闭
+    idle_reset_seconds: float = 5.0
 
 
 class DebugConfig(BaseSettings):

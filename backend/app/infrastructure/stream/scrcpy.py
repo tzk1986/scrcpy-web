@@ -38,6 +38,7 @@ scrcpy-server 视频编码器
 """
 
 import asyncio
+import time
 from typing import Any, AsyncIterator
 
 from app.core.config import settings
@@ -433,15 +434,21 @@ class ScrcpyEncoder:
         read_task = asyncio.create_task(read_socket())
 
         # 12. 从队列 yield 数据
+        idle_reset = float(settings().stream.idle_reset_seconds)
+        tick = min(2.0, idle_reset / 2) if idle_reset > 0 else 2.0
+        last_data_at = time.monotonic()
+        reset_sent_at: float | None = None
         try:
             while self._running:
                 try:
                     data = await asyncio.wait_for(
-                        self._data_queue.get(), timeout=2.0
+                        self._data_queue.get(), timeout=tick
                     )
                     if data is None:
                         logger.info("queue_sentinel_received", device=device_id)
                         break
+                    last_data_at = time.monotonic()
+                    reset_sent_at = None
                     yield data
                 except asyncio.TimeoutError:
                     if self.process and self.process.returncode is not None:
@@ -449,6 +456,20 @@ class ScrcpyEncoder:
                                     device=device_id,
                                     returncode=self.process.returncode)
                         break
+                    if idle_reset <= 0 or self._control_sender is None:
+                        continue
+                    now = time.monotonic()
+                    if reset_sent_at is None:
+                        if now - last_data_at >= idle_reset:
+                            reset_sent_at = now
+                            try:
+                                await self._control_sender.reset_video()
+                                logger.info("idle_reset_video_sent",
+                                            device=device_id,
+                                            idle_s=round(now - last_data_at, 1))
+                            except Exception as e:
+                                logger.warning("idle_reset_video_failed",
+                                               device=device_id, error=str(e))
                     continue
         except Exception as e:
             logger.error("stream_error", device=device_id, error=str(e))
