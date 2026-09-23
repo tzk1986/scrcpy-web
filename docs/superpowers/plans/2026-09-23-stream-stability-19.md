@@ -888,7 +888,7 @@ EOF
 
 **Interfaces:**
 - Consumes: 既有 `connect/send/close` API（对外签名不变）
-- Produces: `setReconnectHandler(handler: () => void)`；重连成功后自动重跑 `connect()` 并回调 handler（新连接服务端会重发 config，h264 解码链路凭既有 config 分支自愈，无需额外接线）。
+- Produces: `setReconnectHandler(handler: () => void)`；重连成功后自动重跑 `connect()` 并回调 handler。**终审修正**：原文「无需额外接线」不成立——必须在 `h264VideoStream.start()` 中调用 `ws.setReconnectHandler(() => this.resume())` 接线 resume：服务端新会话虽会重发 config，但前端若停在 suspend（截图回退）态，config 只暂存不重建解码器，须由 resume 退出探测态并发送 request_keyframe（resume 自带 `_suspended` 守卫，非挂起时为空操作），否则空闲设备 WS 瞬断后会永久降级为只读截图模式。
 
 - [ ] **Step 1: 写失败测试**
 

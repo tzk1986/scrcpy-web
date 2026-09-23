@@ -42,7 +42,7 @@
 | 步骤 | 操作 | 期望 |
 |------|------|------|
 | 3a | `adb -s 192.168.8.25:5555 shell`：`/proc/*/cmdline` 匹配 scid 找 scrcpy-server PID | 单会话互不干扰 |
-| 3b | `/proc/PID/task` 逐个 `kill -STOP` 编码线程 | ≤2×idle_reset（≈10s）内出现 `encoder_stalled` → `stall_restart_encoder` → 新 IDR 恢复出图 |
+| 3b | `/proc/PID/task` 逐个 `kill -STOP` 编码线程 | ≤2×idle_reset + 2×tick（≈12s，最坏 = 2s tick 相位差 + 5s RESET 等待 + 5s RESET 后探针等待；RESET→IDR 本身 0.1-0.4s 另计）内出现 `encoder_stalled` → `stall_restart_encoder` → 新 IDR 恢复出图 |
 | 3c | 60s 内 4 连停（防风暴验证） | 第 4 次不再自愈：上抛 error 走回退链（前端截图模式/重连，无死循环） |
 | 3d | `kill -CONT` 恢复线程 | 自愈后再注入可复现（非必需） |
 
@@ -60,15 +60,24 @@
 | 5a | 连接 `192.168.8.18:5555` 观察 10 分钟 | 0.4fps 故障型设备：探针判卡死 → `stall_restart_encoder` → 仍无数据 → error → 截图回退（已知行为）；无死循环 |
 | 5b | 后端日志 | 卡死重启触发与 60s 防风暴计数正常（无风暴刷屏） |
 
+## 6. WS 瞬断恢复（终审补充，重连接线验收）
+
+| 步骤 | 操作 | 期望 |
+|------|------|------|
+| 6a | 空闲设备（保持静止）连接后断开网络（拔网线/关 WiFi/杀后端进程均可） | 前端回退截图模式（suspend），不闪现「正在连接」 |
+| 6b | 恢复网络，等 WS 指数退避重连（1s/2s/4s…） | 重连成功后自动回切 H264 推送：前端 resume + request_keyframe，≤2s 出图；**空闲设备不永久停留在截图模式**（终审修复点） |
+| 6c | 后端日志 | 重连时段出现 `stream_active_waiting_cleanup`（旧流收尾等待，最多 3×1s）后新流正常启动；无重连期 `stream_already_active` 拒绝 |
+
 ## 验收记录表（实测输出落盘区，待执行时填写）
 
 | # | 标准 | 期望 | 实测 | 结论 |
 |---|------|------|------|------|
 | 1 | 静止 10 分钟 | 无回退、无「正在连接」、帧冻结 | — | ⬜ |
 | 2 | 回切 | request_keyframe 后 ≤2s 出图 | — | ⬜ |
-| 3 | 卡死注入 | ≤2×idle_reset 自动重启恢复；60s 4 连停触发 error 回退 | — | ⬜ |
+| 3 | 卡死注入 | ≤≈12s（2×idle_reset + 2×tick）自动重启恢复；60s 4 连停触发 error 回退 | — | ⬜ |
 | 4 | 带宽 | 静止期 ≤100kbps | — | ⬜ |
 | 5 | .18 回归 | 卡死→重启→error→截图回退链无死循环 | — | ⬜ |
+| 6 | WS 瞬断恢复 | 重连 + resume + request_keyframe 自动回切 H264 推送；空闲设备不永久降级截图 | — | ⬜ |
 
 **结论**：待执行。全部达标后，将 `方案/19-推流连接稳定性优化.md` 状态行改为
 「已验证通过（YYYY-MM-DD）」并回写 `方案/进度追踪.md` 第二十八次更新。
