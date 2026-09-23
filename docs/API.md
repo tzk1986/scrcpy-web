@@ -506,9 +506,10 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 
 | 消息 | 载荷 | 说明 |
 |------|------|------|
-| `config`（JSON 文本） | `{"type": "config", "codec": "avc1.42E01E", "width": 1080, "height": 1920, "description": "<hex>"}` | `codec` 由 SPS 的 profile/constraint/level 动态提取；`description` 为 SPS+PPS 的 Annex B 字节（hex 编码，客户端转 AVCC 后创建 `VideoDecoder`）；自适应码率重启后会再次下发，客户端应重建解码器 |
+| `config`（JSON 文本） | `{"type": "config", "codec": "avc1.42E01E", "width": 1080, "height": 1920, "description": "<hex>", "idle_reset_seconds": 5.0}` | `codec` 由 SPS 的 profile/constraint/level 动态提取；`description` 为 SPS+PPS 的 Annex B 字节（hex 编码，客户端转 AVCC 后创建 `VideoDecoder`）；`idle_reset_seconds` 为后端空闲保活（RESET_VIDEO）间隔秒，0=关闭（客户端按此联动回退阈值，见下）；自适应码率重启后会再次下发，客户端应重建解码器 |
 | 视频帧（二进制） | H.264 Annex B Access Unit 字节串（含起始码） | 一条二进制消息 = 一个 AU（详见附录 A.4） |
 | `restarting`（JSON 文本） | `{"type": "restarting", "bit_rate": 2000000}` | 编码器即将按新码率重启的预告（1–3s 黑屏属预期）；客户端应暂停回退 watchdog 并停止上报 stats。仅当客户端发送输入消息时检查并附带下发 |
+| `stream_ended`（JSON 文本） | `{"type": "stream_ended"}` | 流正常结束通知（方案 19 实施项 5）：客户端应立即走回退，不再等待 watchdog 超时 |
 | `error`（JSON 文本） | `{"type": "error", "message": "..."}` | 流处理异常时尽力发送，随后连接结束 |
 
 #### 客户端 → 服务端
@@ -531,6 +532,15 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 
 - `op == "stats"` 时读取 `fps`（float，非法值按 0 处理），喂给码率决策器；决策器触发档位切换时，服务端在后续输入消息处理后下发 `restarting`
 - 未被识别的 `action` 走 `adb shell input` 回退路径
+
+关键帧请求（resume 回切前发送，方案 19 实施项 3）：
+
+```json
+{ "op": "request_keyframe" }
+```
+
+- `op == "request_keyframe"` 时服务端经 RESET_VIDEO 立即请求新 IDR（真机实测 0.1–0.4s 出帧）；后端最小间隔 1s 防抖，冷却期内的请求被忽略
+- 回退阈值联动：`config.idle_reset_seconds > 0` 时前端取 STALL=2×间隔、NO_STREAM=+2s、HARD_TIMEOUT=+5s；缺字段或 0 时回落默认 3000/8000/15000ms
 
 已知行为限制（见第四节）：同一设备同一时间只支持一条视频流；后加入的连接会收到空流并被关闭；任一端断开都会调用 `stop_stream`，可能中断其他观看者。
 

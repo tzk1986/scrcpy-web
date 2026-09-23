@@ -18,6 +18,7 @@
         - 错误：JSON {"type": "error", "message": "..."}
         - 码率切换预告：JSON {"type": "restarting", "bit_rate": 2000000}
           （编码器即将重启，客户端应暂停回退 watchdog 宽限若干秒）
+        - 流结束：JSON {"type": "stream_ended"}
     客户端 → 服务端：JSON 消息
         { "action": "touch", "x": 100, "y": 200 }
         { "action": "swipe", "x1": 100, "y1": 200, "x2": 300, "y2": 400, "duration": 300 }
