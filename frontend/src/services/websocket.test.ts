@@ -36,6 +36,15 @@ class FakeWebSocket {
     this.closed = true
     this.readyState = FakeWebSocket.CLOSED
   }
+  simulateOpen() {
+    this.readyState = FakeWebSocket.OPEN
+    this.onopen?.(new Event('open'))
+  }
+  simulateClose() {
+    this.closed = true
+    this.readyState = FakeWebSocket.CLOSED
+    this.onclose?.()
+  }
 }
 
 function latest(): FakeWebSocket {
@@ -55,6 +64,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -160,6 +170,7 @@ describe('消息分发', () => {
   })
 
   it('close 事件转交 close handler', () => {
+    vi.useFakeTimers()
     const svc = new WebSocketService('ws://host/ws/video/dev1')
     const onClose = vi.fn()
     svc.setCloseHandler(onClose)
@@ -172,6 +183,7 @@ describe('消息分发', () => {
   })
 
   it('未注册 close handler 时关闭被吞掉', () => {
+    vi.useFakeTimers()
     const svc = new WebSocketService('ws://host/ws/video/dev1')
     svc.connect()
     expect(() => latest().onclose!()).not.toThrow()
@@ -268,5 +280,84 @@ describe('close', () => {
   it('未连接时 close 不抛异常', () => {
     const svc = new WebSocketService('ws://host/ws/video/dev1')
     expect(() => svc.close()).not.toThrow()
+  })
+})
+
+describe('自动重连（指数退避）', () => {
+  it('非手动关闭后按 1s/2s/4s 指数退避重连', () => {
+    vi.useFakeTimers()
+    const svc = new WebSocketService('ws://x')
+    svc.connect()
+    const first = FakeWebSocket.instances[0]
+    first.simulateClose()
+    expect(FakeWebSocket.instances.length).toBe(1)   // 断连瞬间不立即重连
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.instances.length).toBe(2)   // 第 1 次：1s 后
+    FakeWebSocket.instances[1].simulateClose()
+    vi.advanceTimersByTime(2000)
+    expect(FakeWebSocket.instances.length).toBe(3)   // 第 2 次：2s 后
+    FakeWebSocket.instances[2].simulateClose()
+    vi.advanceTimersByTime(4000)
+    expect(FakeWebSocket.instances.length).toBe(4)   // 第 3 次：4s 后
+    expect(logSpy).toHaveBeenCalledWith('[WS] Reconnect scheduled in 4000ms (attempt 3)')
+  })
+
+  it('退避延迟 30s 封顶（attempts=5 时 2^5*1000=32000 → 30000）', () => {
+    vi.useFakeTimers()
+    const svc = new WebSocketService('ws://x')
+    svc.connect()
+    for (let i = 0; i < 6; i++) {
+      latest().simulateClose()
+      vi.advanceTimersByTime(30000)
+    }
+    expect(FakeWebSocket.instances.length).toBe(7)   // 每次排程延迟均 ≤ 30000，全部触发
+    expect(logSpy).toHaveBeenCalledWith('[WS] Reconnect scheduled in 30000ms (attempt 6)')
+  })
+
+  it('onopen 重置退避计数：重连成功后再次断开，延迟回到 1000ms', () => {
+    vi.useFakeTimers()
+    const svc = new WebSocketService('ws://x')
+    svc.connect()
+    latest().simulateClose()
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.instances.length).toBe(2)
+    latest().simulateOpen()   // 重连成功 → 计数归零
+    latest().simulateClose()
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.instances.length).toBe(3)   // 若未重置，此处仍为 2
+  })
+
+  it('手动 close() 后不再重连（onclose 触发也不排程）', () => {
+    vi.useFakeTimers()
+    const svc = new WebSocketService('ws://x')
+    svc.connect()
+    const ws = latest()
+    svc.close()
+    ws.simulateClose()   // 底层 onclose 仍触发，但 manualClose=true
+    vi.advanceTimersByTime(60000)
+    expect(FakeWebSocket.instances.length).toBe(1)
+  })
+
+  it('close() 清除已排程的重连定时器', () => {
+    vi.useFakeTimers()
+    const svc = new WebSocketService('ws://x')
+    svc.connect()
+    latest().simulateClose()
+    svc.close()
+    vi.advanceTimersByTime(60000)
+    expect(FakeWebSocket.instances.length).toBe(1)
+  })
+
+  it('重连定时器触发后回调 setReconnectHandler 注册的 handler', () => {
+    vi.useFakeTimers()
+    const svc = new WebSocketService('ws://x')
+    const onReconnect = vi.fn()
+    svc.setReconnectHandler(onReconnect)
+    svc.connect()
+    latest().simulateClose()
+    expect(onReconnect).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.instances.length).toBe(2)
+    expect(onReconnect).toHaveBeenCalledTimes(1)
   })
 })

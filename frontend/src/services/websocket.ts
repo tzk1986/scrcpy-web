@@ -3,7 +3,7 @@
  * ================
  *
  * 封装浏览器原生 WebSocket API，提供：
- *   - 自动重连（未来实现）
+ *   - 自动重连（指数退避，1s/2s/4s…30s 封顶）
  *   - 消息回调注册
  *   - 二进制数据发送/接收
  *   - 连接状态管理
@@ -24,6 +24,10 @@ export class WebSocketService {
   private onMessage: ((data: unknown) => void) | null = null
   private onError: ((error: Event) => void) | null = null
   private onClose: (() => void) | null = null
+  private reconnectAttempts = 0
+  private manualClose = false
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private onReconnect: (() => void) | null = null
 
   constructor(url: string) {
     this.url = url
@@ -40,6 +44,7 @@ export class WebSocketService {
     this.ws.binaryType = 'arraybuffer'
 
     this.ws.onopen = () => {
+      this.reconnectAttempts = 0
       console.log('[WS] Connected:', this.url, 'binaryType:', this.ws?.binaryType)
     }
 
@@ -65,6 +70,9 @@ export class WebSocketService {
       console.log('[WS] Closed:', this.url)
       if (this.onClose) {
         this.onClose()
+      }
+      if (!this.manualClose) {
+        this.scheduleReconnect()
       }
     }
   }
@@ -112,8 +120,29 @@ export class WebSocketService {
     this.onClose = handler
   }
 
+  /** 注册重连成功回调（重连走同一 connect 流程后触发） */
+  setReconnectHandler(handler: () => void) {
+    this.onReconnect = handler
+  }
+
+  private scheduleReconnect() {
+    const delay = Math.min(30000, 1000 * 2 ** this.reconnectAttempts)
+    this.reconnectAttempts += 1
+    console.log(`[WS] Reconnect scheduled in ${delay}ms (attempt ${this.reconnectAttempts})`)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      this.connect()
+      this.onReconnect?.()
+    }, delay)
+  }
+
   /** 关闭连接。 */
   close() {
+    this.manualClose = true
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     if (this.ws) {
       this.ws.close()
       this.ws = null
