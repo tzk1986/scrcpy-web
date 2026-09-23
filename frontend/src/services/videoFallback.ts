@@ -116,8 +116,14 @@ export function evaluateH264Fallback(
     return { fallback: true, reason: 'stalled' }
   }
 
-  // 硬兜底
-  if (now - startedAt >= thresholds.HARD_TIMEOUT_MS) {
+  // 硬兜底：仍未出画面（configuring 挂起 / streaming 异常从未出帧）。
+  // 出过帧后的冻结与卡死已由 stalled 分支全面覆盖（STALL_MS <
+  // HARD_TIMEOUT_MS 恒成立），健康流不受 HARD 时钟约束——此前无条件
+  // 触发导致健康流 17s 后必回退的呼吸循环（方案 20）
+  if (
+    (state !== 'streaming' || lastFrameTime === 0) &&
+    now - startedAt >= thresholds.HARD_TIMEOUT_MS
+  ) {
     return { fallback: true, reason: 'timeout' }
   }
 

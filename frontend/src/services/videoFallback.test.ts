@@ -67,6 +67,38 @@ describe('evaluateH264Fallback', () => {
     expect(r.reason).toBe('stalled')
   })
 
+  it('健康流：streaming 帧持续到达，即使超 HARD 也不回退（方案 20 呼吸循环修复）', () => {
+    // 缺陷场景：h264StartedAt 起 17s 后健康流被无条件 timeout 回退，
+    // 回切重置时钟形成 ~35s 呼吸循环（方案 19 真机验收 1a）
+    const r = evaluateH264Fallback({
+      ...base(), state: 'streaming',
+      frameCount: 500, lastFrameTime: T.HARD_TIMEOUT_MS * 3,
+      now: T.HARD_TIMEOUT_MS * 3 + 100,
+    })
+    expect(r.fallback).toBe(false)
+    expect(r.reason).toBeNull()
+  })
+
+  it('streaming 帧冻结且已超 HARD → stalled 优先于 timeout', () => {
+    const r = evaluateH264Fallback({
+      ...base(), state: 'streaming',
+      frameCount: 100, lastFrameTime: 5000, now: T.HARD_TIMEOUT_MS + 1000,
+    })
+    expect(r.fallback).toBe(true)
+    expect(r.reason).toBe('stalled')
+  })
+
+  it('联动阈值下健康流同样不受 HARD 约束（keepalive=5000）', () => {
+    const t = computeFallbackThresholds(5000)
+    const r = evaluateH264Fallback({
+      ...base(), state: 'streaming',
+      frameCount: 300, lastFrameTime: t.HARD_TIMEOUT_MS * 2,
+      now: t.HARD_TIMEOUT_MS * 2 + 100,
+    }, t)
+    expect(r.fallback).toBe(false)
+    expect(r.reason).toBeNull()
+  })
+
   it('streaming 但 lastFrameTime 从未更新（异常）→ 走超时兜底', () => {
     const r = evaluateH264Fallback({
       ...base(), state: 'streaming',
