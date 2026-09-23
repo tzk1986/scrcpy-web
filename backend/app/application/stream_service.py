@@ -249,6 +249,9 @@ class StreamService:
             self._pending_bitrate.pop(device_id, None)
             if self._restart_events.get(device_id) is restart_event:
                 self._restart_events.pop(device_id, None)
+            # 以下数据型 dict 无条件 pop：新会话写入自愈（epoch 极端下
+            # 新流首次重启后可能被旧 finally 归零、WS 层据此跳过一次
+            # parser reset，仅 double-fault 窗口内一次瞬时解码毛刺，可接受）。
             self._epoch.pop(device_id, None)
             self._stall_restarts.pop(device_id, None)
             self._last_keyframe_at.pop(device_id, None)
