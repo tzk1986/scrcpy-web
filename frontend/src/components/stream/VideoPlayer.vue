@@ -100,6 +100,7 @@ import { WebSocketService } from '@/services/websocket'
 import { VideoStream, type VideoStreamState } from '@/services/videoStream'
 import { H264VideoStream, type H264StreamOptions, type H264StreamState } from '@/services/h264VideoStream'
 import {
+  computeFallbackThresholds,
   evaluateH264Fallback,
   evaluateH264Recovery,
   RECOVERY_THRESHOLDS,
@@ -209,7 +210,7 @@ function checkH264Fallback() {
     lastFrameTime: s.lastFrameTime,
     startedAt: h264StartedAt,
     now: Date.now(),
-  })
+  }, computeFallbackThresholds(h264Stream.keepaliveIntervalMs))
   if (!r.fallback) return
   h264FallbackDone = true
   console.warn('[VideoPlayer] H264 fallback triggered:', r.reason,

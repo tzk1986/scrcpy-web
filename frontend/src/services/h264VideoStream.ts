@@ -87,6 +87,8 @@ export class H264VideoStream {
   private _lastAvccDesc: ArrayBuffer | null = null
   private _lastWidth = 0
   private _lastHeight = 0
+  // 后端 RESET_VIDEO 保活间隔（config.idle_reset_seconds×1000，0 表示关闭/未知）
+  private _keepaliveMs = 0
   // 解码硬件加速偏好（实验开关，方案 17 实施项 4）
   private _hardwareAcceleration?: HardwareAcceleration
 
@@ -128,6 +130,11 @@ export class H264VideoStream {
   /** 码率重启宽限截止时间戳（ms）。未处于宽限期为 0。 */
   get restartGraceUntil(): number {
     return this._restartGraceUntil
+  }
+
+  /** 后端 RESET_VIDEO 保活间隔（ms），0 表示未知/关闭（供回退阈值联动） */
+  get keepaliveIntervalMs(): number {
+    return this._keepaliveMs
   }
 
   /** 是否处于 suspend（截图回退探测）状态 */
@@ -359,6 +366,7 @@ export class H264VideoStream {
       this._lastAvccDesc = avccDescription
       this._lastWidth = width
       this._lastHeight = height
+      this._keepaliveMs = Number(msg.idle_reset_seconds ?? 0) * 1000
 
       if (this._suspended) {
         console.log('[H264] Config stored while suspended, decoder init deferred')

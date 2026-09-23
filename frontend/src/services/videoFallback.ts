@@ -42,6 +42,28 @@ export const FALLBACK_THRESHOLDS = {
   HARD_TIMEOUT_MS: 15000,  // 硬性兜底
 }
 
+export interface FallbackThresholds {
+  STALL_MS: number
+  NO_STREAM_MS: number
+  HARD_TIMEOUT_MS: number
+}
+
+/**
+ * 与后端空闲保活联动的回退阈值（方案 19 实施项 2a）。
+ * keepaliveMs 为后端 RESET_VIDEO 保活间隔（config.idle_reset_seconds×1000）；
+ * 静止设备在保活下仍有周期性 IDR，STALL 取 2× 间隔，再叠加
+ * 2s/5s 余量保证 NO_STREAM < HARD 单调。keepaliveMs=0（保活关闭）回默认。
+ */
+export function computeFallbackThresholds(keepaliveMs: number): FallbackThresholds {
+  const STALL_MS = Math.max(3000, keepaliveMs * 2)
+  const NO_STREAM_MS = Math.max(8000, STALL_MS + 2000)
+  const HARD_TIMEOUT_MS = Math.max(15000, NO_STREAM_MS + 5000)
+  if (keepaliveMs <= 0) {
+    return { STALL_MS: 3000, NO_STREAM_MS: 8000, HARD_TIMEOUT_MS: 15000 }
+  }
+  return { STALL_MS, NO_STREAM_MS, HARD_TIMEOUT_MS }
+}
+
 const NO_FALLBACK: FallbackResult = { fallback: false, reason: null }
 
 /**
@@ -80,24 +102,27 @@ export function evaluateH264Recovery(samples: RecoverySample[], now: number): bo
   return recent.every(s => s.frames >= RECOVERY_THRESHOLDS.MIN_FRAMES)
 }
 
-export function evaluateH264Fallback(input: FallbackInput): FallbackResult {
+export function evaluateH264Fallback(
+  input: FallbackInput,
+  thresholds: FallbackThresholds = FALLBACK_THRESHOLDS,
+): FallbackResult {
   const { state, lastFrameTime, startedAt, now } = input
 
   if (state === 'error') return { fallback: true, reason: 'error' }
   if (state === 'stopped' || state === 'idle') return NO_FALLBACK
 
   // 收到过帧后码流冻结：不论 configuring 还是 streaming 都应回退
-  if (lastFrameTime > 0 && now - lastFrameTime >= FALLBACK_THRESHOLDS.STALL_MS) {
+  if (lastFrameTime > 0 && now - lastFrameTime >= thresholds.STALL_MS) {
     return { fallback: true, reason: 'stalled' }
   }
 
   // 硬兜底
-  if (now - startedAt >= FALLBACK_THRESHOLDS.HARD_TIMEOUT_MS) {
+  if (now - startedAt >= thresholds.HARD_TIMEOUT_MS) {
     return { fallback: true, reason: 'timeout' }
   }
 
   // 始终未出画面
-  if (state !== 'streaming' && now - startedAt >= FALLBACK_THRESHOLDS.NO_STREAM_MS) {
+  if (state !== 'streaming' && now - startedAt >= thresholds.NO_STREAM_MS) {
     return { fallback: true, reason: 'no-stream' }
   }
 

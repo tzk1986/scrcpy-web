@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  computeFallbackThresholds,
   evaluateH264Fallback,
   evaluateH264Recovery,
   FALLBACK_THRESHOLDS,
@@ -90,6 +91,34 @@ describe('evaluateH264Fallback', () => {
   it('阈值配置：STALL 最短、HARD 最长', () => {
     expect(T.STALL_MS).toBeLessThan(T.NO_STREAM_MS)
     expect(T.NO_STREAM_MS).toBeLessThan(T.HARD_TIMEOUT_MS)
+  })
+})
+
+describe('computeFallbackThresholds', () => {
+  it('keepalive=0 时返回默认阈值', () => {
+    expect(computeFallbackThresholds(0)).toEqual({
+      STALL_MS: 3000, NO_STREAM_MS: 8000, HARD_TIMEOUT_MS: 15000,
+    })
+  })
+  it('keepalive=5000 → 10000/12000/17000', () => {
+    expect(computeFallbackThresholds(5000)).toEqual({
+      STALL_MS: 10000, NO_STREAM_MS: 12000, HARD_TIMEOUT_MS: 17000,
+    })
+  })
+  it('小 keepalive 不低于默认下限', () => {
+    expect(computeFallbackThresholds(1000)).toEqual(FALLBACK_THRESHOLDS)
+  })
+})
+
+describe('evaluateH264Fallback 自定义阈值', () => {
+  it('静止设备在抬升的 stall 阈值下不误判', () => {
+    const base = {
+      state: 'streaming' as const, frameCount: 10, lastFrameTime: 0,
+      startedAt: 0, now: 5000,
+    }
+    expect(evaluateH264Fallback({ ...base, lastFrameTime: 1000 }).fallback).toBe(true)
+    const t = computeFallbackThresholds(5000)
+    expect(evaluateH264Fallback({ ...base, lastFrameTime: 1000 }, t).fallback).toBe(false)
   })
 })
 

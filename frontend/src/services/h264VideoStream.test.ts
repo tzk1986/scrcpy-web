@@ -193,6 +193,7 @@ describe('生命周期与 getter', () => {
     })
     expect(stream.suspended).toBe(false)
     expect(stream.restartGraceUntil).toBe(0)
+    expect(stream.keepaliveIntervalMs).toBe(0)
     expect(stream.probeStats).toEqual({ frameCount: 0, lastFrameTime: 0 })
   })
 
@@ -350,6 +351,30 @@ describe('config 消息处理', () => {
     expect(stream.stats.width).toBe(0)
     expect(FakeVideoDecoder.instances).toHaveLength(1)
     expect(stream.state).toBe('configuring')
+  })
+
+  it('config 携带 idle_reset_seconds 时解析保活间隔（ms）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    ws.handler!(JSON.stringify({
+      type: 'config', codec: 'avc1.42E01E', width: 640, height: 480,
+      description: '000000016742e01e890000000168ce3880',
+      idle_reset_seconds: 5,
+    }))
+
+    expect(stream.keepaliveIntervalMs).toBe(5000)
+    stream.stop()
+  })
+
+  it('config 缺 idle_reset_seconds（旧后端）时保活间隔为 0', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+
+    expect(stream.keepaliveIntervalMs).toBe(0)
+    stream.stop()
   })
 
   it('configure 后状态非 configured 时进入 error', () => {
@@ -648,6 +673,22 @@ describe('suspend / resume 探测模式', () => {
     expect(rebuilt.config?.codec).toBe('avc1.640028')
     expect(stream.stats.width).toBe(1280)
     expect(stream.stats.height).toBe(720)
+  })
+
+  it('suspend 期间新 config 同样更新保活间隔', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+    stream.suspend()
+
+    ws.handler!(JSON.stringify({
+      type: 'config', codec: 'avc1.42E01E', width: 640, height: 480,
+      description: '000000016742e01e890000000168ce3880',
+      idle_reset_seconds: 5,
+    }))
+
+    expect(stream.keepaliveIntervalMs).toBe(5000)
+    stream.stop()
   })
 
   it('resume 无历史 config 时不建解码器', () => {
