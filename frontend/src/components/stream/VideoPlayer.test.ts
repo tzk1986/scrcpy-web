@@ -430,3 +430,67 @@ describe('VideoPlayer H264 状态机与回退', () => {
     expect(h.MockWebSocketService.instances[0].close).toHaveBeenCalled()
   })
 })
+
+describe('VideoPlayer 状态提示治理（方案 19 实施项 4）', () => {
+  it('回退截图模式不闪现「正在连接」且不显示覆盖层', async () => {
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    const onState = h264.setStateChangeHandler.mock.calls[0][0]
+
+    // 先进 streaming，置位 hasStreamedOnce
+    onState('streaming')
+    await nextTick()
+
+    // 解码错误 → 回退截图模式（见既有回退用例装配）
+    h264.stats.state = 'error'
+    h264.stats.error = 'decoder crashed'
+    onState('error')
+    await nextTick()
+    expect(h264.suspend).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('模式: screenshot')
+    expect(wrapper.text()).toContain('截图模式')
+
+    // 截图态不应有任何覆盖层，也不闪现「正在连接」或恢复角标
+    expect(wrapper.text()).not.toContain('正在连接')
+    expect(wrapper.text()).not.toContain('正在恢复画面')
+    expect(wrapper.find('.status-overlay').exists()).toBe(false)
+    expect(wrapper.find('.recovering-tip').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('已出过画面后回切 configuring 显示「正在恢复画面…」角标', async () => {
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    const onState = h264.setStateChangeHandler.mock.calls[0][0]
+
+    onState('streaming')
+    await nextTick()
+    expect(wrapper.find('.status-overlay').exists()).toBe(false)
+
+    // 恢复期回切 configuring（码率重启/回切重挂），冻结帧保留 + 角标提示
+    onState('configuring')
+    await nextTick()
+    expect(wrapper.find('.recovering-tip').exists()).toBe(true)
+    expect(wrapper.find('.recovering-tip').text()).toContain('正在恢复画面…')
+    expect(wrapper.text()).not.toContain('正在连接')
+    expect(wrapper.find('.status-overlay').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('首次连接未出过画面时显示「正在连接...」', async () => {
+    const wrapper = await mountPlayer()
+    // idle：初始挂载即为首次连接，显示全屏「正在连接...」
+    expect(wrapper.find('.status-overlay').exists()).toBe(true)
+    expect(wrapper.find('.status-text').text()).toContain('正在连接...')
+    expect(wrapper.find('.recovering-tip').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('正在恢复画面')
+
+    // configuring：尚未出过画面，同样保持「正在连接...」
+    const h264 = h.MockH264Stream.instances[0]
+    h264.setStateChangeHandler.mock.calls[0][0]('configuring')
+    await nextTick()
+    expect(wrapper.find('.status-text').text()).toContain('正在连接...')
+    expect(wrapper.find('.recovering-tip').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})

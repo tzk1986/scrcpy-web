@@ -44,8 +44,11 @@
         @contextmenu.prevent
       ></canvas>
 
-      <!-- 状态覆盖层 -->
-      <div v-if="state !== 'streaming'" class="status-overlay">
+      <!-- 状态覆盖层（首次连接期显示；截图态与恢复期不显示，保留画面可见） -->
+      <div
+        v-if="state !== 'streaming' && state !== 'screenshot' && !recoveringBadge"
+        class="status-overlay"
+      >
         <div v-if="state === 'idle' || state === 'configuring'" class="status-text">正在连接...</div>
         <div v-if="state === 'error'" class="status-text error">
           连接错误: {{ error }}
@@ -53,6 +56,9 @@
         </div>
         <div v-if="state === 'stopped'" class="status-text">已断开</div>
       </div>
+
+      <!-- 恢复角标：已出过画面后的空闲/配置期，保留下层冻结帧可见，仅右上角小字提示 -->
+      <div v-if="recoveringBadge" class="recovering-tip">正在恢复画面…</div>
 
       <!-- 截图模式只读提示徽标 -->
       <div v-if="mode === 'screenshot' && state === 'streaming'" class="readonly-badge">
@@ -95,7 +101,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { WebSocketService } from '@/services/websocket'
 import { VideoStream, type VideoStreamState } from '@/services/videoStream'
 import { H264VideoStream, type H264StreamOptions, type H264StreamState } from '@/services/h264VideoStream'
@@ -117,7 +123,9 @@ const props = defineProps<{
 const containerRef = ref<HTMLElement>()
 const canvasRef = ref<HTMLCanvasElement>()
 
-const state = ref<VideoStreamState | H264StreamState>('idle')
+const state = ref<VideoStreamState | H264StreamState | 'screenshot'>('idle')
+/** 是否已进入过 streaming（首次连接用全屏提示，此后恢复期改用角标） */
+const hasStreamedOnce = ref(false)
 const fps = ref(0)
 const frameCount = ref(0)
 const droppedFrames = ref(0)
@@ -129,10 +137,22 @@ const stateLabel = computed(() => {
     case 'idle': return '连接中'
     case 'configuring': return '配置中'
     case 'streaming': return '直播中'
+    case 'screenshot': return '截图模式'
     case 'error': return '错误'
     case 'stopped': return '已停止'
     default: return '未知'
   }
+})
+
+/** 恢复角标：已出过画面后又回到 idle/configuring（回切/重连的恢复期） */
+const recoveringBadge = computed(
+  () => hasStreamedOnce.value && (state.value === 'idle' || state.value === 'configuring'),
+)
+
+// state 的一切流转都汇于此处（h264 与截图两条链路的 onStateChange 均赋值 state），
+// 首次进入 streaming 即置位 hasStreamedOnce；重复置位幂等。
+watch(state, (s) => {
+  if (s === 'streaming') hasStreamedOnce.value = true
 })
 
 let ws: WebSocketService | null = null
@@ -298,7 +318,8 @@ function onVisibilityChange() {
 function startScreenshotMode() {
   console.log('[VideoPlayer] Starting screenshot fallback mode')
   mode.value = 'screenshot'
-  state.value = 'idle'
+  // 独立 'screenshot' 状态：覆盖层条件不含它，回退过程不闪现「正在连接」
+  state.value = 'screenshot'
   videoStream = new VideoStream(props.deviceId, canvasRef.value!, ws!)
 
   videoStream.setStateChangeHandler((newState) => {
@@ -504,6 +525,20 @@ async function reconnect() {
 
 .status-text.error {
   color: #f56c6c;
+}
+
+/* 恢复角标（方案 19 实施项 4）：右上角半透明小字，不遮挡冻结帧、不拦截输入 */
+.recovering-tip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+  z-index: 10;
+  pointer-events: none;
 }
 
 .readonly-badge {
