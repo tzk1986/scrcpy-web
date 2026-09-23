@@ -383,6 +383,9 @@ export class H264VideoStream {
       // 暂停回退 watchdog 与 stats 上报（重启后 config 会再次到达并重建解码器）
       this._restartGraceUntil = Date.now() + 15_000
       console.log('[H264] Stream restarting for bitrate switch, grace until', this._restartGraceUntil)
+    } else if (type === 'stream_ended') {
+      // 后端编码器/流已结束：立即报错走回退链，不再等 watchdog（方案 19 实施项 5）
+      this.setError('视频流已结束')
     } else if (type === 'error') {
       this.setError(msg.message as string || 'Unknown server error')
     }

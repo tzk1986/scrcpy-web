@@ -431,6 +431,20 @@ describe('控制消息（restarting / error / 异常数据）', () => {
     expect(stream.state).toBe('configuring')
   })
 
+  it('stream_ended 消息立即进入 error 状态（走回退链，方案 19 实施项 5）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const states: string[] = []
+    stream.setStateChangeHandler(s => states.push(s))
+    stream.start()
+
+    ws.handler!(JSON.stringify({ type: 'stream_ended' }))
+
+    expect(stream.state).toBe('error')
+    expect(stream.stats.error).toBe('视频流已结束')
+    expect(states).toEqual(['configuring', 'error'])
+  })
+
   it('error 消息携带服务端错误信息', () => {
     const ws = new FakeWs()
     const stream = makeStream(ws)

@@ -205,6 +205,10 @@ async def video_stream(
         logger.info("video_stream_ended", device=device_id,
                      chunks=chunk_count, frames=frame_count,
                      config_sent=config_sent)
+        try:
+            await websocket.send_json({"type": "stream_ended"})
+        except Exception:
+            pass
 
     except WebSocketDisconnect:
         logger.info("video_websocket_disconnected", device=device_id)

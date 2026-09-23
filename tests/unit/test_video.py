@@ -596,6 +596,24 @@ def test_stream_error_notifies_client_and_stops_stream(video_client):
     assert wait_for(lambda: svc.stop_calls == [DEV])
 
 
+async def test_stream_ended_notified_after_normal_completion():
+    """流自然耗尽（生成器正常返回，非挂起/非异常）→ 帧发送完毕后补一条
+    {"type": "stream_ended"}（方案 19 实施项 5：前端据此立即走回退链）。
+    直接调用 video_stream：TestClient 编排下服务端流结束后 receive()
+    会永久阻塞（starlette 不在 app 返回后向客户端投递 close），无法断言。"""
+    ws = FakeWS()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0, P_1, P_2],
+        encoder=FakeEncoder(),
+    )
+    await video_stream(ws, DEV, svc)
+
+    assert ws.sent_json[-1] == {"type": "stream_ended"}
+    assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
+    assert ws.sent_bytes == [IDR_0, P_1]  # P_2 仍悬在 parser 缓冲区（滞后语义）
+    assert svc.stop_calls == [DEV]
+
+
 # ---------------------------------------------------------------------------
 # 底层连接异常路径（直接调用 video_stream，绕过 TestClient）
 # ---------------------------------------------------------------------------
@@ -631,8 +649,10 @@ async def test_restarting_notify_send_failure_is_swallowed():
     )
     await video_stream(ws, DEV, svc)
 
-    assert ws.json_attempts[-1] == {"type": "restarting", "bit_rate": 2_000_000}
-    assert [m["type"] for m in ws.sent_json] == ["config"]
+    # 流正常结束后补发 stream_ended（实施项 5）；restarting 的失败尝试仍被记录
+    assert ws.json_attempts[-2] == {"type": "restarting", "bit_rate": 2_000_000}
+    assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
+    assert "restarting" not in [m["type"] for m in ws.sent_json]
     assert svc.reported_fps == [(DEV, 25.0)]
     assert svc.stop_calls == [DEV]
 
@@ -652,7 +672,7 @@ async def test_input_handler_exits_on_client_disconnect():
     await video_stream(ws, DEV, svc)
 
     assert ws.disconnect_delivered is True
-    assert [m["type"] for m in ws.sent_json] == ["config"]
+    assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
     assert svc.reported_fps == [(DEV, 25.0)]
     assert ws.sent_bytes == [IDR_0]
     assert svc.stop_calls == [DEV]
@@ -671,4 +691,20 @@ async def test_error_notify_send_failure_is_swallowed():
 
     assert ws.json_attempts[-1] == {"type": "error", "message": "boom"}
     assert "error" not in [m["type"] for m in ws.sent_json]
+    assert svc.stop_calls == [DEV]
+
+
+async def test_stream_ended_send_failure_is_swallowed():
+    """流正常结束但 stream_ended 发送失败（连接已断）→ 异常被吞掉，
+    客户端已发送的消息不受影响，仍正常停止流。"""
+    ws = FakeWS(fail_send_json_types=("stream_ended",))
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0, P_1, P_2],
+        encoder=FakeEncoder(),
+    )
+    await video_stream(ws, DEV, svc)
+
+    assert ws.json_attempts[-1] == {"type": "stream_ended"}
+    assert [m["type"] for m in ws.sent_json] == ["config"]
+    assert ws.sent_bytes == [IDR_0, P_1]
     assert svc.stop_calls == [DEV]
