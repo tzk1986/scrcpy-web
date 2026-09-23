@@ -151,14 +151,14 @@ async def video_stream(
 
                 if nalu_type == NALU_TYPE_SPS:
                     if config_sent and sps_data != nalu:
-                        # 编码参数变化（卡死自愈/复位后重编）：重置标志以重发 config
+                        # 编码参数变化（卡死自愈/复位后重编）：重置标志。
+                        # 终审 Minor #3：此处不发送 config——SPS-only 变化时
+                        # 立即重发会携带旧 PPS，造成客户端解码参数错配；
+                        # 实际发送统一在 PPS 分支，等新/配对 PPS 到达后
+                        # 以完整新组合（新 SPS + 新 PPS）下发一次。
                         config_sent = False
                     sps_data = nalu
                     logger.info("sps_received", device=device_id, nalu_size=len(nalu))
-                    if sps_data and pps_data and not config_sent:
-                        await _send_config(websocket, sps_data, pps_data, stream_service, device_id)
-                        config_sent = True
-                        logger.info("config_sent", device=device_id)
 
                 elif nalu_type == NALU_TYPE_PPS:
                     if config_sent and pps_data != nalu:

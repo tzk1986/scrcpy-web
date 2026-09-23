@@ -207,3 +207,100 @@ async def test_stall_recovery_and_storm_guard(stream_settings, monkeypatch):
     # 首次 + 3 次防风暴窗口内重启 = 4 台编码器、4 个首帧，随后异常传播
     assert frames == [b"f"] * 4
     assert StallOnly.created == 4
+
+
+class _GuardSleepProbe:
+    """拦截 guard 的 1s 等待、放行其余短 sleep（monkeypatch 会覆盖全局
+    asyncio.sleep，测试助手 _wait_for 与 FakeEncoder 的短 sleep 须转发真实现）。"""
+
+    def __init__(self):
+        self.real_sleep = asyncio.sleep
+        self.guard_waits: list[float] = []
+        self.on_first_guard_wait = None
+
+    async def __call__(self, t):
+        if t >= 1.0:
+            self.guard_waits.append(t)
+            if self.on_first_guard_wait is not None:
+                self.on_first_guard_wait()
+        else:
+            await self.real_sleep(t)
+
+
+@pytest.mark.asyncio
+async def test_start_stream_waits_for_active_stream_cleanup(stream_settings, monkeypatch):
+    """已活跃 guard（方案 19 终审修复）：旧流收尾期间等待而非立即拒绝；
+    收尾完成即放行新流。guard 的 1s 等待被 probe 拦截以加速验证。"""
+    FakeEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeEncoder)
+    svc.active_streams["dev1"] = True  # 模拟旧流尚未收尾
+
+    probe = _GuardSleepProbe()
+    probe.on_first_guard_wait = lambda: svc.active_streams.__setitem__(
+        "dev1", False)  # 第 1 次等待后旧流收尾完成（其 finally 清理 active_streams）
+    monkeypatch.setattr("app.application.stream_service.asyncio.sleep", probe)
+
+    async def consume():
+        async for _ in svc.start_stream("dev1"):
+            pass
+
+    task = asyncio.create_task(consume())
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 1)
+    assert probe.guard_waits == [1.0]  # 恰好等待一轮 1s 后放行
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: FakeEncoder.created[0].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_start_stream_rejects_after_three_waits(stream_settings, monkeypatch):
+    """已活跃 guard：3×1s 后仍活跃 → 维持原有拒绝行为
+    （生成器不产帧，不创建编码器）。"""
+    FakeEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeEncoder)
+    svc.active_streams["dev1"] = True  # 旧流在 3s 窗口内未收尾
+
+    probe = _GuardSleepProbe()
+    monkeypatch.setattr("app.application.stream_service.asyncio.sleep", probe)
+
+    frames = [f async for f in svc.start_stream("dev1")]
+    assert frames == []
+    assert probe.guard_waits == [1.0, 1.0, 1.0]
+    assert FakeEncoder.created == []
+
+
+@pytest.mark.asyncio
+async def test_start_stream_no_wait_when_previous_stream_stopping(stream_settings, monkeypatch):
+    """旧流已置 False（stop_stream 已调用、finally 未跑完）→ 不等待直接放行。"""
+    FakeEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeEncoder)
+    svc.active_streams["dev1"] = False  # 旧流收尾中（stop_stream 已置位）
+
+    probe = _GuardSleepProbe()
+
+    async def no_guard_wait(t):
+        if t >= 1.0:
+            raise AssertionError("stop 中不应等待")
+        await probe.real_sleep(t)
+
+    monkeypatch.setattr("app.application.stream_service.asyncio.sleep", no_guard_wait)
+
+    async def consume():
+        async for _ in svc.start_stream("dev1"):
+            pass
+
+    task = asyncio.create_task(consume())
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 1)
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: FakeEncoder.created[0].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass

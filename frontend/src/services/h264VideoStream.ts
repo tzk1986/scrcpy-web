@@ -197,6 +197,13 @@ export class H264VideoStream {
       }
     })
 
+    // WS 瞬断重连后自动恢复（方案 19 终审修复）：重连成功后服务端新会话
+    // 会重发 config，但前端若停在 suspend（截图回退）态，config 只暂存
+    // 不重建解码器——必须 resume 退出探测态并 request_keyframe 才能回切
+    // H264 推送，否则空闲设备瞬断后永久降级为只读截图。
+    // resume() 自带 _suspended 守卫：非挂起时为空操作。
+    this.ws.setReconnectHandler(() => this.resume())
+
     console.log('[H264] Stream started, waiting for config...')
   }
 
@@ -368,7 +375,9 @@ export class H264VideoStream {
       this._lastAvccDesc = avccDescription
       this._lastWidth = width
       this._lastHeight = height
-      this._keepaliveMs = Number(msg.idle_reset_seconds ?? 0) * 1000
+      // NaN 守卫（终审 Minor #4）：非有限数（缺失/非法字段）归 0
+      const keepaliveSec = Number(msg.idle_reset_seconds ?? 0)
+      this._keepaliveMs = (Number.isFinite(keepaliveSec) ? keepaliveSec : 0) * 1000
 
       if (this._suspended) {
         console.log('[H264] Config stored while suspended, decoder init deferred')

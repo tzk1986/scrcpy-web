@@ -77,9 +77,11 @@ class StreamService:
         循环在每次迭代时检查 active_streams[device_id]——
         如果为 False（由 stop_stream 设置），循环优雅退出。
 
-        单客户端假设（设计限制）：同一设备流已活跃时本方法直接返回（不产帧），
-        后到的第二连接会拿到空流并被关闭；客户端断开即调用 stop_stream，
-        多观看者场景下互相影响。多人同时观看需上层做 fan-out
+        单客户端假设（设计限制）：同一设备流已活跃时本方法阻塞等待最多
+        3×1s（重连窗口，方案 19 终审修复：给旧流 stream_ended 收尾与编码器
+        清理留出窗口），超时仍活跃才直接返回（不产帧），后到的第二连接会
+        拿到空流并被关闭；客户端断开即调用 stop_stream，多观看者场景下
+        互相影响。多人同时观看需上层做 fan-out
         （一路编码广播给多个订阅者），当前未实现。
 
         自适应码率开启时，外层循环支持运行中重启编码器切换码率档：
@@ -95,8 +97,18 @@ class StreamService:
         """
         logger.info("starting_video_stream", device=device_id)
 
-        # 检查是否已经有流在运行
-        if device_id in self.active_streams:
+        # 检查是否已经有流在运行。
+        # 重连窗口（方案 19 终审修复）：旧流可能正处于 stream_ended 发送后的
+        # 收尾阶段（stop_stream 已置 False、finally 未跑完），立即拒绝会让
+        # 重连前端降级为只读截图。给最多 3×1s 收尾窗口，超时仍活跃才拒绝。
+        # truthy 检查：False（收尾中）直接放行，避免把整个重连窗口白等掉。
+        for attempt in range(3):
+            if not self.active_streams.get(device_id):
+                break
+            logger.info("stream_active_waiting_cleanup",
+                        device=device_id, attempt=attempt + 1)
+            await asyncio.sleep(1.0)
+        else:
             logger.warning("stream_already_active", device=device_id)
             return
 
@@ -267,6 +279,9 @@ class StreamService:
         客户端请求关键帧（resume 回切），经 RESET_VIDEO 实现。
 
         最小间隔 1s 防抖（方案 19 实施项 3 冷却约定）；返回是否实际发送。
+        发送异常（如已断开的控制 socket）被吞掉并返回 False，不得向上
+        传播杀死 input 处理任务；防抖时间戳只在发送成功后记录——
+        失败不得占用防抖窗口（终审修复）。
         """
         encoder = self.encoders.get(device_id)
         if encoder is None:
@@ -276,8 +291,12 @@ class StreamService:
         last = self._last_keyframe_at.get(device_id)
         if last is not None and now - last < 1.0:
             return False
+        try:
+            await encoder.request_keyframe()
+        except Exception as e:
+            logger.warning("request_keyframe_failed", device=device_id, error=str(e))
+            return False
         self._last_keyframe_at[device_id] = now
-        await encoder.request_keyframe()
         return True
 
     async def stop_stream(self, device_id: str) -> None:

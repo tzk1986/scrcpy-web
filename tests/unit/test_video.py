@@ -309,7 +309,8 @@ def test_packet_mode_config_and_one_au_per_chunk(video_client):
 def test_packet_mode_merges_nalus_and_intercepts_sps_pps(video_client):
     """同包多 NALU 合并为单条消息；config 齐备后 SPS/PPS 仍被拦截、不出现在
     二进制流中；SPS/PPS 与已下发集合不同（编码参数变化）→ 重发 config
-    （方案 19 实施项 1a：SPS 变更先重发一条、PPS 变更再补一条完整组合）。"""
+    （方案 19 实施项 1a + 终审 Minor #3：SPS 分支只做变化检测，实际发送
+    统一由 PPS 分支配对，一条 config 携带新 SPS+新 PPS）。"""
     svc = FakeStreamService(
         [
             SPS_AVC + PPS_MAIN + IDR_A,
@@ -322,12 +323,10 @@ def test_packet_mode_merges_nalus_and_intercepts_sps_pps(video_client):
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["codec"] == "avc1.42C01E"
         assert recv_binary(session) == IDR_A + IDR_B  # 多 slice 同包 → 单条消息
-        resent_sps = recv_json(session)               # SPS 变化 → 重发（PPS 仍旧值）
-        assert resent_sps["type"] == "config"
-        assert resent_sps["description"] == (SPS_HIGH + PPS_MAIN).hex()
-        resent_pps = recv_json(session)               # PPS 变化 → 再补发完整组合
-        assert resent_pps["type"] == "config"
-        assert resent_pps["description"] == (SPS_HIGH + PPS_HIGH).hex()
+        resent = recv_json(session)                   # SPS/PPS 均变化 → PPS 分支配对重发
+        assert resent["type"] == "config"
+        assert resent["codec"] == "avc1.640028"
+        assert resent["description"] == (SPS_HIGH + PPS_HIGH).hex()
         au = recv_binary(session)                     # 含 SPS+PPS 的包 → 只发 VCL
         assert au == P_A
         assert SPS_HIGH not in au
@@ -335,14 +334,21 @@ def test_packet_mode_merges_nalus_and_intercepts_sps_pps(video_client):
         assert recv_binary(session) == IDR_C
 
 
-def test_packet_mode_config_sent_when_sps_arrives_last(video_client):
-    """PPS 先于 SPS 到达：config 由 SPS 分支触发（另一触发点在 PPS 分支）。"""
-    svc = FakeStreamService([PPS_MAIN + SPS_AVC + IDR_0, P_1], encoder=FakeEncoder())
+def test_packet_mode_config_deferred_when_pps_precedes_sps(video_client):
+    """PPS 先于 SPS 到达：config 不再由 SPS 分支触发（终审 Minor #3），
+    待下一个 PPS 到达才配对发送；此前的帧因 config 未就绪被丢弃，
+    首次 config 最终正常发出。"""
+    svc = FakeStreamService(
+        [PPS_MAIN + SPS_AVC + IDR_0, P_1 + PPS_MAIN, P_2, P_4],
+        encoder=FakeEncoder(),
+    )
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         config = recv_json(session)
+        assert config["type"] == "config"
         assert config["codec"] == "avc1.42C01E"
         assert config["description"] == (SPS_AVC + PPS_MAIN).hex()
-        assert recv_binary(session) == IDR_0
+        # 第一条二进制即 P_2：IDR_0/P_1 在 config 未就绪期间被丢弃
+        assert recv_binary(session) == P_2
 
 
 def test_packet_mode_chunk_progress_logging(video_client):
@@ -373,24 +379,29 @@ def test_packet_mode_drops_vcl_before_config(video_client):
         assert recv_binary(session) == IDR_Z
 
 
-def test_config_carries_idle_reset_and_sps_change_resends(video_client):
+def test_config_carries_idle_reset_and_sps_change_defers_resend(video_client):
     """config 含 idle_reset_seconds 字段（前端回退阈值联动，方案 19 实施项 1a）；
-    再次喂入不同 SPS + 帧 → 检测到编码参数变化，收到第二条 config。"""
+    SPS-only 变化不立即重发（终审 Minor #3：避免携带旧 PPS 的错配 config），
+    等新 PPS 到达后配对重发一条新组合；期间帧因 config 未就绪被丢弃。"""
     svc = FakeStreamService(
-        [SPS_AVC + PPS_MAIN + IDR_0, SPS_HIGH + IDR_A, P_1],
+        [SPS_AVC + PPS_MAIN + IDR_0, SPS_HIGH + P_A, PPS_HIGH + P_2, P_C],
         encoder=FakeEncoder(),
     )
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         first = recv_json(session)
         assert first["type"] == "config"
         assert first["idle_reset_seconds"] == 5.0
-        # chunk2 的 SPS 与已下发不同 → 重发 config（SPS 先闭合、bytes IDR_0 随包尾发出）
+        # 第二条 config 必须直接是 SPS_HIGH+PPS_HIGH 的完整新组合
+        # （旧行为会在此处先发一条 SPS_HIGH+PPS_MAIN 的错配 config）
         second = recv_json(session)
         assert second["type"] == "config"
         assert second["codec"] == "avc1.640028"
-        assert second["description"] == (SPS_HIGH + PPS_MAIN).hex()
-        assert recv_binary(session) == IDR_0
-        assert recv_binary(session) == IDR_A
+        assert second["description"] == (SPS_HIGH + PPS_HIGH).hex()
+        # 旧行为会先收到错配 config（SPS_HIGH+PPS_MAIN）后紧跟 IDR_0；
+        # 新行为：IDR_0 在 config 未就绪期间被丢弃，chunk3 中 config2 先于
+        # 同 chunk 的 P_A 发出，随后 chunk4 的 P_2
+        assert recv_binary(session) == P_A
+        assert recv_binary(session) == P_2
 
 
 # ---------------------------------------------------------------------------

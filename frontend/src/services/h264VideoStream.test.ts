@@ -86,10 +86,16 @@ class FakeWs {
   handlerSetCount = 0
   /** 客户端发出的消息（WebSocketService.send 收到后解析记录） */
   sent: unknown[] = []
+  /** start() 注册的重连成功回调 */
+  reconnectHandler: (() => void) | null = null
 
   setMessageHandler(handler: (data: unknown) => void) {
     this.handler = handler
     this.handlerSetCount++
+  }
+
+  setReconnectHandler(handler: () => void) {
+    this.reconnectHandler = handler
   }
 
   send(data: unknown) {
@@ -378,6 +384,21 @@ describe('config 消息处理', () => {
     const ws = new FakeWs()
     const stream = makeStream(ws)
     startWithConfig(stream, ws)
+
+    expect(stream.keepaliveIntervalMs).toBe(0)
+    stream.stop()
+  })
+
+  it('config 携带非法 idle_reset_seconds（非有限数）时保活间隔归 0（NaN 守卫）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    ws.handler!(JSON.stringify({
+      type: 'config', codec: 'avc1.42E01E', width: 640, height: 480,
+      description: '000000016742e01e890000000168ce3880',
+      idle_reset_seconds: 'not-a-number',
+    }))
 
     expect(stream.keepaliveIntervalMs).toBe(0)
     stream.stop()
@@ -771,5 +792,45 @@ describe('suspend / resume 探测模式', () => {
 
     expect(stream.suspended).toBe(false)
     expect(stream.state).toBe('stopped')
+  })
+})
+
+describe('WS 重连接线（方案 19 终审）', () => {
+  it('start 注册重连回调：挂起时重连成功 → 自动 resume 并 request_keyframe', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+    expect(ws.reconnectHandler).toBeTypeOf('function')
+
+    // WS 瞬断期间前端已回退截图（suspend）；重连成功后触发回调
+    stream.suspend()
+    ws.reconnectHandler!()
+
+    expect(stream.suspended).toBe(false)
+    expect(stream.state).toBe('configuring')
+    expect(ws.sent).toEqual([{ op: 'request_keyframe' }])
+    // resume 用缓存 config 重建解码器
+    expect(FakeVideoDecoder.instances).toHaveLength(2)
+
+    // resume 后帧恢复正常解码
+    ws.handler!(KEY_FRAME)
+    const rebuilt = FakeVideoDecoder.instances.at(-1)!
+    expect(rebuilt.decode).toHaveBeenCalledTimes(1)
+
+    stream.stop()
+  })
+
+  it('重连回调在非挂起态为空操作（resume 守卫），不发送多余消息', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+    expect(ws.reconnectHandler).toBeTypeOf('function')
+
+    ws.reconnectHandler!()
+
+    expect(stream.suspended).toBe(false)
+    expect(stream.state).toBe('configuring')
+    expect(ws.sent).toEqual([])
+    stream.stop()
   })
 })
