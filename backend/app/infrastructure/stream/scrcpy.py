@@ -470,6 +470,9 @@ class ScrcpyEncoder:
                             except Exception as e:
                                 logger.warning("idle_reset_video_failed",
                                                device=device_id, error=str(e))
+                                # 发送失败时清除锁存，下一个 tick 重试
+                                # （粒度 idle_reset/2，风暴安全）
+                                reset_sent_at = None
                     continue
         except Exception as e:
             logger.error("stream_error", device=device_id, error=str(e))

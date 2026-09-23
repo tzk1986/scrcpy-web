@@ -994,10 +994,67 @@ async def test_idle_keepalive_sends_reset_video(monkeypatch):
             # 收到新帧 → 计时复位：短暂静默不补发，再次静默超阈值才发第二个 0x11
             conn.video_reader.feed_data(make_frame_header(0, len(payload)) + payload)
             assert await wait_until(lambda: len(received) == 2)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.15)
             assert bytes(conn.control_writer.written) == b"\x11"
             assert await wait_until(
                 lambda: bytes(conn.control_writer.written) == b"\x11\x11")
+        finally:
+            encoder._running = False  # 下一个 tick 退出取帧循环 → 消费任务自然结束
+            await task
+    assert harness.server_process.terminate_called
+
+
+async def test_idle_keepalive_retries_after_send_failure(monkeypatch):
+    """reset_video 发送抛错 → 清除锁存，下个 tick 重试（不再静默锁死）。
+
+    覆盖评审修复：失败后若保留 reset_sent_at 锁存，则需等新数据到达才会重试
+    （静止场景下永不到达 → 保活失效）。修复后 except 分支置 None，按 idle/2
+    tick 粒度重试。
+    """
+    import types
+
+    fake = types.SimpleNamespace(stream=types.SimpleNamespace(
+        idle_reset_seconds=0.2, raw_stream_fallback=False))
+    monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
+
+    encoder = ScrcpyEncoder()
+    payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))  # 首帧后永久静默
+
+    # 控制 socket 首次写抛错（模拟瞬时断管），之后恢复正常
+    write_calls = {"n": 0}
+
+    def flaky_write(data: bytes) -> None:
+        write_calls["n"] += 1
+        if write_calls["n"] == 1:
+            raise RuntimeError("transient broken pipe")
+        conn.control_writer.written.extend(data)
+
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    received: list[bytes] = []
+
+    async def consume() -> None:
+        async for chunk in encoder.start(DEVICE_ID, EncoderOpts()):
+            received.append(chunk)
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        conn.control_writer.write = flaky_write
+        task = asyncio.create_task(consume())
+        try:
+            # ① 首帧消费（session 建立 _control_sender）
+            assert await wait_until(lambda: len(received) == 1)
+            # ② 首次保活发送失败一次，但锁存被清除 → tick 重试成功，最终恰为一个 0x11
+            assert await wait_until(
+                lambda: bytes(conn.control_writer.written) == b"\x11")
+            assert write_calls["n"] >= 2  # 失败 + 重试均发生
         finally:
             encoder._running = False  # 下一个 tick 退出取帧循环 → 消费任务自然结束
             await task
