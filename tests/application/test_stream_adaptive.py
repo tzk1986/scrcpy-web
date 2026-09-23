@@ -304,3 +304,91 @@ async def test_start_stream_no_wait_when_previous_stream_stopping(stream_setting
         await task
     except asyncio.CancelledError:
         pass
+
+
+class BlockingStopEncoder:
+    """产 1 帧后挂起（模拟静止设备无保活帧可出）；stop() 挂起直至显式放行——
+    模拟旧流 teardown 挂在编码器收尾窗口（R2 竞态编排用）。"""
+
+    created: list["BlockingStopEncoder"] = []
+
+    def __init__(self):
+        self.opts = None
+        self.stop_called = False
+        self.stop_release = asyncio.Event()
+        self.keyframe_requests = 0
+        self._never = asyncio.Event()
+        BlockingStopEncoder.created.append(self)
+
+    async def start(self, device_id, opts):
+        self.opts = opts
+        yield b"f0"
+        await self._never.wait()
+
+    async def stop(self):
+        self.stop_called = True
+        await self.stop_release.wait()
+
+    async def request_keyframe(self):
+        self.keyframe_requests += 1
+
+
+@pytest.mark.asyncio
+async def test_old_stream_teardown_does_not_evict_new_stream(stream_settings):
+    """
+    重连竞态（R2）：旧流 teardown 挂起期间新流条目写入注册表，
+    旧流 teardown 继续执行后不得误弹新流的 encoder / active 条目。
+
+    编排（无真实长 sleep）：旧流产 1 帧 → aclose 触发 finally（stop 挂起）
+    → 模拟重连新流在收尾窗口内经 guard 放行写入自己的条目 → 放行旧
+    teardown → 断言新条目仍在，input 路由与 request_keyframe 可用。
+    """
+    BlockingStopEncoder.created.clear()
+    svc = StreamService(encoder_factory=BlockingStopEncoder)
+
+    old_gen = svc.start_stream("dev1")
+    assert await old_gen.__anext__() == b"f0"
+    old_enc = svc.get_encoder("dev1")
+    assert old_enc is not None and isinstance(old_enc, BlockingStopEncoder)
+
+    # 旧流下线：teardown 进入 finally 并挂在 encoder.stop()（等保活帧收尾）
+    close_task = asyncio.create_task(old_gen.aclose())
+    assert await _wait_for(lambda: old_enc.stop_called)
+
+    # 重连的新流在收尾窗口内经 guard 放行，写入自己的注册条目
+    new_enc = BlockingStopEncoder()
+    new_token = object()
+    svc.encoders["dev1"] = new_enc
+    svc.active_streams["dev1"] = new_token
+
+    old_enc.stop_release.set()  # 放行旧 teardown 继续执行（identity 守卫生效点）
+    await close_task
+
+    # 新流条目未被误弹：input 路由与 request_keyframe 仍可用
+    assert svc.encoders.get("dev1") is new_enc
+    assert svc.active_streams.get("dev1") is new_token
+    assert svc.get_active_streams() == ["dev1"]
+    assert svc.get_encoder("dev1") is new_enc
+    assert await svc.request_keyframe("dev1") is True
+    assert new_enc.keyframe_requests == 1
+    assert old_enc.stop_called is True
+
+
+@pytest.mark.asyncio
+async def test_teardown_cleans_own_registry_entries(stream_settings):
+    """无交叠时 identity 守卫不破坏既有清理语义：teardown 后注册表清空。"""
+    BlockingStopEncoder.created.clear()
+    svc = StreamService(encoder_factory=BlockingStopEncoder)
+
+    gen = svc.start_stream("dev1")
+    assert await gen.__anext__() == b"f0"
+    enc = svc.get_encoder("dev1")
+    assert enc is not None
+
+    enc.stop_release.set()  # 不挂起：走常规 stop 收尾
+    await gen.aclose()
+
+    assert svc.encoders.get("dev1") is None
+    assert svc.active_streams.get("dev1") is None
+    assert svc.get_active_streams() == []
+    assert svc.get_encoder("dev1") is None

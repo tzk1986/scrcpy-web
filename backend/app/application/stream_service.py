@@ -39,6 +39,16 @@ from app.infrastructure.stream.scrcpy import EncoderStalledError, ScrcpyEncoder
 logger = get_logger(__name__)
 
 
+class _ActiveStreamToken:
+    """活跃流会话的 identity 令牌，替代 bool True 作为活跃标记。
+
+    重连场景下旧/新流会话会在同一 device_id 上交叠：bool True 是单例，
+    旧流 teardown 无法区分「自己的活跃标记」与「新流的活跃标记」，
+    无条件 pop 会误弹新流条目。令牌对象让 teardown 按 identity 只清理
+    归属自己的注册状态（R2 终审二轮修复）。
+    """
+
+
 class StreamService:
     """视频流用例。"""
 
@@ -52,8 +62,10 @@ class StreamService:
             encoder_factory: 编码器工厂（默认 ScrcpyEncoder），
                 注入点便于单测替换为假编码器。
         """
-        # 按 device_id 跟踪活跃流
-        self.active_streams: dict[str, bool] = {}
+        # 按 device_id 跟踪活跃流。值为本会话的 _ActiveStreamToken（truthy，
+        # 由 start_stream 写入）或 False（stop_stream 已请求停止）。
+        # teardown 按 identity 清理，旧流 finally 不得弹掉新流条目（R2）。
+        self.active_streams: dict[str, _ActiveStreamToken | bool] = {}
         # 按 device_id 跟踪编码器实例
         self.encoders: dict[str, ScrcpyEncoder] = {}
         self._encoder_factory = encoder_factory or ScrcpyEncoder
@@ -115,6 +127,7 @@ class StreamService:
         s = settings()
         base_bps = parse_bit_rate(s.stream.bit_rate)
         current_bps = base_bps
+        advisor: BitrateAdvisor | None = None
         if s.stream.adaptive_bitrate:
             tiers = tuple(
                 parse_bit_rate(t)
@@ -122,14 +135,17 @@ class StreamService:
                 if t.strip()
             )
             if tiers:
-                self._advisors[device_id] = BitrateAdvisor(
+                advisor = BitrateAdvisor(
                     AdvisorConfig(
                         tiers_bps=tiers,
                         target_fps=float(s.stream.fps),
                         start_bps=base_bps,
                     )
                 )
-        self.active_streams[device_id] = True
+                self._advisors[device_id] = advisor
+        # 活跃标记写入本会话令牌（truthy），供 teardown 的 identity 守卫使用
+        token = _ActiveStreamToken()
+        self.active_streams[device_id] = token
 
         # 码率重启事件：静止画面下 scrcpy 不出帧，仅靠"下一帧时消费 pending"
         # 会无限挂起，因此取帧协程与本事件赛跑，事件先到也立即重启。
@@ -186,7 +202,11 @@ class StreamService:
                         if t is not None and not t.done():
                             t.cancel()
                     await encoder.stop()
-                    self.encoders.pop(device_id, None)
+                    # identity 守卫（R2）：仅当注册表条目仍是自己时清理。
+                    # 无条件 pop 会在重连竞态下弹掉新流的编码器，
+                    # 使 input 路由与 request_keyframe 静默失效且不自愈。
+                    if self.encoders.get(device_id) is encoder:
+                        self.encoders.pop(device_id, None)
                 if not stalled:
                     if restart_bitrate is None:
                         break
@@ -216,10 +236,19 @@ class StreamService:
                             device=device_id, epoch=self._epoch[device_id],
                             recent_stalls=len(hist))
         finally:
-            self.active_streams.pop(device_id, None)
-            self._advisors.pop(device_id, None)
+            # identity 守卫（R2）：旧流 teardown 只清理归属自己的条目。
+            # 重连竞态下旧流 finally 可能在新流启动后才执行完，无条件 pop
+            # 会弹掉新流的活跃标记/决策器/重启事件，令新会话静默死亡。
+            # stop_stream 写入的 False 也归属本会话生命周期，一并清理；
+            # 新会话的令牌/条目绝不动。
+            cur_active = self.active_streams.get(device_id)
+            if cur_active is token or cur_active is False:
+                self.active_streams.pop(device_id, None)
+            if advisor is not None and self._advisors.get(device_id) is advisor:
+                self._advisors.pop(device_id, None)
             self._pending_bitrate.pop(device_id, None)
-            self._restart_events.pop(device_id, None)
+            if self._restart_events.get(device_id) is restart_event:
+                self._restart_events.pop(device_id, None)
             self._epoch.pop(device_id, None)
             self._stall_restarts.pop(device_id, None)
             self._last_keyframe_at.pop(device_id, None)

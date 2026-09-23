@@ -28,6 +28,8 @@ export class WebSocketService {
   private manualClose = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private onReconnect: (() => void) | null = null
+  /** 本次 connect() 是定时器驱动的重连，onopen 时触发 onReconnect（首次连接不触发） */
+  private pendingReconnect = false
 
   constructor(url: string) {
     this.url = url
@@ -46,6 +48,13 @@ export class WebSocketService {
     this.ws.onopen = () => {
       this.reconnectAttempts = 0
       console.log('[WS] Connected:', this.url, 'binaryType:', this.ws?.binaryType)
+      // 重连成功（区别于首次连接）：在 onopen 中触发 onReconnect——
+      // 此刻该 socket 已 OPEN，handler 内发送的消息（如 resume 的
+      // request_keyframe）不会被 CONNECTING 态的 send 守卫丢弃。
+      if (this.pendingReconnect) {
+        this.pendingReconnect = false
+        this.onReconnect?.()
+      }
     }
 
     this.ws.onmessage = (event) => {
@@ -120,7 +129,7 @@ export class WebSocketService {
     this.onClose = handler
   }
 
-  /** 注册重连成功回调（重连走同一 connect 流程后触发） */
+  /** 注册重连成功回调（重连 socket 的 onopen 中触发；首次连接不触发） */
   setReconnectHandler(handler: () => void) {
     this.onReconnect = handler
   }
@@ -131,14 +140,17 @@ export class WebSocketService {
     console.log(`[WS] Reconnect scheduled in ${delay}ms (attempt ${this.reconnectAttempts})`)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
+      // 标记本次 connect 为重连：onReconnect 延后到其 onopen 中触发，
+      // 保证 handler 执行时 socket 已 OPEN（R1）。
+      this.pendingReconnect = true
       this.connect()
-      this.onReconnect?.()
     }, delay)
   }
 
   /** 关闭连接。 */
   close() {
     this.manualClose = true
+    this.pendingReconnect = false
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null

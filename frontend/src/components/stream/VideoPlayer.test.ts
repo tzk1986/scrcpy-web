@@ -22,6 +22,7 @@ const h = vi.hoisted(() => {
     send = vi.fn()
     connect = vi.fn()
     close = vi.fn()
+    reconnectHandler: (() => void) | null = null
     url: string
 
     constructor(url: string) {
@@ -36,6 +37,9 @@ const h = vi.hoisted(() => {
     }
     setErrorHandler(handler: (e: unknown) => void) {
       this.errorHandler = handler
+    }
+    setReconnectHandler(handler: () => void) {
+      this.reconnectHandler = handler
     }
   }
 
@@ -428,6 +432,76 @@ describe('VideoPlayer H264 状态机与回退', () => {
     wrapper.unmount()
     expect(vs.stop).toHaveBeenCalled()
     expect(h.MockWebSocketService.instances[0].close).toHaveBeenCalled()
+  })
+})
+
+describe('VideoPlayer WS 重连恢复（方案 19 终审二轮 R1）', () => {
+  it('截图模式下重连成功：回退状态机复位，显示恢复角标并回切 h264', async () => {
+    vi.useFakeTimers()
+    const wrapper = await mountPlayer()
+    const wsInst = h.MockWebSocketService.instances[0]
+    const h264 = h.MockH264Stream.instances[0]
+    const onState = h264.setStateChangeHandler.mock.calls[0][0]
+
+    onState('streaming')
+    await nextTick()
+
+    // 解码错误 → 回退截图（suspend + 截图流启动）
+    h264.stats.state = 'error'
+    h264.stats.error = 'decoder crashed'
+    onState('error')
+    await nextTick()
+    const vs = h.MockVideoStream.instances[0]
+    expect(h264.suspend).toHaveBeenCalled()
+    expect(vs.start).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('模式: screenshot')
+
+    // WS 重连成功（重连 socket onopen 后触发）→ 确定性恢复信号
+    expect(wsInst.reconnectHandler).toBeTypeOf('function')
+    wsInst.reconnectHandler!()
+    await nextTick()
+
+    // 状态机复位：截图流停止、resume 回切、mode 回 h264
+    expect(vs.stop).toHaveBeenCalled()
+    expect(h264.resume).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('模式: h264')
+    // 恢复反馈：角标「正在恢复画面…」，无黑屏覆盖层、无截图只读徽标
+    expect(wrapper.find('.recovering-tip').text()).toContain('正在恢复画面…')
+    expect(wrapper.find('.status-overlay').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('只读预览')
+
+    // 新会话 config→streaming 既有路径完成恢复（stats.state 同步为新会话状态）
+    h264.stats.state = 'streaming'
+    onState('streaming')
+    await nextTick()
+    expect(wrapper.text()).toContain('直播中')
+    expect(wrapper.find('.recovering-tip').exists()).toBe(false)
+
+    // 回退状态机确实复位（h264FallbackDone 未卡真）：再次回退仍可触发
+    h264.stats.state = 'error'
+    onState('error')
+    await nextTick()
+    expect(h264.suspend).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('模式: screenshot')
+
+    wrapper.unmount()
+  })
+
+  it('h264 模式（非截图）下重连成功：仅触发 resume，不触碰截图流', async () => {
+    const wrapper = await mountPlayer()
+    const wsInst = h.MockWebSocketService.instances[0]
+    const h264 = h.MockH264Stream.instances[0]
+
+    h264.setStateChangeHandler.mock.calls[0][0]('streaming')
+    await nextTick()
+
+    wsInst.reconnectHandler!()
+
+    expect(h264.resume).toHaveBeenCalled()
+    expect(h.MockVideoStream.instances.length).toBe(0)
+    expect(wrapper.text()).toContain('模式: h264')
+    expect(wrapper.text()).toContain('直播中')
+    wrapper.unmount()
   })
 })
 

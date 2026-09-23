@@ -348,16 +348,45 @@ describe('自动重连（指数退避）', () => {
     expect(FakeWebSocket.instances.length).toBe(1)
   })
 
-  it('重连定时器触发后回调 setReconnectHandler 注册的 handler', () => {
+  it('重连定时器触发后先重建连接，socket onopen 后才触发 reconnect handler', () => {
+    vi.useFakeTimers()
+    const svc = new WebSocketService('ws://x')
+    // handler 内发送消息（如 resume 的 request_keyframe）：onopen 触发时
+    // 该 socket 已 OPEN，send 守卫放行（CONNECTING 期间触发会被丢弃）
+    const onReconnect = vi.fn(() => svc.send({ op: 'request_keyframe' }))
+    svc.setReconnectHandler(onReconnect)
+    svc.connect()
+    latest().simulateClose()
+    expect(onReconnect).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.instances.length).toBe(2)   // connect 已执行
+    expect(onReconnect).not.toHaveBeenCalled()       // 未 open 不触发
+    latest().simulateOpen()
+    expect(onReconnect).toHaveBeenCalledTimes(1)
+    expect(latest().sent).toEqual(['{"op":"request_keyframe"}'])  // OPEN 守卫放行
+  })
+
+  it('首次连接的 onopen 不触发 reconnect handler', () => {
+    const svc = new WebSocketService('ws://x')
+    const onReconnect = vi.fn()
+    svc.setReconnectHandler(onReconnect)
+    svc.connect()
+    latest().simulateOpen()
+    expect(onReconnect).not.toHaveBeenCalled()
+  })
+
+  it('重连 socket 未 open 即断开：不触发 handler，下一次重连 open 后恰好触发一次', () => {
     vi.useFakeTimers()
     const svc = new WebSocketService('ws://x')
     const onReconnect = vi.fn()
     svc.setReconnectHandler(onReconnect)
     svc.connect()
     latest().simulateClose()
-    expect(onReconnect).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1000)
-    expect(FakeWebSocket.instances.length).toBe(2)
+    latest().simulateClose()                        // 第 1 次重连失败（未 open）
+    vi.advanceTimersByTime(2000)
+    expect(onReconnect).not.toHaveBeenCalled()
+    latest().simulateOpen()                         // 第 2 次重连成功
     expect(onReconnect).toHaveBeenCalledTimes(1)
   })
 })

@@ -314,6 +314,38 @@ function onVisibilityChange() {
   inputController?.setEnabled(!hidden)
 }
 
+/**
+ * WS 重连成功处理器（重连 socket onopen 后由 WebSocketService 触发，R1）。
+ *
+ * 重连成功是确定性恢复信号：旧会话必死、服务端为新连接重建会话
+ * （config + 初始 IDR）。截图模式下 suspend 探针依赖挂起期帧计数，
+ * resume 退出挂起后探针无帧可测（帧恢复走解码路径）、mode 永久滞留
+ * 截图——因此不修补频死的探针，而是直接复位回退状态机，经既有
+ * config→streaming 路径完成回切（T3/T5 已评审机制保持不变；
+ * 回退 watchdog 随 h264FallbackDone 复位重新武装，真死流仍会再回退）。
+ */
+function handleWsReconnect() {
+  if (!h264Stream) return
+  if (mode.value === 'screenshot') {
+    console.warn('[VideoPlayer] WS reconnected: resetting fallback state, back to H264')
+    stopRecoveryProbe()
+    videoStream?.stop()
+    videoStream = null
+    h264FallbackDone = false
+    h264StartedAt = Date.now()
+    resumeCooldownUntil = 0
+    attachH264Handlers()
+    h264Stream.resume()
+    startH264StatsReporting()
+    mode.value = 'h264'
+    // 恢复期 UI：进 configuring 显示「正在恢复画面…」角标（不黑屏、不透明覆盖）
+    state.value = 'configuring'
+  } else {
+    // 非截图模式：resume 自带挂起守卫，仅挂起时真正恢复
+    h264Stream.resume()
+  }
+}
+
 /** 启动截图回退模式 */
 function startScreenshotMode() {
   console.log('[VideoPlayer] Starting screenshot fallback mode')
@@ -393,6 +425,11 @@ onMounted(async () => {
     // 避免 config 消息在处理器注册前到达被丢弃
     attachH264Handlers()
     h264Stream.start()
+    // H264VideoStream.start 自带 resume 重连回调（挂起守卫、空转安全，
+    // VideoPlayer.test 与 h264VideoStream.test 均有覆盖）；此处覆盖为组件级
+    // 复合处理器（resume + 截图模式回退状态机复位，R1）。注意 reconnect()
+    // 按钮会使 start() 重新注册，需再次覆盖（见下）。
+    ws.setReconnectHandler(() => handleWsReconnect())
     ws.connect()
 
     startH264StatsReporting()
@@ -470,6 +507,8 @@ async function reconnect() {
 
   if (h264Stream) {
     h264Stream.start()
+    // start() 重新注册了服务级 resume 回调，需再次覆盖为组件级复合处理器
+    ws?.setReconnectHandler(() => handleWsReconnect())
   } else if (videoStream) {
     await videoStream.start()
   }
