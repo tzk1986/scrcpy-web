@@ -49,6 +49,8 @@ class AdvisorConfig:
     good_min: int = 8            # 窗口内好样本达到则可能升档
     min_interval_s: float = 30.0  # 两次切换最小间隔
     up_extra_s: float = 90.0     # 升档在 min_interval 之外额外冷却
+    bad_improve_ratio: float = 0.5  # 降档复核：bad_new ≤ bad_old×此值判有效
+    cooldown_s: float = 600.0    # 无效降档回弹后的冷静期（期间禁止自动降档）
 
 
 class BitrateAdvisor:
@@ -69,6 +71,9 @@ class BitrateAdvisor:
         self._idx = start_idx
         self._samples: deque[float] = deque(maxlen=cfg.window)
         self._last_switch: float | None = None
+        self._down_baseline: int | None = None   # 最近一次降档前窗口坏样本数
+        self._down_from_idx: int | None = None   # 最近一次降档前档位下标
+        self._cooldown_until: float | None = None  # 无效回弹后的冷静期截止
 
     @property
     def current_bps(self) -> int:
@@ -93,7 +98,32 @@ class BitrateAdvisor:
         bad = sum(1 for f in self._samples if f < bad_line)
         good = sum(1 for f in self._samples if f >= good_line)
 
-        if bad >= cfg.bad_min and self._idx < len(self._tiers) - 1:
+        # 无效降档复核（方案 21 候选 a）：降档前统计已记录、新窗口已填满。
+        # 降档的隐含假设是「码率是瓶颈」；若降档后坏样本未显著下降，假设
+        # 被证伪（瓶颈在内容/端侧），回弹纠正之，避免永久停在最低档。
+        if self._down_baseline is not None:
+            assert self._down_from_idx is not None
+            if bad <= self._down_baseline * cfg.bad_improve_ratio:
+                # 有效：坏样本显著下降，保留新档，复核状态复位
+                self._down_baseline = None
+                self._down_from_idx = None
+            else:
+                # 无效：回弹至降档前档位 + 冷静期防横跳
+                self._idx = self._down_from_idx
+                self._down_baseline = None
+                self._down_from_idx = None
+                self._cooldown_until = now + cfg.cooldown_s
+                self._last_switch = now
+                self._samples.clear()
+                return self.current_bps
+
+        if (
+            bad >= cfg.bad_min
+            and self._idx < len(self._tiers) - 1
+            and (self._cooldown_until is None or now >= self._cooldown_until)
+        ):
+            self._down_baseline = bad
+            self._down_from_idx = self._idx
             return self._switch(self._idx + 1, now)
         if (
             good >= cfg.good_min

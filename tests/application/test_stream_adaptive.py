@@ -123,6 +123,27 @@ def test_report_without_stream_is_noop(stream_settings):
     assert svc._advisors == {}
 
 
+def test_reports_dropped_while_bitrate_switch_pending(stream_settings):
+    """切换 pending 未生效期间丢弃上报，复核窗不被重启过渡期样本污染（方案 21）。"""
+    from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor
+
+    svc = StreamService(encoder_factory=FakeEncoder)
+    svc._advisors["dev1"] = BitrateAdvisor(
+        AdvisorConfig(
+            tiers_bps=(8_000_000, 4_000_000, 2_000_000, 1_000_000),
+            target_fps=30,
+            start_bps=4_000_000,
+        )
+    )
+    svc._pending_bitrate["dev1"] = 2_000_000
+    for i in range(20):
+        svc.report_client_fps("dev1", 10, now=float(i))
+    # 样本全部被剔除：决策器窗口为空，冷却期后仍不产生任何切换
+    # （对比：不加剔除时第 8 个坏样本触发降档、后续样本重新填满窗口，
+    # 冷却期后会再降一档 2M→1M）
+    assert svc._advisors["dev1"].decide(60.0) is None
+
+
 class FakeIdleEncoder(FakeEncoder):
     """只产 1 帧后挂起——模拟静止画面下 scrcpy 不再出帧。"""
 

@@ -286,9 +286,14 @@ class StreamService:
 
         决策器认为应切换档位时记录 pending 码率，由 start_stream
         的帧循环在下一次取帧时重启编码器。无活跃流或未开启自适应时为空操作。
+
+        方案 21：码率切换 pending 尚未生效（重启编码器）期间丢弃上报——
+        过渡期样本可能来自旧码率流，会污染降档复核窗口。
         """
         advisor = self._advisors.get(device_id)
         if advisor is None:
+            return
+        if self._pending_bitrate.get(device_id) is not None:
             return
         if now is None:
             now = time.monotonic()
