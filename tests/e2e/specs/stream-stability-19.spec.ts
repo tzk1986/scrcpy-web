@@ -98,6 +98,9 @@ function fmt(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
+/** 最近一次用例的取证锚点（注入时刻）；失败时 afterEach 按此偏移输出时间线 */
+let diagAnchor = 0
+
 async function readFrameCount(page: Page): Promise<number> {
   // 锚定行首「帧:」，避免与「丢帧:」冲突（strict mode）
   const text = await page.locator('.stat-item').filter({ hasText: /^帧:\s*\d+/ }).innerText()
@@ -105,6 +108,24 @@ async function readFrameCount(page: Page): Promise<number> {
 }
 
 test.describe('方案19 浏览器侧验证（需设备）', () => {
+  // 失败路径统一取证：输出注入锚点后的页面内 UI/WS 时间线
+  // （此前 WS 用例失败时无任何时间线可查，需重跑复现取证据）
+  test.afterEach(async ({ page }) => {
+    if (test.info().status !== 'failed') return
+    const tl = await readTimeline(page).catch(() => [] as TimelineEvent[])
+    console.log(`[19] 【失败取证】注入锚点后时间线，共 ${tl.length} 条:`)
+    for (const e of tl.filter((x) => x.at >= diagAnchor)) {
+      if (e.type) {
+        console.log(`  t+${fmt(e.at - diagAnchor)} ${e.type} ${e.detail ?? ''}`)
+      } else {
+        console.log(
+          `  t+${fmt(e.at - diagAnchor)} UI badge=${e.badge} readonly=${e.readonly} ` +
+            `mode=${e.mode} state=${e.stateLabel} overlay="${e.overlayText}" bin=${e.bin}`,
+        )
+      }
+    }
+  })
+
   test('卡死注入：回退截图 → 自愈探测回切，角标→出图 ≤2s（2a 核心路径 + 项1b/2/3 前端联动）', async ({
     page,
     device,
@@ -148,6 +169,7 @@ test.describe('方案19 浏览器侧验证（需设备）', () => {
       `kill -${sig} \${t#/proc/$p/task/} && n=$((n+1)) && echo ok=$p/$n; fi; done; done; echo total=$n`
 
     const tStop = Date.now()
+    diagAnchor = tStop
     console.log('[19] >>> 卡死注入(STOP):', (await shell(codecCmd('STOP'))).trim())
     try {
       // 前端静止感知：码流冻结 ≥STALL(10s) 回退截图模式
@@ -156,11 +178,40 @@ test.describe('方案19 浏览器侧验证（需设备）', () => {
       // 后端此时已（或即将）自愈重启编码器；CONT 旧线程做清理
       console.log('[19] 清理(CONT):', (await shell(codecCmd('CONT'))).trim())
 
-      // 探针在 suspend 态观察到码流恢复（3×2s 窗口 ≥2fps）→ 自动回切
-      await expect(page.locator('.recovering-tip')).toBeVisible({ timeout: 75_000 })
-      const tBadge = Date.now()
-      await expect(page.locator('.recovering-tip')).toBeHidden({ timeout: 15_000 })
-      const tStreaming = Date.now()
+      // 探针在 suspend 态观察到码流恢复（3×2s 窗口 ≥2fps）→ 自动回切。
+      // 角标渲染窗仅 ~0.2-0.4s（configuring→streaming 两态之间），
+      // Playwright toBeVisible 跨进程轮询对 <0.5s 窗口实测偶发漏捕；
+      // 页面内 100ms 采样器按变化记录且历史累积、无竞态，改以时间线
+      // 时间戳为判据（.recovering-tip 样式为常显绝对定位，DOM 存在
+      // 即用户可见）。
+      await page.waitForFunction(
+        (t0) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ((window as any).__stream19?.events ?? []).some(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (e: any) => e.at >= t0 && e.badge,
+          ),
+        tStop,
+        { timeout: 75_000, polling: 250 },
+      )
+      const tBadge = (await readTimeline(page)).find((e) => e.at >= tStop && e.badge)!.at
+      // 等回切完成事件落盘（角标出现≈回切瞬间，出图在其后 0.2-1s；
+      // 直接读时间线会与首帧解码竞态）
+      await page.waitForFunction(
+        (t0) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ((window as any).__stream19?.events ?? []).some(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (e: any) => e.at >= t0 && e.mode === 'h264' && e.stateLabel === '直播中',
+          ),
+        tBadge,
+        { timeout: 15_000, polling: 250 },
+      )
+      const tlSwitch = await readTimeline(page)
+      const streamEv = tlSwitch.find(
+        (e) => e.at >= tBadge && e.mode === 'h264' && e.stateLabel === '直播中',
+      )
+      const tStreaming = streamEv!.at
       await expect(page.locator('.stat-item', { hasText: '模式: h264' })).toBeVisible()
       console.log(
         `[19] <<< 回切角标→出图 ${fmt(tStreaming - tBadge)}（注入起 ${fmt(tStreaming - tStop)}）`,
@@ -236,6 +287,7 @@ test.describe('方案19 浏览器侧验证（需设备）', () => {
     // ===== 6a：瞬断 → 回退截图模式 =====
     cut = true
     const tCut = Date.now()
+    diagAnchor = tCut
     current?.client.close()
     current?.server.close()
     console.log('[19] >>> 瞬断注入（WS 关闭，后续重连全部拒绝）')
@@ -254,13 +306,36 @@ test.describe('方案19 浏览器侧验证（需设备）', () => {
     // ===== 6b：恢复网络 → 指数退避重连 → 自动回切 =====
     cut = false
     console.log('[19] >>> 网络恢复，等前端指数退避重连')
-    await expect(page.locator('.recovering-tip')).toBeVisible({ timeout: 60_000 })
-    const tBadge = Date.now()
-    await expect(page.locator('.recovering-tip')).toBeHidden({ timeout: 30_000 })
-    const tStreaming = Date.now()
-    await expect(page.locator('.stat-item', { hasText: '模式: h264' })).toBeVisible()
-
+    // 同卡死注入用例：角标渲染窗短，Playwright 可见性轮询会漏捕，
+    // 以页面内采样器的历史时间线为判据
+    await page.waitForFunction(
+      (t0) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ((window as any).__stream19?.events ?? []).some(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (e: any) => e.at >= t0 && e.badge,
+        ),
+      tCut,
+      { timeout: 60_000, polling: 250 },
+    )
+    const tBadge = (await readTimeline(page)).find((e) => e.at >= tCut && e.badge)!.at
+    // 等回切完成事件落盘（同卡死注入用例的竞态说明）
+    await page.waitForFunction(
+      (t0) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ((window as any).__stream19?.events ?? []).some(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (e: any) => e.at >= t0 && e.mode === 'h264' && e.stateLabel === '直播中',
+        ),
+      tBadge,
+      { timeout: 30_000, polling: 250 },
+    )
     const tl = await readTimeline(page)
+    const streamEv = tl.find(
+      (e) => e.at >= tBadge && e.mode === 'h264' && e.stateLabel === '直播中',
+    )
+    const tStreaming = streamEv!.at
+    await expect(page.locator('.stat-item', { hasText: '模式: h264' })).toBeVisible()
     const lastOpen = tl.filter((e) => e.type === 'ws-open' && e.at > tCut).pop()
     console.log(`[19] <<< 角标出现→消失（出图）: ${fmt(tStreaming - tBadge)}`)
     if (lastOpen) {
