@@ -27,13 +27,14 @@
 
 import asyncio
 import time
+from collections import deque
 from typing import Any, AsyncIterator, Callable
 
 from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor, parse_bit_rate
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import EncoderOpts
-from app.infrastructure.stream.scrcpy import ScrcpyEncoder
+from app.infrastructure.stream.scrcpy import EncoderStalledError, ScrcpyEncoder
 
 logger = get_logger(__name__)
 
@@ -63,6 +64,8 @@ class StreamService:
         self._epoch: dict[str, int] = {}
         # 重启唤醒事件：pending 写入时 set，静止无帧也能立即切换
         self._restart_events: dict[str, asyncio.Event] = {}
+        # 卡死自愈（方案 19 实施项 1b）：device → 最近卡死重启时刻（60s 滑窗防风暴）
+        self._stall_restarts: dict[str, deque[float]] = {}
 
     async def start_stream(self, device_id: str) -> AsyncIterator[bytes]:
         """
@@ -130,6 +133,8 @@ class StreamService:
                     fps=s.stream.fps,
                 )
                 restart_bitrate = None
+                stalled = False
+                stall_exc: EncoderStalledError | None = None
                 frame_task = None
                 event_task = None
                 try:
@@ -157,28 +162,52 @@ class StreamService:
                                 continue  # 伪唤醒（pending 已被消费），回到取帧
                             restart_bitrate = pend
                             break
+                except EncoderStalledError as e:
+                    stalled = True
+                    stall_exc = e
+                    logger.warning("encoder_stalled_detected",
+                                   device=device_id, error=str(e))
                 finally:
                     for t in (frame_task, event_task):
                         if t is not None and not t.done():
                             t.cancel()
                     await encoder.stop()
                     self.encoders.pop(device_id, None)
-                if restart_bitrate is None:
-                    break
-                current_bps = restart_bitrate
+                if not stalled:
+                    if restart_bitrate is None:
+                        break
+                    current_bps = restart_bitrate
+                    self._epoch[device_id] = self._epoch.get(device_id, 0) + 1
+                    logger.info(
+                        "adaptive_bitrate_restarting_encoder",
+                        device=device_id,
+                        bit_rate=current_bps,
+                        epoch=self._epoch[device_id],
+                    )
+                    continue
+                # 卡死自愈（方案 19 实施项 1b）：60s 滑窗内最多 3 次重启，
+                # 超出则把 EncoderStalledError 上抛（video.py 会向客户端发 error）
+                now = time.monotonic()
+                hist = self._stall_restarts.setdefault(device_id, deque())
+                while hist and now - hist[0] > 60.0:
+                    hist.popleft()
+                if len(hist) >= 3:
+                    assert stall_exc is not None
+                    raise stall_exc
+                if hist:
+                    await asyncio.sleep(1.0 * len(hist))
+                hist.append(now)
                 self._epoch[device_id] = self._epoch.get(device_id, 0) + 1
-                logger.info(
-                    "adaptive_bitrate_restarting_encoder",
-                    device=device_id,
-                    bit_rate=current_bps,
-                    epoch=self._epoch[device_id],
-                )
+                logger.info("stall_restart_encoder",
+                            device=device_id, epoch=self._epoch[device_id],
+                            recent_stalls=len(hist))
         finally:
             self.active_streams.pop(device_id, None)
             self._advisors.pop(device_id, None)
             self._pending_bitrate.pop(device_id, None)
             self._restart_events.pop(device_id, None)
             self._epoch.pop(device_id, None)
+            self._stall_restarts.pop(device_id, None)
             logger.info("video_stream_stopped", device=device_id)
 
     def get_stream_epoch(self, device_id: str) -> int:

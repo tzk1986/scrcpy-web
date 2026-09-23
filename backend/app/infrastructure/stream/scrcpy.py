@@ -64,6 +64,11 @@ from app.scrcpy.stream_protocol import (
 logger = get_logger(__name__)
 
 
+class EncoderStalledError(RuntimeError):
+    """编码器卡死：发出 RESET_VIDEO 探针后仍超过 idle_reset 秒无数据
+    （E009/E021 同族「活着不产帧」故障，方案 19 实施项 1b）。"""
+
+
 class ScrcpyEncoder:
     """
     基于 scrcpy-server.jar 的视频编码器。
@@ -473,7 +478,14 @@ class ScrcpyEncoder:
                                 # 发送失败时清除锁存，下一个 tick 重试
                                 # （粒度 idle_reset/2，风暴安全）
                                 reset_sent_at = None
+                    elif now - reset_sent_at >= idle_reset:
+                        raise EncoderStalledError(
+                            f"no data {now - reset_sent_at:.1f}s after RESET_VIDEO")
                     continue
+        except EncoderStalledError as e:
+            # 探针异常不能被 stream_error 吞掉，必须上抛给 StreamService 自愈
+            logger.error("encoder_stalled", device=device_id, error=str(e))
+            raise
         except Exception as e:
             logger.error("stream_error", device=device_id, error=str(e))
         finally:

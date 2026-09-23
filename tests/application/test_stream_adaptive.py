@@ -171,3 +171,39 @@ async def test_restart_applies_even_when_stream_idle(stream_settings):
         await task
     except asyncio.CancelledError:
         pass
+
+
+@pytest.mark.asyncio
+async def test_stall_recovery_and_storm_guard(stream_settings, monkeypatch):
+    """卡死自愈：EncoderStalledError → 重建编码器续流；60s 窗口内最多 3 次，超限上抛。"""
+    from app.infrastructure.stream.scrcpy import EncoderStalledError
+
+    async def fake_sleep(t):
+        pass
+
+    monkeypatch.setattr("app.application.stream_service.asyncio.sleep", fake_sleep)
+
+    class StallOnly:
+        created = 0
+
+        def __init__(self):
+            StallOnly.created += 1
+            self.n = StallOnly.created
+
+        async def start(self, device_id, opts):
+            yield b"f"
+            raise EncoderStalledError("stalled")
+
+        async def stop(self):
+            pass
+
+    StallOnly.created = 0
+    svc = StreamService(encoder_factory=StallOnly)
+    gen = svc.start_stream("dev")
+    frames = []
+    with pytest.raises(EncoderStalledError):
+        async for f in gen:
+            frames.append(f)
+    # 首次 + 3 次防风暴窗口内重启 = 4 台编码器、4 个首帧，随后异常传播
+    assert frames == [b"f"] * 4
+    assert StallOnly.created == 4

@@ -1004,6 +1004,48 @@ async def test_idle_keepalive_sends_reset_video(monkeypatch):
     assert harness.server_process.terminate_called
 
 
+async def test_stall_probe_raises_after_reset(monkeypatch):
+    """RESET_VIDEO 后仍无数据 ≥ idle_reset → 生成器抛 EncoderStalledError（方案 19 项 1b）。
+
+    注意 async 生成器体内代码只在消费方 await __anext__ 期间推进：
+    首帧消费后直接 await 第二次 __anext__（2s 超时兜底），期间保活循环
+    在 0.2s 空闲发 RESET、约 0.4s 时探针抛异常。
+    """
+    import types
+
+    from app.infrastructure.stream.scrcpy import EncoderStalledError
+
+    fake = types.SimpleNamespace(stream=types.SimpleNamespace(
+        idle_reset_seconds=0.2, raw_stream_fallback=False))
+    monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
+
+    encoder = ScrcpyEncoder()
+    payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))  # 1 帧后视频流永久静默
+
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        agen = encoder.start(DEVICE_ID, EncoderOpts())
+        first = await asyncio.wait_for(agen.__anext__(), timeout=2.0)
+        assert first == payload
+        # 首帧后 0.2s（发 RESET）+ 0.2s（探针）量级内抛 EncoderStalledError，2s 超时兜底
+        t0 = time.monotonic()
+        with pytest.raises(EncoderStalledError):
+            await asyncio.wait_for(agen.__anext__(), timeout=2.0)
+        assert time.monotonic() - t0 < 1.5
+    # RESET 确实发出过一次；异常退出仍走完整 stop 清理
+    assert bytes(conn.control_writer.written) == b"\x11"
+    assert harness.server_process.terminate_called
+
+
 async def test_idle_keepalive_retries_after_send_failure(monkeypatch):
     """reset_video 发送抛错 → 清除锁存，下个 tick 重试（不再静默锁死）。
 
