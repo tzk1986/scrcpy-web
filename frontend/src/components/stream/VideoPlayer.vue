@@ -253,8 +253,8 @@ function stopRecoveryProbe() {
 
 /**
  * 截图模式下周期性探测 H264 码流恢复情况。
- * 连续多个窗口（RECOVERY_THRESHOLDS）帧数达标才回切，防止
- * 「恢复几秒又卡死」的横跳；回切后设 30s 冷却，冷却内再次
+ * 近 3 窗总帧数达聚合下限且末窗有帧才回切（evaluateH264Recovery），
+ * 防止「恢复几秒又卡死」的横跳；回切后设 30s 冷却，冷却内再次
  * 回退则本轮不再自动回切。
  */
 function startRecoveryProbe() {

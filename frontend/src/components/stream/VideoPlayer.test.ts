@@ -375,7 +375,7 @@ describe('VideoPlayer H264 状态机与回退', () => {
     expect(vs.start).toHaveBeenCalled()
     expect(wrapper.text()).toContain('模式: screenshot')
 
-    // 连续 3 个探测窗口（各 2s）帧数 ≥ MIN_FRAMES 才回切
+    // 近 3 个探测窗口（各 2s）总帧数达聚合下限且末窗有帧才回切
     for (let i = 1; i <= 3; i++) {
       h264.probeStats.frameCount = i * 5
       await vi.advanceTimersByTimeAsync(2000)

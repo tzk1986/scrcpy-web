@@ -164,18 +164,64 @@ describe('evaluateH264Recovery', () => {
   it('采样不足 3 个 → 不回切', () => {
     const now = 10_000
     const samples = [
-      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
-      sample(R.MIN_FRAMES, now - R.WINDOW_MS),
+      sample(R.MIN_TOTAL_FRAMES, now - 2 * R.WINDOW_MS),
+      sample(R.MIN_TOTAL_FRAMES, now - R.WINDOW_MS),
     ]
     expect(evaluateH264Recovery(samples, now)).toBe(false)
   })
 
-  it('任一窗口帧数不足 → 不回切', () => {
+  it('近 3 窗总帧数低于聚合下限 → 不回切', () => {
+    // 逐窗语义下该序列因中窗 3<4 被拒；聚合语义下总帧 11<12 同样被拒
     const now = 10_000
     const samples = [
-      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
-      sample(R.MIN_FRAMES - 1, now - R.WINDOW_MS),
-      sample(R.MIN_FRAMES, now),
+      sample(4, now - 2 * R.WINDOW_MS),
+      sample(3, now - R.WINDOW_MS),
+      sample(4, now),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(false)
+  })
+
+  it('run4 掉窗形态 [11,10,1]：连续达标窗不足但总帧达标且末窗有帧 → 回切', () => {
+    // 帧到达呈 ~3s 突发节律时 2s 窗与周期共振，逐窗判据永远不满足；
+    // 聚合判据将「每 3 窗掉 1 窗」的 [11,10,1] 判为恢复（方案 22）
+    const now = 10_000
+    const samples = [
+      sample(11, now - 2 * R.WINDOW_MS),
+      sample(10, now - R.WINDOW_MS),
+      sample(1, now),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(true)
+  })
+
+  it('run4 完整形态 [11,10,1,11]：第 4 窗后同样回切', () => {
+    const now = 10_000
+    const samples = [
+      sample(11, now - 3 * R.WINDOW_MS),
+      sample(10, now - 2 * R.WINDOW_MS),
+      sample(1, now - R.WINDOW_MS),
+      sample(11, now),
+    ]
+    expect(evaluateH264Recovery(samples, now)).toBe(true)
+  })
+
+  it('伪恢复（0.3fps 稀疏单帧）→ 不回切', () => {
+    const now = 10_000
+    expect(evaluateH264Recovery(
+      [sample(0, now - 2 * R.WINDOW_MS), sample(0, now - R.WINDOW_MS), sample(1, now)],
+      now,
+    )).toBe(false)
+    expect(evaluateH264Recovery(
+      [sample(1, now - 2 * R.WINDOW_MS), sample(0, now - R.WINDOW_MS), sample(1, now)],
+      now,
+    )).toBe(false)
+  })
+
+  it('突发后静默 [12,0,0] → 不回切（末窗必须有帧）', () => {
+    const now = 10_000
+    const samples = [
+      sample(12, now - 2 * R.WINDOW_MS),
+      sample(0, now - R.WINDOW_MS),
+      sample(0, now),
     ]
     expect(evaluateH264Recovery(samples, now)).toBe(false)
   })
@@ -183,18 +229,18 @@ describe('evaluateH264Recovery', () => {
   it('最新采样过期（流又停了）→ 不回切', () => {
     const now = 10_000
     const samples = [
-      sample(R.MIN_FRAMES, now - R.FRESH_MS - R.WINDOW_MS),
-      sample(R.MIN_FRAMES, now - R.FRESH_MS - 1),
+      sample(6, now - R.FRESH_MS - R.WINDOW_MS),
+      sample(6, now - R.FRESH_MS - 1),
     ]
     expect(evaluateH264Recovery(samples, now)).toBe(false)
   })
 
-  it('连续 3 窗口达标且新鲜 → 回切', () => {
+  it('近 3 窗总帧达标、末窗有帧且新鲜 → 回切', () => {
     const now = 10_000
     const samples = [
-      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
-      sample(R.MIN_FRAMES + 1, now - R.WINDOW_MS),
-      sample(R.MIN_FRAMES, now),
+      sample(4, now - 2 * R.WINDOW_MS),
+      sample(5, now - R.WINDOW_MS),
+      sample(4, now),
     ]
     expect(evaluateH264Recovery(samples, now)).toBe(true)
   })
@@ -203,9 +249,9 @@ describe('evaluateH264Recovery', () => {
     const now = 10_000
     const samples = [
       sample(0, now - 5 * R.WINDOW_MS),
-      sample(R.MIN_FRAMES, now - 2 * R.WINDOW_MS),
-      sample(R.MIN_FRAMES, now - R.WINDOW_MS),
-      sample(R.MIN_FRAMES, now),
+      sample(4, now - 2 * R.WINDOW_MS),
+      sample(4, now - R.WINDOW_MS),
+      sample(4, now),
     ]
     expect(evaluateH264Recovery(samples, now)).toBe(true)
   })

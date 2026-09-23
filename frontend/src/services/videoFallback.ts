@@ -78,7 +78,7 @@ export interface RecoverySample {
 
 export const RECOVERY_THRESHOLDS = {
   WINDOWS: 3,
-  MIN_FRAMES: 4,
+  MIN_TOTAL_FRAMES: 12,   // 近 WINDOWS 窗（6s）总帧数下限 = 2fps × 6s
   WINDOW_MS: 2000,
   FRESH_MS: 3000,
 }
@@ -88,8 +88,13 @@ export const RECOVERY_THRESHOLDS = {
  *
  * 设备端编码器（如 Rockchip）可能卡死后自行恢复：ws 仍未断、后端持续
  * 转发帧，但前端已回退截图模式。截图模式下 h264 实例转入 suspend（只
- * 计数不解码），每次采样记录窗口内帧数。连续 WINDOWS 个窗口帧数均
- * ≥ MIN_FRAMES（约合 2fps 下限，排除 0.x fps 的伪恢复）且最新采样还
+ * 计数不解码），每次采样记录窗口内帧数。
+ *
+ * 判据为「窗口聚合 + 末窗非零」而非逐窗严格（方案 22）：设备端帧到达
+ * 呈突发-静默节律（实测 ~3s 一突发），2s 探针窗与突发周期成整数比时
+ * 「逐窗 ≥4」会与出帧周期共振、结构性不可满足（相位不利时永不回切）。
+ * 聚合为近 WINDOWS 窗总帧数 ≥ MIN_TOTAL_FRAMES（保留 2fps 均值语义，
+ * 排除 0.x fps 的伪恢复）且末窗 ≥1 帧（拒绝「突发后静默」）且最新采样
  * 在 FRESH_MS 内，才允许回切——防止「恢复几秒又卡死」的来回横跳。
  */
 export function evaluateH264Recovery(samples: RecoverySample[], now: number): boolean {
@@ -98,8 +103,9 @@ export function evaluateH264Recovery(samples: RecoverySample[], now: number): bo
   const recent = samples.slice(-RECOVERY_THRESHOLDS.WINDOWS)
   const latest = recent[recent.length - 1]
   if (now - latest.at > RECOVERY_THRESHOLDS.FRESH_MS) return false
+  if (latest.frames < 1) return false
 
-  return recent.every(s => s.frames >= RECOVERY_THRESHOLDS.MIN_FRAMES)
+  return recent.reduce((sum, s) => sum + s.frames, 0) >= RECOVERY_THRESHOLDS.MIN_TOTAL_FRAMES
 }
 
 export function evaluateH264Fallback(
