@@ -66,3 +66,4 @@ tests/e2e/report/
 # Claude memory
 memory/
 .review-scratch/
+.scratch/

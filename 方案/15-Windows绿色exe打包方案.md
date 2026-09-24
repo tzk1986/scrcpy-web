@@ -4,6 +4,7 @@
 > **决策（2026-09-17）**：当前阶段优先完成现有版本的功能实现与体验优化；待功能与体验达标后，以本文档为基础进行**二次评估**再决定是否实施打包。
 > **二次评估（2026-09-24）**：§六 六条触发条件已全部满足；代码走查发现 2 项打包硬前置与若干修订点，外部经验补充 9 类坑，详见 §八。**两项硬前置已实施完成并提交。**
 > **第三批确认（2026-09-24）**：外置文件全部可随包分发（用户除 Chrome 外零安装）；体积预估 onedir ≈45MB / zip ≈22MB；第三批走查 13 项发现 + 与同类绿色包（scrcpy / VS Code Portable / PAF 规范 / Picard）对标评估结论：方案合理，详见 §九。
+> **spike 构建已验证（2026-09-24）**：临时目录一次性构建 + 运行验证通过（frozen 资源解析、随包 adb 子进程、/health 与 /api/devices 均正常）；体积实测钉死 **onedir 42MiB / zip 18.9MiB**；新发现 1 项（数据路径按 cwd 解析，§9.3-14）。详见 §9.5。
 > 性质：可行性调研（Spike），未写任何实现代码。
 
 ## 一、结论
@@ -137,8 +138,8 @@
 
 ### 8.6 待实测清单（外部调研存疑项）
 
-1. pywinpty 在 PyInstaller 下二进制的收全情况（含 Win10 <1809 无 ConPTY 回退 winpty 后端的路径）
-2. hook-pydantic 在锁定版本 + 构建 Python 组合下是否完全免手工干预
+1. pywinpty 在 PyInstaller 下二进制的收全情况（含 Win10 <1809 无 ConPTY 回退 winpty 后端的路径）——**收全已实测（spike 产物 5 件齐：conpty.dll / winpty.dll / OpenConsole.exe / winpty-agent.exe / _winpty.pyd）；运行期 PTY 交互待正式实施验证**
+2. hook-pydantic 在锁定版本 + 构建 Python 组合下是否完全免手工干预——**已实测（spike 未加任何 pydantic 手工处理，收集与运行均正常）**
 3. Nuitka 第二候选对照（构建耗时、uvicorn/pywinpty 资源收全率）——本项目纯 Python 依赖为主，PyInstaller 仍是首选
 4. 免安装目录位于 OneDrive / 网络盘 / 中文路径时的行为
 5. 目标环境杀软（Defender/360/火绒）误报实测与代码签名成本收益
@@ -190,9 +191,18 @@
 | **发布 zip（deflate）** | | **≈22MB（区间 19–26MB）** | 二进制约压至 40%、JS 资产约压至 35% |
 
 - 原方案 §三 估"产物 80~120MB / zip 30~50MB"**偏保守**：本项目无 numpy/OpenCV 类科学栈，前端 dist 实测仅 2.3MB（code-split 生效）。
-- 不确定度 ±20%：base_library 与 stdlib DLL 子集由 PyInstaller 分析决定，**精确值需一次真实构建才能钉死**（可做一次性 spike 构建，产物落临时目录）。
-- 可选瘦身：spec `excludes=['rich','pygments','tkinter','pytest','pywin32']` 约省 **9MB+**（structlog 对 rich 是可选导入，会优雅回落，须在干净 venv 实测确认）。
+- 不确定度 ±20% 已由 spike 实测钉死（下表），预估偏保守（方向正确）。
+- 可选瘦身：spec `excludes=['rich','pygments','tkinter','pytest','pywin32']` 约省 **9MB+**（structlog 对 rich 是可选导入，会优雅回落）——**spike 已实证：干净 venv + excludes 后产物内无 rich/pygments**。
 - 运行时数据另计：SQLite 库随调试数据增长（本机已见 128MB + WAL 270MB），发布包不含 `data/`，首次运行建空库（§8.7）。
+
+**spike 实测校准（2026-09-24）**：PyInstaller 6.22.3 + 干净 venv（`pip install -e ".[dev]"`），一次性构建（spec/入口均落临时目录）：
+
+| 口径 | 预估 | spike 实测 |
+|------|------|-----------|
+| onedir 目录 | ≈45MB（40–52） | **42MiB**（121 个文件） |
+| 发布 zip（deflate level 6） | ≈22MB（19–26） | **18.9MiB**（19,832,149 B） |
+
+实测构成（`_internal` 内大头，MiB）：winpty 6.6 / tools(adb.exe) 6.4 / pydantic_core 5.0 / frontend(dist) 2.3 / app(本项目) 0.72 / watchfiles 0.62 / PyYAML 0.25 / httptools 0.17；其余为解释器与 stdlib DLL 子集（在 `_internal` 根）与压缩进 exe 的 PYZ。**下载体积 19MB、解压 42MB**——正式版按 §9.1 加 adb 三件套两 DLL（+0.2MB）后与此基本持平。
 
 ### 9.3 走查补充：第三批发现与处置
 
@@ -213,6 +223,7 @@
 | 11 | `frontend/dist` 未入库；`data/` 目录由 `sqlite.py:67` 自动 mkdir（实测） | 打包顺序依赖前端构建；数据目录无需额外处理 | 任务 4 明确构建顺序：`npm ci && npm run build` → PyInstaller |
 | 12 | `AdbWinApi.dll`/`AdbWinUsbApi.dll`：AOSP `Android.bp` 列为 Windows 构建 `shared_libs`/`required`（仅 `usb_windows.cpp` 引用）；本机实测单文件 `adb version` 可跑（TCP 不触 USB 路径）；scrcpy 官方发布三件套齐发 | USB 直连失败风险 | 任务 0.5 改为下载**三件套**一体校验（§9.1 已修订） |
 | 13 | adb server 5037 冲突：用户机器已有 Android Studio 等 adb server 时，本包 adb 会按官方行为"killing"杀掉旧 server（`client/adb_client.cpp` "doesn't match this client...killing..."） | 破坏用户既有 adb 环境 | 任务 5 发布文档写明冲突行为 + 提供 `ANDROID_ADB_SERVER_PORT` 隔离方案 |
+| 14 | **相对路径按 cwd 解析（spike 实证）**：`DatabaseConfig.path="./data/debug.sqlite"`（`config/settings.py:34`）等相对路径相对**当前工作目录**解析——spike 从临时目录启动时数据落在该目录的 `data/` 下 | 双击启动（cwd=exe 目录）尚可；从快捷方式/任意目录启动则数据漂移；cwd 不可写（Program Files 等）直接崩 | 任务 1 扩展：frozen 分支把数据/日志路径锚定 `Path(sys.executable).parent`（与 §9.1 "exe 同级优先"策略统一），并梳理其余相对路径（logs 等） |
 
 ### 9.4 与同类绿色包规划的对标（2026-09-24 外部调研，一手来源）
 
@@ -232,3 +243,27 @@
 1. adb 改**三件套**齐发（+约 0.2MB，消灭 USB 路径风险，对齐 scrcpy 官方发布）；
 2. 发布文档写明 adb 5037 冲突行为与 `ANDROID_ADB_SERVER_PORT` 隔离方案；
 3. 发布文档写明"升级覆盖时保留 `data/` 与 `config/`"（PAF / VS Code 惯例），用户数据永不写入 `_internal`。
+
+### 9.5 spike 构建验证结论（2026-09-24）
+
+为验证 §九 结论并钉死体积数字，做了一次**一次性 spike 构建**（spec 与入口均落 `.scratch/` 临时目录，已 gitignore；构建环境为干净 venv `pip install -e ".[dev]" pyinstaller`，PyInstaller 6.22.3）。
+
+**spike 与正式打包的区别**（spike 只验证"打包骨架成立"，不是可用绿色版）：
+
+| 维度 | spike（本次） | 正式打包（任务 0.5~6） |
+|------|--------------|----------------------|
+| 入口 | 临时 `launcher.py`（仅 `SetDllDirectoryW` + 传对象启动） | 改造 `run_server.py`：单实例 mutex、端口试绑回退、noconsole 文件日志、自动开浏览器 |
+| 路径改造 | **未做**——因此暴露 §9.3-14（数据落 cwd） | frozen 感知：data/config 锚定 exe 同级 + APPDATA 回落，`config_watch` 同步改造 |
+| 前端托管 | **未挂 StaticFiles**（dist 仅随包携带） | `StaticFiles` 挂载 + SPA fallback（§8.5 任务 2） |
+| adb | 本机现成**单文件** adb.exe | `fetch_tools.py` 下载**三件套** + jar，SHA256 锁定（§9.3-6/12） |
+| spec 位置 | 临时目录（一次性） | 入库 `openscrcpy.spec` + 构建脚本 |
+| 依赖口径 | 干净 venv + `excludes`（与正式一致） | 同左 |
+
+**运行验证结果（全通过）**：
+- 构建 exit 0（约 29s）；资源核对全到位：`tools/adb.exe`、`app/scrcpy/scrcpy-server.jar`、`config/*.yaml`、`winpty/` 5 件、`frontend/dist/`
+- `/health` 200；`/api/devices` 200；DB 初始化、config_watch、清理任务均正常启动，日志零错误
+- **随包 adb 子进程实证**：以 `ANDROID_ADB_SERVER_PORT=5039` 隔离端口运行，新起 server 进程的可执行路径 = `<产物>/_internal/tools/adb.exe`（命令行 `adb -L tcp:5039 fork-server server`）→ `_detect_adb_path()` 与 `SetDllDirectoryW(None)` 均按 §8.4-2 预期工作
+- 首轮运行顺带实证：§9.3-13（撞上用户既有 5037 server，PID 早于本进程）、§9.3-4（config_watch 解析到 `_internal/config/`）、§9.3-7/8（干净 venv 产物无 rich/pygments）
+- 构建告警 `could not resolve 'AdbWinApi.dll'`——实证 adb.exe 导入表含该（延迟加载）DLL，佐证 §9.1 三件套决策；`ext-ms-win-uiacore-*` 为 Windows API set 虚拟 DLL，属常规无害告警
+
+**未覆盖（留给正式实施）**：三件套 DLL 未在 spike 注入（USB 直连未验）；`--noconsole` 文件日志、单实例、自动开浏览器时序；PTY 运行期交互；杀软误报与 OneDrive/中文路径（§8.6-4/5/6）。
