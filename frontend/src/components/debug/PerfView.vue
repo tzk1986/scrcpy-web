@@ -27,8 +27,12 @@
           <el-dropdown-menu>
             <el-dropdown-item command="buffer-csv">导出 CSV（暂存）</el-dropdown-item>
             <el-dropdown-item command="buffer-json">导出 JSON（暂存）</el-dropdown-item>
-            <el-dropdown-item command="cache-csv" divided>导出 CSV（缓存）</el-dropdown-item>
-            <el-dropdown-item command="cache-json">导出 JSON（缓存）</el-dropdown-item>
+            <el-dropdown-item command="cache-csv" divided :disabled="!cacheExportable">
+              导出 CSV（缓存{{ cacheExportable ? '' : '，需先开启录制' }}）
+            </el-dropdown-item>
+            <el-dropdown-item command="cache-json" :disabled="!cacheExportable">
+              导出 JSON（缓存{{ cacheExportable ? '' : '，需先开启录制' }}）
+            </el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
@@ -162,6 +166,10 @@ const recordReason = ref('')
 const recordRows = ref(0)
 const recordBusy = ref(false)
 let statusTimer: ReturnType<typeof setInterval> | null = null
+
+// 缓存导出可用性：录制中（导出会先 flush 未落盘批）或已有落盘缓存行。
+// recordRows 为跨批次聚合的缓存总行数，停止录制后仍可用于导出历史数据。
+const cacheExportable = computed(() => isRecording.value || recordRows.value > 0)
 
 // 最新指标
 const latestMetrics = computed(() => {

@@ -105,10 +105,18 @@ const ElDropdownMenu = defineComponent({
 
 const ElDropdownItem = defineComponent({
   name: 'ElDropdownItem',
-  props: { command: String },
+  props: { command: String, disabled: Boolean },
   setup(props, { slots }) {
     return () =>
-      hVue('div', { class: 'el-dropdown-item', 'data-command': props.command }, slots.default?.())
+      hVue(
+        'div',
+        {
+          class: 'el-dropdown-item',
+          'data-command': props.command,
+          'data-disabled': String(!!props.disabled),
+        },
+        slots.default?.(),
+      )
   },
 })
 
@@ -352,6 +360,49 @@ describe('PerfView', () => {
     await flushPromises()
     expect(mockApi.exportPerfMetrics).toHaveBeenCalledWith('dev1', 'csv', 'cache')
     expect(getAnchor()!.download).toBe('perf_dev1_cache.csv')
+    wrapper.unmount()
+  })
+
+  it('导出菜单：无缓存数据时缓存项置灰并提示需开启录制', async () => {
+    // beforeEach 默认：recording=false, rows=0（从未录制）→ 缓存两项不可用
+    const wrapper = mountView()
+    await flushPromises()
+    const byCmd = (c: string) =>
+      wrapper.findAll('[data-command]').find((i) => i.attributes('data-command') === c)!
+
+    expect(byCmd('buffer-csv').attributes('data-disabled')).toBe('false')
+    expect(byCmd('buffer-json').attributes('data-disabled')).toBe('false')
+    expect(byCmd('cache-csv').attributes('data-disabled')).toBe('true')
+    expect(byCmd('cache-json').attributes('data-disabled')).toBe('true')
+    expect(byCmd('cache-csv').text()).toContain('需先开启录制')
+    wrapper.unmount()
+  })
+
+  it('导出菜单：已有落盘缓存（未在录制）时缓存项可用', async () => {
+    mockApi.getPerfRecordStatus.mockResolvedValue({
+      recording: false, reason: 'stopped', rows: 200, oldest_ts: null, newest_ts: null,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const byCmd = (c: string) =>
+      wrapper.findAll('[data-command]').find((i) => i.attributes('data-command') === c)!
+
+    expect(byCmd('cache-csv').attributes('data-disabled')).toBe('false')
+    expect(byCmd('cache-json').attributes('data-disabled')).toBe('false')
+    expect(byCmd('cache-csv').text()).not.toContain('需先开启录制')
+    wrapper.unmount()
+  })
+
+  it('导出菜单：录制中（尚未落盘任何批）缓存项可用', async () => {
+    mockApi.getPerfRecordStatus.mockResolvedValue({
+      recording: true, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const byCmd = (c: string) =>
+      wrapper.findAll('[data-command]').find((i) => i.attributes('data-command') === c)!
+
+    expect(byCmd('cache-csv').attributes('data-disabled')).toBe('false')
     wrapper.unmount()
   })
 
