@@ -7,11 +7,13 @@ Loads configuration from:
 3. Environment variables (highest priority)
 """
 
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,9 +32,57 @@ class ServerConfig(BaseSettings):
     workers: int = 4
 
 
+def _is_writable(directory: Path) -> bool:
+    """以创建-删除临时文件探测目录可写性；目录不存在同样视为不可写。"""
+    try:
+        probe = directory / f".write_probe_{os.getpid()}"
+        probe.touch()
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def app_base_dir() -> Path:
+    """
+    应用数据基目录：数据等相对路径的锚点。
+
+    - 源码运行：仓库根（不随启动 cwd 漂移）
+    - 冻结运行（PyInstaller）：exe 同级（绿色版可整体迁移/备份）；
+      同级不可写（如 Program Files）时回落 %LOCALAPPDATA%/OpenScrcpy
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        if _is_writable(exe_dir):
+            return exe_dir
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return Path(local_appdata) / "OpenScrcpy"
+        return exe_dir
+    return Path(__file__).parent.parent
+
+
+def _to_abs_path(value: str) -> str:
+    """相对路径锚定 app_base_dir()，绝对路径原样返回。"""
+    path = Path(value)
+    if path.is_absolute():
+        return value
+    return str(app_base_dir() / path)
+
+
 class DatabaseConfig(BaseSettings):
-    path: str = "./data/debug.sqlite"
+    # pydantic-settings 会把字段名作为 env 候选（populate_by_name 下必加），字段名
+    # 恰为 path 时会误读系统 PATH；env_prefix 只作用于字段名候选（env_prefix_target
+    # 默认 variable），使候选变为 [DB_PATH, OPENSCRCPY_PATH]，系统 PATH 不再命中
+    path: str = Field(default="./data/debug.sqlite", validation_alias="DB_PATH", validate_default=True)
     echo: bool = False
+
+    model_config = SettingsConfigDict(populate_by_name=True, env_prefix="OPENSCRCPY_")
+
+    @field_validator("path")
+    @classmethod
+    def _normalize_path(cls, value: str) -> str:
+        return _to_abs_path(value)
 
 
 class AdbConfig(BaseSettings):
@@ -200,6 +250,12 @@ def get_settings() -> Settings:
         server["host"] = os.environ["BACKEND_HOST"]
     if os.getenv("BACKEND_PORT"):
         server["port"] = int(os.environ["BACKEND_PORT"])
+
+    # 同上：yaml 的 database 节点作为 init kwargs 会压过 pydantic env 读取，
+    # 故显式覆盖，使容器部署（docker-compose 的 DB_PATH）能真正生效
+    if os.getenv("DB_PATH"):
+        database = config.setdefault("database", {})
+        database["path"] = os.environ["DB_PATH"]
 
     return Settings(**config)
 
