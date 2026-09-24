@@ -59,6 +59,11 @@ const mockApi = vi.hoisted(() => ({
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
+const elMessage = vi.hoisted(() => ({
+  success: vi.fn(), error: vi.fn(), warning: vi.fn(),
+}))
+vi.mock('element-plus', () => ({ ElMessage: elMessage }))
+
 // ===== Element Plus 轻量 stub（happy-dom 下不引入真实组件库） =====
 
 const ElButton = defineComponent({
@@ -185,7 +190,11 @@ beforeEach(() => {
   mockApi.getLogs.mockResolvedValue({ logs: [] })
   mockApi.getDebugStats.mockClear()
   mockApi.exportLogs.mockClear()
+  mockApi.exportLogs.mockResolvedValue(new Blob(['[]']))
   mockApi.cleanupSessionLogs.mockClear()
+  elMessage.success.mockClear()
+  elMessage.error.mockClear()
+  elMessage.warning.mockClear()
   clipboard.writeText.mockClear()
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard })
 })
@@ -436,6 +445,38 @@ describe('LogcatView', () => {
 
     expect(errSpy).toHaveBeenCalled()
     errSpy.mockRestore()
+  })
+
+  it('导出空数据（404）提示暂无数据可导出，不触发下载', async () => {
+    const store = useDebugStore()
+    store.sessionId = 'sess-1'
+    mockApi.exportLogs.mockRejectedValueOnce({ response: { status: 404 } })
+    const createObjectURL = vi.fn(() => 'blob:mock-url')
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
+    const wrapper = mountView()
+    await flushPromises()
+
+    wrapper.findComponent(ElDropdown).vm.$emit('command', 'json')
+    await flushPromises()
+
+    expect(elMessage.warning).toHaveBeenCalledWith('暂无数据可导出')
+    expect(createObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('导出其他错误提示失败原因', async () => {
+    const store = useDebugStore()
+    store.sessionId = 'sess-1'
+    mockApi.exportLogs.mockRejectedValueOnce({
+      response: { status: 500, data: { detail: 'boom' } },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    wrapper.findComponent(ElDropdown).vm.$emit('command', 'json')
+    await flushPromises()
+
+    expect(elMessage.error).toHaveBeenCalledWith('导出失败: boom')
+    expect(elMessage.warning).not.toHaveBeenCalled()
   })
 
   it('自动滚动：新日志滚到底部，关闭开关后不再滚动', async () => {

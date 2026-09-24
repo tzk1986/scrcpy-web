@@ -292,6 +292,7 @@ data: {"type": "disconnected", "device_id": "..."}
 - 查询参数：`level`、`tag`（可选）、`format`（`json` 或 `csv`，默认 `json`；其他值按 `json` 处理）、`limit`（可选，默认 `50000`）
 - 响应 200：附件下载（`Content-Disposition: attachment; filename="logs_<session_id>.json|csv"`），媒体类型 `application/json` 或 `text/csv`
 - CSV 表头列：`timestamp, level, pid, tid, tag, message`
+- 错误：404 `HTTP_ERROR`，`message = "NO_DATA"`（未开始采集或过滤后为空；不产出空文件，前端提示「暂无数据可导出」）
 
 #### POST /api/debug/sessions/{session_id}/shell
 

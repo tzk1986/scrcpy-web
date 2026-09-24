@@ -6,7 +6,7 @@
     - POST   /api/debug/sessions                     创建（返回 session_id）
     - GET    /api/debug/sessions/{id}                存在 / 不存在（404）
     - GET    /api/debug/sessions/{id}/logs           过滤参数透传与默认值
-    - GET    /api/debug/sessions/{id}/logs/export    json / csv 两种格式与响应头
+    - GET    /api/debug/sessions/{id}/logs/export    json / csv 两种格式与响应头；空数据→404
     - POST   /api/debug/sessions/{id}/shell          正常输出 / 会话缺失→404
     - DELETE /api/debug/sessions/{id}                关闭
     - POST   /api/debug/cleanup                      手动清理
@@ -236,6 +236,17 @@ def test_export_logs_csv(fake: FakeDebugService) -> None:
     )
     assert lines[2] == ",E,,,,boom"  # 缺 ts/pid/tid/tag → 空串
     assert fake.calls == [("get_logs", SESSION, "I", None, 10)]
+
+
+def test_export_logs_no_data_404(fake: FakeDebugService) -> None:
+    """空日志导出（未开始采集或过滤后为空）→ 404 NO_DATA，不产出空文件。"""
+    fake.logs = []
+    client = make_client()
+    with override(get_debug_service, fake):
+        response = client.get(f"/api/debug/sessions/{SESSION}/logs/export")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": {"code": "HTTP_ERROR", "message": "NO_DATA"}}
 
 
 # ---------------------------------------------------------------------------

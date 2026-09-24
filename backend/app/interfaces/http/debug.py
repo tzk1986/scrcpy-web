@@ -22,7 +22,7 @@ import io
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.application.debug_service import DebugService
@@ -129,8 +129,12 @@ async def export_logs(
 
     返回：
         文件下载响应（Content-Disposition: attachment）。
+        空数据（未开始采集或过滤后为空）返回 404，错误码 NO_DATA。
     """
     logs = await service.get_logs(session_id, level=level, tag=tag, limit=limit)
+
+    if not logs:
+        raise HTTPException(status_code=404, detail="NO_DATA")
 
     if format == "csv":
         output = io.StringIO()

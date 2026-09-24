@@ -137,6 +137,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useDebugStore } from '@/stores/debug'
 import { api } from '@/services/api'
 
@@ -256,6 +257,7 @@ function clear() {
 /**
  * 导出日志为文件。
  * 从后端获取日志数据，创建 Blob 并触发浏览器下载。
+ * 空数据（404 NO_DATA，未开始采集或过滤后为空）提示「暂无数据可导出」。
  */
 async function exportLogs(format: 'json' | 'csv') {
   if (!debugStore.sessionId) return
@@ -273,8 +275,18 @@ async function exportLogs(format: 'json' | 'csv') {
     a.click()
     URL.revokeObjectURL(url)
   } catch (e) {
+    if ((e as { response?: { status?: number } }).response?.status === 404) {
+      ElMessage.warning('暂无数据可导出')
+    } else {
+      ElMessage.error(`导出失败: ${errText(e, '未知错误')}`)
+    }
     console.error('Export failed:', e)
   }
+}
+
+function errText(e: unknown, fallback: string): string {
+  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+  return detail || fallback
 }
 
 /** 加载数据库统计信息。 */
