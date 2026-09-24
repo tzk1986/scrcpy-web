@@ -1,7 +1,8 @@
 # 15 - Windows 绿色 exe 打包方案（调研存档）
 
-> **状态：暂缓执行**
+> **状态：二次评估完成（2026-09-24）——方案 A 可用，待排期实施**
 > **决策（2026-09-17）**：当前阶段优先完成现有版本的功能实现与体验优化；待功能与体验达标后，以本文档为基础进行**二次评估**再决定是否实施打包。
+> **二次评估（2026-09-24）**：§六 六条触发条件已全部满足；代码走查发现 2 项打包硬前置与若干修订点，外部经验补充 9 类坑，详见 §八。
 > 性质：可行性调研（Spike），未写任何实现代码。
 
 ## 一、结论
@@ -75,3 +76,71 @@
 - [PyInstaller 手册](https://pyinstaller.org/en/stable/usage.html)
 - [打包实战笔记](https://til.simonwillison.net/python/packaging-pyinstaller)
 - [知乎：pyinstaller 打包 uvicorn 的坑](https://zhuanlan.zhihu.com/p/630072565)
+
+## 八、二次评估（2026-09-24）
+
+### 8.1 结论
+
+**方案 A（PyInstaller onedir + 前端静态同域托管 + 自动开浏览器）仍然可用，前置条件已全部满足，可进入实施排期。**
+原调研的核心判断（架构对打包友好、改造量小、onedir 优于 onefile）经 7 个月代码演进后依然成立；但代码走查发现 **2 项硬前置**（§8.3）与若干需修订的实施细节（§8.5），外部调研补充了 9 类此前未覆盖的坑（§8.4）。
+
+### 8.2 触发条件复核（§六 六条）
+
+| # | 条件 | 现状（2026-09-24） | 判定 |
+|---|------|-------------------|------|
+| 1 | 浏览器端到端测试通过 | E2E 9/9 100%（本地跑，不入 CI） | ✅ |
+| 2 | 调试会话管理补齐 | 方案 05 100%（连接池/断线续传/会话恢复/会话锁） | ✅ |
+| 3 | 远程 Shell PTY 落地 | 方案 07，ConPTY 已接入（`infrastructure/adb/winpty.py`） | ✅ |
+| 4 | 端口可配置化 | `BACKEND_PORT`/`BACKEND_HOST` 生效（`config/settings.py:199`，vite 代理与 E2E 跟随） | ✅ |
+| 5 | 集成测试与部署达可发布标准 | 方案 10 地基版，CI 双 job 全绿 | ✅ |
+| 6 | 性能/网络持久化与导出 | 方案 18 已完成 | ✅ |
+
+### 8.3 硬前置（实施前必须先做，否则绿色版功能残缺）
+
+1. **统一裸 `adb` 调用（新发现，原方案遗漏）**：`infrastructure/stream/scrcpy.py` 10 处 + `scrcpy/server_manager.py` 3 处直接用字符串 `"adb"`（依赖系统 PATH），绕过了 `settings().adb.path` 的 tools 优先检测（`infrastructure/adb/cli.py`、`shell.py` 才走配置）。打包绿色版的用户机器无 adb 时，视频流/控制/server 推送全部失败。需先将这 13 处统一走 `settings().adb.path`，冻结感知才有意义。
+2. **Python 版本口径**：`pyproject.toml` 声明 `>=3.11`，但本机仅有 Python 3.10.11，且全部真机验证均在该版本完成。建议**以 3.10.11 构建并实测**（保持与验证环境一致），同步修正声明为 `>=3.10`；若要用 3.11+ 打包，需重跑真机回归。
+
+### 8.4 外部经验补充（2026-09-24 调研，原方案未覆盖）
+
+| # | 坑 | 做法 | 来源 |
+|---|-----|------|------|
+| 1 | pywinpty 无官方 hook（hooks-contrib 686 个 hook 里没有 winpty） | 显式注入 winpty 包内 4 个非扩展二进制：`conpty.dll`、`winpty.dll`、`OpenConsole.exe`、`winpty-agent.exe`（`_winpty.cp310-win_amd64.pyd` 会被自动收集） | [pywinpty #536](https://github.com/andfoy/pywinpty/issues/536) |
+| 2 | 冻结 bootloader 会 `SetDllDirectoryW` 把 DLL 搜索路径指向包目录，子进程继承 → 启动 adb.exe 可能 DLL 冲突 | 启动外部程序前执行 `ctypes.windll.kernel32.SetDllDirectoryW(None)` | [PyInstaller Common Issues](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html) |
+| 3 | `--noconsole` 下 stdout/stderr 为 None，uvicorn 默认 StreamHandler 写入即崩；bootloader 启动期错误连 stderr 都没有 | 自定义 `log_config` 落文件（structlog 一并落文件）；排错用 DebugView | [同上](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html) |
+| 4 | pydantic v2 元数据缺失（`PackageNotFoundError`） | 升级 pyinstaller + hooks-contrib 到最新（内置 hook-uvicorn / hook-pydantic 已适配 v2），必要时 `copy_metadata('pydantic')`；**不必手写 collect_submodules 长清单** | [hook-pydantic.py](https://github.com/pyinstaller/pyinstaller-hooks-contrib/blob/master/_pyinstaller_hooks_contrib/stdhooks/hook-pydantic.py) |
+| 5 | PyInstaller 6.x onedir 资源全部进 `_internal`，老写法 `os.path.dirname(sys.executable)` 定位资源失效 | 资源路径用 `sys._MEIPASS`（6.x onedir 下即 `_internal`）；spec 的 datas 用 `src:dest` 写法；用户数据禁写 `_MEIPASS` | [CHANGES 6.0.0](https://pyinstaller.org/en/stable/CHANGES.html) |
+| 6 | 绿色版体验坑 | 单实例 `CreateMutex` + 已存在则直接开浏览器指向已有端口；端口先试绑、失败回退并写回配置；**绑 `127.0.0.1` 不弹防火墙**（绑 0.0.0.0 必弹）；`webbrowser.open` 需等端口就绪 | [webbrowser 文档](https://docs.python.org/3/library/webbrowser.html) |
+| 7 | 数据目录只读场景 | exe 同级 `data/` 优先（VSCode Portable 范式），装在 Program Files 等只读位置时回落 `%LOCALAPPDATA%` | [PortableApps 规范](https://portableapps.com/platform/features) |
+| 8 | UPX 压缩的报毒特征与启动代价 | **关闭 UPX**（体积省 ~30% 但启动变慢、更易报毒）；如必须用则 `--upx-exclude` 只排除问题文件 | [Using UPX](https://pyinstaller.org/en/stable/usage.html) |
+| 9 | onefile 的三重劣势（已在 §三 决策，此处补充实据） | 启动慢 3-8 倍、`%TEMP%\_MEIxxxx` 强杀残留、自解压+UPX 是启发式报毒特征 → 维持 onedir 决策 | [Operating Mode](https://pyinstaller.org/en/stable/operating-mode.html) |
+
+**高置信度结论**（多来源一致）：onedir 不用 onefile；干净 venv + 上游 hook（不手写清单）；noconsole 自管文件日志；Windows 强制 Proactor 策略 + `freeze_support()` 前置；外部程序先 `SetDllDirectoryW(None)` 并用绝对路径；绑回环 + 单实例 + 端口试绑；关 UPX。
+
+### 8.5 原方案任务分解的修订
+
+| 原任务 | 修订 |
+|--------|------|
+| （新增）任务 0 | 统一 13 处裸 `adb` 调用（§8.3-1）——打包硬前置，也是独立健壮性修复 |
+| 1 冻结感知资源路径 | 增加：winpty 4 个二进制注入（§8.4-1）；配置/data 路径"exe 同级优先 + APPDATA 回落"（§8.4-7）；`scrcpy_recordings` TEMP 清理经查为**死代码**（backend 无生产者），可随改造删除 |
+| 2 前端静态托管 | 不变（`main.py` 确无 `StaticFiles` 挂载，仍待实施；前端 `/api` 相对路径 + `location.host` 已确认零改动） |
+| 3 启动器体验 | 增加：noconsole 文件日志（§8.4-3）、`SetDllDirectoryW(None)`（§8.4-2）、单实例 mutex + 端口试绑回退（§8.4-6）；绑定地址改 `127.0.0.1`（防火墙） |
+| 4 spec + 构建脚本 | 修订：依赖上游 hook（升级工具链即可），**不手写 collect_submodules**；关 UPX；`src:dest` datas 写法 |
+| 5 产物治理 | 不变 |
+| 6 干净环境验证 | 不变；补充"存疑项实测"（见下） |
+| 7 端口可配置化 | **已完成**（2026-09-24 复核），无需再排 |
+
+### 8.6 待实测清单（外部调研存疑项）
+
+1. pywinpty 在 PyInstaller 下二进制的收全情况（含 Win10 <1809 无 ConPTY 回退 winpty 后端的路径）
+2. hook-pydantic 在锁定版本 + 构建 Python 组合下是否完全免手工干预
+3. Nuitka 第二候选对照（构建耗时、uvicorn/pywinpty 资源收全率）——本项目纯 Python 依赖为主，PyInstaller 仍是首选
+4. 免安装目录位于 OneDrive / 网络盘 / 中文路径时的行为
+5. 目标环境杀软（Defender/360/火绒）误报实测与代码签名成本收益
+6. 自动开浏览器 + 端口回退 + 服务就绪的时序竞态（慢机需重试策略）
+
+### 8.7 其他复核记录（数字更新）
+
+- 前端 `dist` 实测 **2.3MB**（原估"zip 20MB 级"偏高；monaco/echarts 已 code-split）
+- 开发库 `data/debug.sqlite` 已有 128MB + WAL 270MB（长期调试积累）——发布包**不含 data/**，首次运行建空库
+- `config/settings.py:91` 的 `StreamConfig.scrcpy_path` 仍为死配置（不依赖 scrcpy.exe），可随手清理
+- `config/base.yaml` `server.host: 0.0.0.0` → 打包版默认改 `127.0.0.1`
