@@ -141,7 +141,7 @@ class ScrcpyEncoder:
         # 2. 清除旧的端口转发（避免冲突）
         try:
             cleanup = await asyncio.create_subprocess_exec(
-                "adb", "-s", device_id, "forward", "--remove",
+                settings().adb.path, "-s", device_id, "forward", "--remove",
                 f"tcp:{self._local_port}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -168,7 +168,7 @@ class ScrcpyEncoder:
             socket_name=self._socket_name,
         )
         forward_proc = await asyncio.create_subprocess_exec(
-            "adb", "-s", device_id, "forward",
+            settings().adb.path, "-s", device_id, "forward",
             f"tcp:{self._local_port}",
             f"localabstract:{self._socket_name}",
             stdout=asyncio.subprocess.PIPE,
@@ -191,7 +191,7 @@ class ScrcpyEncoder:
         # 上层启发式解析（实施项 1a 路径）。
         raw_fallback = settings().stream.raw_stream_fallback
         cmd = [
-            "adb", "-s", device_id, "shell",
+            settings().adb.path, "-s", device_id, "shell",
             f"CLASSPATH={SCRCPY_SERVER_REMOTE_PATH}",
             "app_process", "/",
             SCRCPY_SERVER_CLASS,
@@ -328,7 +328,7 @@ class ScrcpyEncoder:
         if raw_fallback:
             try:
                 resolution_proc = await asyncio.create_subprocess_exec(
-                    "adb", "-s", device_id, "shell", "wm", "size",
+                    settings().adb.path, "-s", device_id, "shell", "wm", "size",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -656,14 +656,15 @@ class ScrcpyEncoder:
             if action == "touch":
                 x, y = data["x"], data["y"]
                 await asyncio.create_subprocess_exec(
-                    "adb", "-s", self._device_id, "shell", "input", "tap", str(x), str(y))
+                    settings().adb.path, "-s", self._device_id,
+                    "shell", "input", "tap", str(x), str(y))
 
             elif action == "swipe":
                 x1, y1 = data["x1"], data["y1"]
                 x2, y2 = data["x2"], data["y2"]
                 duration = data.get("duration", 300)
                 await asyncio.create_subprocess_exec(
-                    "adb", "-s", self._device_id, "shell", "input", "swipe",
+                    settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
                     str(x1), str(y1), str(x2), str(y2), str(duration))
 
             elif action == "long_press":
@@ -671,18 +672,19 @@ class ScrcpyEncoder:
                 duration = data.get("duration", 1000)
                 # 同点长时 swipe 是 adb 模拟长按的标准方式
                 await asyncio.create_subprocess_exec(
-                    "adb", "-s", self._device_id, "shell", "input", "swipe",
+                    settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
                     str(x), str(y), str(x), str(y), str(duration))
 
             elif action == "key":
                 keycode = data["keycode"]
                 await asyncio.create_subprocess_exec(
-                    "adb", "-s", self._device_id, "shell", "input", "keyevent", str(keycode))
+                    settings().adb.path, "-s", self._device_id,
+                    "shell", "input", "keyevent", str(keycode))
 
             elif action == "text":
                 text = data["text"]
                 await asyncio.create_subprocess_exec(
-                    "adb", "-s", self._device_id, "shell", "input", "text", text)
+                    settings().adb.path, "-s", self._device_id, "shell", "input", "text", text)
 
             else:
                 logger.warning("unknown_input_action_fallback", action=action)
@@ -733,7 +735,7 @@ class ScrcpyEncoder:
         if self._device_id:
             try:
                 cleanup = await asyncio.create_subprocess_exec(
-                    "adb", "-s", self._device_id, "forward", "--remove",
+                    settings().adb.path, "-s", self._device_id, "forward", "--remove",
                     f"tcp:{self._local_port}",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,

@@ -17,6 +17,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 
+from app.core.config import settings
 from app.scrcpy.server_manager import ServerManager
 from app.scrcpy.constants import (
     SCRCPY_SERVER_REMOTE_PATH,
@@ -75,6 +76,20 @@ class TestPushServer:
             manager = ServerManager()
             success = await manager.push_server(mock_device_id)
             assert success is False
+
+    @pytest.mark.asyncio
+    async def test_push_server_uses_configured_adb_path(
+        self, mock_device_id, mock_adb_success, monkeypatch
+    ):
+        """push 命令使用配置的 ADB 路径（而非裸 "adb"）——打包硬前置。"""
+        monkeypatch.setattr(settings().adb, "adb_path", "/fake/adb")
+        manager = ServerManager()
+
+        with patch('asyncio.create_subprocess_exec', side_effect=mock_adb_success) as exec_mock:
+            success = await manager.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_args[0][0] == "/fake/adb"
 
     @pytest.mark.asyncio
     async def test_push_server_jar_not_found(self, mock_device_id):

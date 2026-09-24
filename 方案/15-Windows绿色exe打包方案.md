@@ -97,8 +97,10 @@
 
 ### 8.3 硬前置（实施前必须先做，否则绿色版功能残缺）
 
-1. **统一裸 `adb` 调用（新发现，原方案遗漏）**：`infrastructure/stream/scrcpy.py` 10 处 + `scrcpy/server_manager.py` 3 处直接用字符串 `"adb"`（依赖系统 PATH），绕过了 `settings().adb.path` 的 tools 优先检测（`infrastructure/adb/cli.py`、`shell.py` 才走配置）。打包绿色版的用户机器无 adb 时，视频流/控制/server 推送全部失败。需先将这 13 处统一走 `settings().adb.path`，冻结感知才有意义。
-2. **Python 版本口径**：`pyproject.toml` 声明 `>=3.11`，但本机仅有 Python 3.10.11，且全部真机验证均在该版本完成。建议**以 3.10.11 构建并实测**（保持与验证环境一致），同步修正声明为 `>=3.10`；若要用 3.11+ 打包，需重跑真机回归。
+> **均已实施完成（2026-09-24）**，门禁全绿（ruff/mypy strict、pytest 681 passed / 覆盖率 91.85%）。
+
+1. **统一裸 `adb` 调用（新发现，原方案遗漏）**：`infrastructure/stream/scrcpy.py` 10 处 + `scrcpy/server_manager.py` 3 处直接用字符串 `"adb"`（依赖系统 PATH），绕过了 `settings().adb.path` 的 tools 优先检测（`infrastructure/adb/cli.py`、`shell.py` 才走配置）。打包绿色版的用户机器无 adb 时，视频流/控制/server 推送全部失败。需先将这 13 处统一走 `settings().adb.path`，冻结感知才有意义。——**已完成**：13 处全部替换，新增 2 个回归测试锁定（自定义路径生效断言）。
+2. **Python 版本口径**：`pyproject.toml` 声明 `>=3.11`，但本机仅有 Python 3.10.11，且全部真机验证均在该版本完成。建议**以 3.10.11 构建并实测**（保持与验证环境一致），同步修正声明为 `>=3.10`；若要用 3.11+ 打包，需重跑真机回归。——**已完成**：`requires-python`、ruff `target-version=py310`、mypy `python_version=3.10` 三处降级；CI backend job 改为 `[3.10, 3.11]` 矩阵（3.10 = 打包环境口径，3.11 = 上游声明版本）。
 
 ### 8.4 外部经验补充（2026-09-24 调研，原方案未覆盖）
 
@@ -120,7 +122,7 @@
 
 | 原任务 | 修订 |
 |--------|------|
-| （新增）任务 0 | 统一 13 处裸 `adb` 调用（§8.3-1）——打包硬前置，也是独立健壮性修复 |
+| （新增）任务 0 | 统一 13 处裸 `adb` 调用（§8.3-1）——打包硬前置，也是独立健壮性修复——**已完成**（2026-09-24） |
 | 1 冻结感知资源路径 | 增加：winpty 4 个二进制注入（§8.4-1）；配置/data 路径"exe 同级优先 + APPDATA 回落"（§8.4-7）；`scrcpy_recordings` TEMP 清理经查为**死代码**（backend 无生产者），可随改造删除 |
 | 2 前端静态托管 | 不变（`main.py` 确无 `StaticFiles` 挂载，仍待实施；前端 `/api` 相对路径 + `location.host` 已确认零改动） |
 | 3 启动器体验 | 增加：noconsole 文件日志（§8.4-3）、`SetDllDirectoryW(None)`（§8.4-2）、单实例 mutex + 端口试绑回退（§8.4-6）；绑定地址改 `127.0.0.1`（防火墙） |

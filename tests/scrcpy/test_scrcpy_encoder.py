@@ -788,8 +788,26 @@ async def test_fallback_adb_input_builds_expected_commands(data, expected):
         await encoder.send_input(data)
 
     args = [str(a) for a in exec_mock.call_args[0]]
-    assert args[:4] == ["adb", "-s", DEVICE_ID, "shell"]
+    assert args[0] == settings().adb.path
+    assert args[1:4] == ["-s", DEVICE_ID, "shell"]
     assert args[4:] == expected
+
+
+async def test_adb_commands_follow_configured_path(monkeypatch):
+    """ADB 可执行路径取自配置（ADB_PATH / tools 检测），而非裸 "adb"——打包硬前置。
+
+    绿色版把 adb.exe 随包分发、由配置解析路径；调用点若硬编码 "adb" 依赖
+    系统 PATH，用户机器无 adb 时视频流/控制全部失败。
+    """
+    monkeypatch.setattr(settings().adb, "adb_path", "/fake/adb-custom")
+    encoder = ScrcpyEncoder()
+    encoder._device_id = DEVICE_ID
+    encoder._control_sender = None
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
+        await encoder.send_input({"action": "touch", "x": 1, "y": 2})
+
+    assert exec_mock.call_args[0][0] == "/fake/adb-custom"
 
 
 async def test_send_input_falls_back_when_resolution_unknown():
@@ -957,8 +975,10 @@ async def test_idle_keepalive_sends_reset_video(monkeypatch):
     """静止超过 idle_reset_seconds 后经控制 socket 发出 type=17，收到帧后计时复位。"""
     import types
 
-    fake = types.SimpleNamespace(stream=types.SimpleNamespace(
-        idle_reset_seconds=0.2, raw_stream_fallback=False))
+    fake = types.SimpleNamespace(
+        stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
+        adb=types.SimpleNamespace(path="adb"),
+    )
     monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
 
     encoder = ScrcpyEncoder()
@@ -1015,8 +1035,10 @@ async def test_stall_probe_raises_after_reset(monkeypatch):
 
     from app.infrastructure.stream.scrcpy import EncoderStalledError
 
-    fake = types.SimpleNamespace(stream=types.SimpleNamespace(
-        idle_reset_seconds=0.2, raw_stream_fallback=False))
+    fake = types.SimpleNamespace(
+        stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
+        adb=types.SimpleNamespace(path="adb"),
+    )
     monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
 
     encoder = ScrcpyEncoder()
@@ -1055,8 +1077,10 @@ async def test_idle_keepalive_retries_after_send_failure(monkeypatch):
     """
     import types
 
-    fake = types.SimpleNamespace(stream=types.SimpleNamespace(
-        idle_reset_seconds=0.2, raw_stream_fallback=False))
+    fake = types.SimpleNamespace(
+        stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
+        adb=types.SimpleNamespace(path="adb"),
+    )
     monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
 
     encoder = ScrcpyEncoder()

@@ -3,7 +3,7 @@
 > scrcpy Web 化开源项目 —— 基于 Python (FastAPI) + Vue 3 的多设备远程控制与无限调试平台
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Chrome Only](https://img.shields.io/badge/browser-Chrome%20only-4285f4.svg)](https://www.google.com/chrome/)
 
 ## ✨ 特性
@@ -19,7 +19,7 @@
 
 ### 环境要求
 
-- Python 3.11+
+- Python 3.10+
 - Node.js 20+
 - ADB (Android Debug Bridge)
 - Chrome 浏览器（最新两个稳定版）

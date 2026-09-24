@@ -38,6 +38,7 @@ scrcpy-server 工作流程：
 import asyncio
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from .constants import (
     SCRCPY_SERVER_REMOTE_PATH,
@@ -119,7 +120,7 @@ class ServerManager:
 
         try:
             process = await asyncio.create_subprocess_exec(
-                "adb", "-s", device_id, "push",
+                settings().adb.path, "-s", device_id, "push",
                 str(self._jar_path),
                 SCRCPY_SERVER_REMOTE_PATH,
                 stdout=asyncio.subprocess.PIPE,
@@ -169,7 +170,7 @@ class ServerManager:
         """
         try:
             process = await asyncio.create_subprocess_exec(
-                "adb", "-s", device_id, "shell",
+                settings().adb.path, "-s", device_id, "shell",
                 "ls", "-l", SCRCPY_SERVER_REMOTE_PATH,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -222,7 +223,7 @@ class ServerManager:
 
         try:
             process = await asyncio.create_subprocess_exec(
-                "adb", "-s", device_id, "shell",
+                settings().adb.path, "-s", device_id, "shell",
                 "rm", SCRCPY_SERVER_REMOTE_PATH,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
