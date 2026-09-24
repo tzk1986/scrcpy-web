@@ -3,7 +3,7 @@
 > **状态：二次评估完成（2026-09-24）——方案 A 可用，待排期实施**
 > **决策（2026-09-17）**：当前阶段优先完成现有版本的功能实现与体验优化；待功能与体验达标后，以本文档为基础进行**二次评估**再决定是否实施打包。
 > **二次评估（2026-09-24）**：§六 六条触发条件已全部满足；代码走查发现 2 项打包硬前置与若干修订点，外部经验补充 9 类坑，详见 §八。**两项硬前置已实施完成并提交。**
-> **第三批确认（2026-09-24）**：外置文件全部可随包分发（用户除 Chrome 外零安装）；体积预估 onedir ≈45MB / zip ≈22MB；第三批走查新增 11 项发现，详见 §九。
+> **第三批确认（2026-09-24）**：外置文件全部可随包分发（用户除 Chrome 外零安装）；体积预估 onedir ≈45MB / zip ≈22MB；第三批走查 13 项发现 + 与同类绿色包（scrcpy / VS Code Portable / PAF 规范 / Picard）对标评估结论：方案合理，详见 §九。
 > 性质：可行性调研（Spike），未写任何实现代码。
 
 ## 一、结论
@@ -124,7 +124,7 @@
 | 原任务 | 修订 |
 |--------|------|
 | （新增）任务 0 | 统一 13 处裸 `adb` 调用（§8.3-1）——打包硬前置，也是独立健壮性修复——**已完成**（2026-09-24） |
-| （新增）任务 0.5 | `scripts/fetch_tools.py`：从官方源下载 + SHA256 校验 adb.exe 与 scrcpy-server.jar（§9.3-6）——发布构建可复现的前置；pyproject 删除零使用的 `aiofiles`（§9.3-7）顺手完成 |
+| （新增）任务 0.5 | `scripts/fetch_tools.py`：从官方源下载 + SHA256 校验 **adb 三件套**（adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll）与 scrcpy-server.jar（§9.3-6/12，§9.4 对标修订）——发布构建可复现的前置；pyproject 删除零使用的 `aiofiles`（§9.3-7）顺手完成 |
 | 1 冻结感知资源路径 | 增加：winpty 4 个二进制注入（§8.4-1）；配置/data 路径"exe 同级优先 + APPDATA 回落"（§8.4-7）**必须同时改 `config_watch.py` 的 `CONFIG_DIR`**（§9.3-4）；`scrcpy_recordings` TEMP 清理经查为**死代码**（backend 无生产者），可随改造删除 |
 | 2 前端静态托管 | 不变（`main.py` 确无 `StaticFiles` 挂载，仍待实施；前端 `/api` 相对路径 + `location.host` 已确认零改动）；**SPA fallback 为必须项**（history 路由实测确认，§9.3-10） |
 | 3 启动器体验 | 增加：noconsole 文件日志（§8.4-3）、`SetDllDirectoryW(None)`（§8.4-2）、单实例 mutex + 端口试绑回退（§8.4-6）；绑定地址改 `127.0.0.1`（防火墙 + WebCodecs 安全上下文双重理由，§9.3-5）；**入口改为 `from app.main import app` 传对象**（§9.3-1） |
@@ -161,7 +161,7 @@
 
 | 外置文件 | 体积 | 当前来源 | spec datas 注入目标 | 冻结后解析路径 | 用户是否需自装 |
 |---------|------|-------------------------------|-------------------|--------------|-------------|
-| `tools/adb.exe` | 6.6MB | 本地 tools/（来源无记录，见 9.3-6） | `tools` | `_detect_adb_path()`：`_internal/tools/adb.exe` | 否 |
+| `tools/adb.exe` + `AdbWinApi.dll` + `AdbWinUsbApi.dll`（**三件套，对齐 scrcpy 官方发布**） | ~6.8MB | 本地 tools/ 仅 adb.exe，缺两个 DLL（来源无记录，见 9.3-6） | `tools` | `_detect_adb_path()`：`_internal/tools/adb.exe` | 否 |
 | `scrcpy-server.jar` | 0.73MB | `backend/app/scrcpy/`（v4.1，对齐 `SCRCPY_SERVER_VERSION`） | `app/scrcpy` | `server_manager.__file__` 同目录 | 否 |
 | 前端 `dist/` | 2.3MB | `frontend/dist`（构建产物，未入库） | `frontend/dist` | 任务 2 的 runtime_paths | 否 |
 | `config/*.yaml` | ~10KB | 仓库 `config/`（已入库） | `config` | `config.settings.__file__` 同目录（热重载共用） | 否 |
@@ -171,7 +171,7 @@
 **零代码改动路径（推荐）**：adb 注入 `_internal/tools/` 即可被现有 `_detect_adb_path()` 找到，无需改 `config/settings.py`。
 **可选增强**：在 `_detect_adb_path()` 增加"exe 同级 `tools/` 优先"分支，便于用户自行替换 adb 版本（与 data/config 的"exe 同级优先"策略一致）。
 
-**实测补充**：`adb.exe` 单文件脱离 platform-tools 目录可独立运行（实测 `adb version` → 1.0.41 / 36.0.0，退出码 0），TCP 设备（`adb connect ip:5555`）无需 `AdbWinApi.dll`/`AdbWinUsbApi.dll`；**USB 直连场景**才需要这两个 DLL（若要支持 USB，从 platform-tools 补入约 0.2MB 并加设备接入文档，未实测）。
+**实测补充（2026-09-24，两源对照）**：本机实测 `adb.exe` 单文件脱离 platform-tools 目录可独立运行（`adb version` → 1.0.41 / 36.0.0，退出码 0），说明 TCP 路径（`adb connect ip:5555`）不触碰 USB 代码；但 AOSP `Android.bp` 将 `AdbWinApi` 列为 Windows 构建的 `shared_libs`、`AdbWinUsbApi` 为 `required`（仅 `client/usb_windows.cpp` 引用），USB 直连需要它们；scrcpy 官方 Windows 发布即三件套齐发。**决策：随包三件套**（增量仅约 0.2MB，消灭 USB 路径风险并可顺带支持 USB 设备接入）。
 
 ### 9.2 体积预估（2026-09-24 本机实测口径）
 
@@ -185,7 +185,7 @@
 | 第三方纯 Python（约 12MB 源码） | 12MB | ~6–8MB | 编译进 PYZ（压缩） |
 | 本项目后端 + config | ~0.4MB | ~0.2MB | PYZ |
 | exe bootloader | — | ~1MB | |
-| 资产（adb 6.6 + jar 0.73 + dist 2.3 + yaml） | 9.65MB | 9.65MB | 1:1 |
+| 资产（adb 三件套 6.8 + jar 0.73 + dist 2.3 + yaml） | 9.85MB | 9.85MB | 1:1 |
 | **onedir 目录合计** | | **≈45MB（区间 40–52MB）** | |
 | **发布 zip（deflate）** | | **≈22MB（区间 19–26MB）** | 二进制约压至 40%、JS 资产约压至 35% |
 
@@ -196,7 +196,7 @@
 
 ### 9.3 走查补充：第三批发现与处置
 
-第三批走查（两个硬前置完成后）新发现 11 项，全部并入 §8.5 任务分解：
+第三批走查（两个硬前置完成后）新发现 13 项，全部并入 §8.5 任务分解：
 
 | # | 发现 | 影响 | 处置 |
 |---|------|------|------|
@@ -211,3 +211,24 @@
 | 9 | 死配置：`StreamConfig.scrcpy_path`（含 `D:/scrcpy-win64-v4.1/...`）、`SecurityConfig.jwt_secret`（JWT 零使用，含 `change-me-in-production`）、`cors_origins` 仅 dev 用 | 发布包遗留误导性配置 | 打包前顺手清理（§8.7 已含 scrcpy_path，补 JWT 一项） |
 | 10 | 前端确认 `createWebHistory()`（history 路由，实测） | 深链接/刷新 404 | 任务 2 的 SPA fallback 为**必须项**（非可选） |
 | 11 | `frontend/dist` 未入库；`data/` 目录由 `sqlite.py:67` 自动 mkdir（实测） | 打包顺序依赖前端构建；数据目录无需额外处理 | 任务 4 明确构建顺序：`npm ci && npm run build` → PyInstaller |
+| 12 | `AdbWinApi.dll`/`AdbWinUsbApi.dll`：AOSP `Android.bp` 列为 Windows 构建 `shared_libs`/`required`（仅 `usb_windows.cpp` 引用）；本机实测单文件 `adb version` 可跑（TCP 不触 USB 路径）；scrcpy 官方发布三件套齐发 | USB 直连失败风险 | 任务 0.5 改为下载**三件套**一体校验（§9.1 已修订） |
+| 13 | adb server 5037 冲突：用户机器已有 Android Studio 等 adb server 时，本包 adb 会按官方行为"killing"杀掉旧 server（`client/adb_client.cpp` "doesn't match this client...killing..."） | 破坏用户既有 adb 环境 | 任务 5 发布文档写明冲突行为 + 提供 `ANDROID_ADB_SERVER_PORT` 隔离方案 |
+
+### 9.4 与同类绿色包规划的对标（2026-09-24 外部调研，一手来源）
+
+**对标对象**：PortableApps.com 格式规范 3.9、VS Code Portable Mode、scrcpy 官方 Windows 构建（最直接同类）、Notepad++ 便携模式、Picard / Hydrus（PyInstaller 打包的开源先例）。
+
+| 维度 | 惯例 / 先例（来源） | 本项目方案 | 判定 |
+|------|--------------------|-----------|------|
+| 分发形态 | PyInstaller 6 默认 onedir `_internal` 布局，Hydrus 以 `contents_directory='lib'` 同形发布；[PAF 规范 3.9](https://portableapps.com/development/portableapps.com_format) 为启动器 + App 程序目录 + Data 分离 | zip 解压双击 onedir | ✅ 主流公认形态 |
+| 用户数据位置 | VS Code Portable：exe 同级 `data/`；Picard portable-hook："stores all data in a folder beside the executable"；PAF：Data 内不得放程序二进制 | data/config exe 同级优先 + `%LOCALAPPDATA%` 回落（应对 Program Files / OneDrive 只读） | ✅ 与先例一致 |
+| 第三方工具 | scrcpy 官方：adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll + server jar 与主程序**平级分发**（无 bin/ 子目录），构建脚本同步自 platform-tools | 现行仅注入单文件 adb → **已修订为三件套**（§9.1） | ✅ 修订后对齐 |
+| 升级数据保留 | PAF：升级覆盖 App 时 Data 必须保留；VS Code：`data/` 可整体迁移到新版本 | 需补进发布文档（任务 5） | ⚠️ 补文档 |
+| 体积量级 | scrcpy-win64 zip 10.78MB（含 adb 8.29 + jar 0.70）；Picard onefile 44.78MB；Hydrus onedir zip 326MB；FastAPI/uvicorn/pydantic-v2 栈**无公开实测**（社区推断 onedir 40–75MB / zip 20–40MB） | 本机实测预估 45MB / 22MB（§9.2） | ✅ 落在推断区间中位 |
+| 端口冲突 | adb 官方默认 5037；版本不匹配时新版客户端会杀旧 server（adb_client.cpp 明文） | 文档说明 + 可选 `ANDROID_ADB_SERVER_PORT` 隔离 | ⚠️ 补文档 |
+| 防火墙 | uvicorn 自身默认绑 `127.0.0.1`（uvicorn/main.py）；"loopback 不触发防火墙弹窗"为广泛观察行为（经验，无微软明文） | 绑定 127.0.0.1（§8.4-6 防火墙 + §9.3-5 WebCodecs 双重理由） | ✅ |
+
+**总体评估：方案合理，落在主流先例的共同区间内。** 三点修订（已并入上表）：
+1. adb 改**三件套**齐发（+约 0.2MB，消灭 USB 路径风险，对齐 scrcpy 官方发布）；
+2. 发布文档写明 adb 5037 冲突行为与 `ANDROID_ADB_SERVER_PORT` 隔离方案；
+3. 发布文档写明"升级覆盖时保留 `data/` 与 `config/`"（PAF / VS Code 惯例），用户数据永不写入 `_internal`。
