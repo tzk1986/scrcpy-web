@@ -4,7 +4,7 @@
 > **决策（2026-09-17）**：当前阶段优先完成现有版本的功能实现与体验优化；待功能与体验达标后，以本文档为基础进行**二次评估**再决定是否实施打包。
 > **二次评估（2026-09-24）**：§六 六条触发条件已全部满足；代码走查发现 2 项打包硬前置与若干修订点，外部经验补充 9 类坑，详见 §八。**两项硬前置已实施完成并提交。**
 > **第三批确认（2026-09-24）**：外置文件全部可随包分发（用户除 Chrome 外零安装）；体积预估 onedir ≈45MB / zip ≈22MB；第三批走查 13 项发现 + 与同类绿色包（scrcpy / VS Code Portable / PAF 规范 / Picard）对标评估结论：方案合理，详见 §九。
-> **spike 构建已验证（2026-09-24）**：临时目录一次性构建 + 运行验证通过（frozen 资源解析、随包 adb 子进程、/health 与 /api/devices 均正常）；体积实测钉死 **onedir 42MiB / zip 18.9MiB**；新发现 1 项（数据路径按 cwd 解析，§9.3-14）。详见 §9.5。
+> **spike 构建已验证（2026-09-24）**：临时目录一次性构建 + 运行验证通过（frozen 资源解析、随包 adb 子进程、/health 与 /api/devices 均正常）；体积实测钉死 **onedir 42MiB / zip 18.9MiB**；暴露的 2 项路径缺陷（§9.3-14 数据路径按 cwd 解析、§9.3-15 误读系统 PATH）**已修复（51534c2）并复测通过**。详见 §9.5。
 > 性质：可行性调研（Spike），未写任何实现代码。
 
 ## 一、结论
@@ -126,7 +126,7 @@
 |--------|------|
 | （新增）任务 0 | 统一 13 处裸 `adb` 调用（§8.3-1）——打包硬前置，也是独立健壮性修复——**已完成**（2026-09-24） |
 | （新增）任务 0.5 | `scripts/fetch_tools.py`：从官方源下载 + SHA256 校验 **adb 三件套**（adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll）与 scrcpy-server.jar（§9.3-6/12，§9.4 对标修订）——发布构建可复现的前置；pyproject 删除零使用的 `aiofiles`（§9.3-7）顺手完成 |
-| 1 冻结感知资源路径 | 增加：winpty 4 个二进制注入（§8.4-1）；配置/data 路径"exe 同级优先 + APPDATA 回落"（§8.4-7）**必须同时改 `config_watch.py` 的 `CONFIG_DIR`**（§9.3-4）；`scrcpy_recordings` TEMP 清理经查为**死代码**（backend 无生产者），可随改造删除 |
+| 1 冻结感知资源路径 | 增加：winpty 4 个二进制注入（§8.4-1）；配置/data 路径"exe 同级优先 + APPDATA 回落"（§8.4-7）**必须同时改 `config_watch.py` 的 `CONFIG_DIR`**（§9.3-4）；`scrcpy_recordings` TEMP 清理经查为**死代码**（backend 无生产者），可随改造删除。**其中 data 路径锚定已完成（51534c2，§9.3-14）；config 部分待实施** |
 | 2 前端静态托管 | 不变（`main.py` 确无 `StaticFiles` 挂载，仍待实施；前端 `/api` 相对路径 + `location.host` 已确认零改动）；**SPA fallback 为必须项**（history 路由实测确认，§9.3-10） |
 | 3 启动器体验 | 增加：noconsole 文件日志（§8.4-3）、`SetDllDirectoryW(None)`（§8.4-2）、单实例 mutex + 端口试绑回退（§8.4-6）；绑定地址改 `127.0.0.1`（防火墙 + WebCodecs 安全上下文双重理由，§9.3-5）；**入口改为 `from app.main import app` 传对象**（§9.3-1） |
 | 4 spec + 构建脚本 | 修订：依赖上游 hook（升级工具链即可），**不手写 collect_submodules**；关 UPX；`src:dest` datas 写法并按 §9.1 表格对齐注入目标；`pathex` 含仓库根 + `backend/`（§9.3-2）；`hiddenimports=['app.main']`（§9.3-1）；`excludes=['rich','pygments','tkinter','pytest','pywin32']`（§9.3-8）；构建顺序 `npm ci && npm run build` → PyInstaller（§9.3-11） |
@@ -223,7 +223,8 @@
 | 11 | `frontend/dist` 未入库；`data/` 目录由 `sqlite.py:67` 自动 mkdir（实测） | 打包顺序依赖前端构建；数据目录无需额外处理 | 任务 4 明确构建顺序：`npm ci && npm run build` → PyInstaller |
 | 12 | `AdbWinApi.dll`/`AdbWinUsbApi.dll`：AOSP `Android.bp` 列为 Windows 构建 `shared_libs`/`required`（仅 `usb_windows.cpp` 引用）；本机实测单文件 `adb version` 可跑（TCP 不触 USB 路径）；scrcpy 官方发布三件套齐发 | USB 直连失败风险 | 任务 0.5 改为下载**三件套**一体校验（§9.1 已修订） |
 | 13 | adb server 5037 冲突：用户机器已有 Android Studio 等 adb server 时，本包 adb 会按官方行为"killing"杀掉旧 server（`client/adb_client.cpp` "doesn't match this client...killing..."） | 破坏用户既有 adb 环境 | 任务 5 发布文档写明冲突行为 + 提供 `ANDROID_ADB_SERVER_PORT` 隔离方案 |
-| 14 | **相对路径按 cwd 解析（spike 实证）**：`DatabaseConfig.path="./data/debug.sqlite"`（`config/settings.py:34`）等相对路径相对**当前工作目录**解析——spike 从临时目录启动时数据落在该目录的 `data/` 下 | 双击启动（cwd=exe 目录）尚可；从快捷方式/任意目录启动则数据漂移；cwd 不可写（Program Files 等）直接崩 | 任务 1 扩展：frozen 分支把数据/日志路径锚定 `Path(sys.executable).parent`（与 §9.1 "exe 同级优先"策略统一），并梳理其余相对路径（logs 等） |
+| 14 | **相对路径按 cwd 解析（spike 实证）**：`DatabaseConfig.path="./data/debug.sqlite"`（`config/settings.py:34`）等相对路径相对**当前工作目录**解析——spike 从临时目录启动时数据落在该目录的 `data/` 下 | 双击启动（cwd=exe 目录）尚可；从快捷方式/任意目录启动则数据漂移；cwd 不可写（Program Files 等）直接崩 | **已修复（51534c2）**：源码运行锚定仓库根；冻结锚定 exe 同级、不可写回落 `%LOCALAPPDATA%/OpenScrcpy`（详见 §9.5 复测） |
+| 15 | **`DatabaseConfig.path` 误读系统 `PATH` 环境变量**（走查发现）：pydantic-settings 会把字段名作为 env 候选（`populate_by_name` 下必加，sources/base.py 源码实证），字段名 `path` 与系统 `PATH` 大小写不敏感撞名；另 `docker-compose.yml:15` 的 `DB_PATH` 因 yaml 经 init kwargs 压过 env 而**实为死配置** | 直接构造 `DatabaseConfig()`（无 yaml 值时）数据库路径变成整条 PATH 字符串；容器部署 DB_PATH 不生效 | **已修复（51534c2）**：`env_prefix`（只作用于字段名候选，候选变 [DB_PATH, OPENSCRCPY_PATH]）+ `validation_alias="DB_PATH"` + `get_settings` 显式支持 DB_PATH 覆盖；7 用例锁定（含 pydantic-settings 2.14/2.15 双版本实测） |
 
 ### 9.4 与同类绿色包规划的对标（2026-09-24 外部调研，一手来源）
 
@@ -266,4 +267,11 @@
 - 首轮运行顺带实证：§9.3-13（撞上用户既有 5037 server，PID 早于本进程）、§9.3-4（config_watch 解析到 `_internal/config/`）、§9.3-7/8（干净 venv 产物无 rich/pygments）
 - 构建告警 `could not resolve 'AdbWinApi.dll'`——实证 adb.exe 导入表含该（延迟加载）DLL，佐证 §9.1 三件套决策；`ext-ms-win-uiacore-*` 为 Windows API set 虚拟 DLL，属常规无害告警
 
-**未覆盖（留给正式实施）**：三件套 DLL 未在 spike 注入（USB 直连未验）；`--noconsole` 文件日志、单实例、自动开浏览器时序；PTY 运行期交互；杀软误报与 OneDrive/中文路径（§8.6-4/5/6）。
+**第二轮复测（同日，修复 §9.3-14/15 后，提交 51534c2）**：
+- 干净 venv 改用**发布口径** `pip install .`（不含 dev extras，与正式构建脚本一致）——构建成功，依赖闭包无 rich/pygments/pytest
+- 从**中立 cwd**（临时目录）启动 exe：`database_initialized` 的 path 为 **exe 同级绝对路径**（`<产物>/data/debug.sqlite`），中立 cwd 无任何落点——§9.3-14 修复生效
+- 回归全过：`/health`、`/api/devices`、随包 adb 子进程（`Get-CimInstance` 实证 `_internal\tools\adb.exe`）
+- 体积不变：onedir 42MiB / zip 18.87MiB（生成发布 zip 时须排除运行时 `data/`——本轮复测中 dist 已带运行时数据）
+- 跨版本稳健性：修复行为在 pydantic-settings 2.14.2（本机）与 2.15.0（干净 venv）实测一致
+
+**未覆盖（留给正式实施）**：三件套 DLL 未在 spike 注入（USB 直连未验）；`--noconsole` 文件日志、单实例、自动开浏览器时序；PTY 运行期交互；杀软误报与 OneDrive/中文路径（§8.6-4/5/6）；config 的"exe 同级优先 + config_watch 同步"（本轮仅数据路径锚定，config 部分待任务 1）。
