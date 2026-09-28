@@ -947,8 +947,8 @@ def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            except OSError:
-                pass  # 非 Windows 无此选项，默认语义已足够
+            except (AttributeError, OSError):
+                pass  # 非 Windows 无此选项（AttributeError），默认语义已足够
             try:
                 sock.bind((host, port))
                 return port
