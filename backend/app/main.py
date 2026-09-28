@@ -49,7 +49,26 @@ from app.interfaces.ws import performance as ws_performance
 from app.interfaces.ws import video as ws_video
 from app.lifecycle import lifespan
 
-FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+def _compute_frontend_dist() -> Path:
+    """
+    前端 dist 目录。
+
+    - 源码运行：仓库根（backend/app/main.py 上溯三级）→ <仓库>/frontend/dist
+    - 冻结运行（PyInstaller 6 onedir）：bundle 根 sys._MEIPASS（= <产物>/_internal）
+      → <产物>/_internal/frontend/dist，与 spec datas 目标 "frontend/dist" 一致。
+      注意：frozen 下 __file__ = _MEIPASS/app/main.py，上溯级数与源码不同
+      （无 backend/ 段），不能复用同一表达式。
+    """
+    if getattr(sys, "frozen", False):
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            return Path(bundle_root) / "frontend" / "dist"
+        return Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    return Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+
+FRONTEND_DIST = _compute_frontend_dist()
 
 
 def create_app() -> FastAPI:
@@ -127,23 +146,26 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     # --- 前端静态托管（方案 15 任务 2）--------------------------------------
-    # dist 存在（前端已构建或打包注入）才挂载；源码运行未构建时跳过。
+    # dist 完整（已构建或打包注入，index.html 存在为完整性判据）才挂载；
+    # 源码运行未构建/构建中断时跳过，避免 fallback 指向不存在的文件。
     # 顺序敏感：本块必须在所有 API/WS 路由之后，否则 catch-all 会吞掉 API。
-    if FRONTEND_DIST.is_dir():
+    if FRONTEND_DIST.is_dir() and (FRONTEND_DIST / "index.html").is_file():
         root = FRONTEND_DIST.resolve()
         assets_dir = root / "assets"
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-        @app.get("/{frontend_path:path}", include_in_schema=False)
+        @app.api_route("/{frontend_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
         async def spa_fallback(frontend_path: str) -> FileResponse:
-            # API/WS 命名空间的未匹配路径保持 404 语义，不被前端 fallback 吞掉
-            if frontend_path.startswith(("api/", "ws/")):
+            # API/WS 命名空间（首路径段）的未匹配路径保持 404 语义，
+            # 不被前端 fallback 吞成 200 HTML
+            if frontend_path.split("/", 1)[0] in ("api", "ws"):
                 raise HTTPException(status_code=404, detail="Not Found")
             # 命中 dist 内真实文件则直接返回（favicon 等根级资源），
-            # 否则一律 fallback 到 index.html（createWebHistory 深链/刷新）
+            # 否则一律 fallback 到 index.html（createWebHistory 深链/刷新）；
+            # containment 判定先于 stat，杜绝符号链接/编码逃逸路径被直接返回
             candidate = (root / frontend_path).resolve()
-            if frontend_path and candidate.is_file() and candidate.is_relative_to(root):
+            if frontend_path and candidate.is_relative_to(root) and candidate.is_file():
                 return FileResponse(candidate)
             return FileResponse(root / "index.html")
 
