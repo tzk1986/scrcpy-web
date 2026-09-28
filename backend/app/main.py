@@ -21,15 +21,18 @@ FastAPI 的 @app.websocket 装饰器与 APIRouter 的路径参数路由配合不
 
 import sys
 import asyncio
+from pathlib import Path
 
 # Windows 上需要 ProactorEventLoop 才能使用 asyncio.create_subprocess_exec
 # 必须在任何其他 asyncio 代码之前设置
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
@@ -45,6 +48,8 @@ from app.interfaces.ws import debug as ws_debug
 from app.interfaces.ws import performance as ws_performance
 from app.interfaces.ws import video as ws_video
 from app.lifecycle import lifespan
+
+FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
 def create_app() -> FastAPI:
@@ -120,6 +125,27 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # --- 前端静态托管（方案 15 任务 2）--------------------------------------
+    # dist 存在（前端已构建或打包注入）才挂载；源码运行未构建时跳过。
+    # 顺序敏感：本块必须在所有 API/WS 路由之后，否则 catch-all 会吞掉 API。
+    if FRONTEND_DIST.is_dir():
+        root = FRONTEND_DIST.resolve()
+        assets_dir = root / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        @app.get("/{frontend_path:path}", include_in_schema=False)
+        async def spa_fallback(frontend_path: str) -> FileResponse:
+            # API/WS 命名空间的未匹配路径保持 404 语义，不被前端 fallback 吞掉
+            if frontend_path.startswith(("api/", "ws/")):
+                raise HTTPException(status_code=404, detail="Not Found")
+            # 命中 dist 内真实文件则直接返回（favicon 等根级资源），
+            # 否则一律 fallback 到 index.html（createWebHistory 深链/刷新）
+            candidate = (root / frontend_path).resolve()
+            if frontend_path and candidate.is_file() and candidate.is_relative_to(root):
+                return FileResponse(candidate)
+            return FileResponse(root / "index.html")
 
     return app
 
