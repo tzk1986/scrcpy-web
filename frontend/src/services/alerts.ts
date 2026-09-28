@@ -44,13 +44,17 @@ export function alertLabel(id: string): string {
 
 export function extractAlerts(data: unknown): AlertItem[] {
   if (!Array.isArray(data)) return []
-  return data.filter(
-    (item): item is AlertItem =>
-      !!item &&
-      typeof item === 'object' &&
-      typeof (item as AlertItem).id === 'string' &&
-      typeof (item as AlertItem).since === 'number',
-  )
+  return data.filter((item): item is AlertItem => {
+    if (!item || typeof item !== 'object') return false
+    const a = item as AlertItem
+    return (
+      typeof a.id === 'string' &&
+      typeof a.since === 'number' &&
+      typeof a.threshold === 'number' &&
+      (a.value === null || typeof a.value === 'number') &&
+      (a.direction === 'above' || a.direction === 'below')
+    )
+  })
 }
 
 function formatAlert(item: AlertItem): string {

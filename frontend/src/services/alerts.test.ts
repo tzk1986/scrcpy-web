@@ -41,6 +41,25 @@ describe('extractAlerts', () => {
     const alert = makeAlert()
     expect(extractAlerts([alert])).toEqual([alert])
   })
+
+  it('畸形条目（缺 threshold / value 为字符串 / direction 非法）全被过滤，合法条目照常保留', () => {
+    const malformed = [
+      { id: 'cpu_percent', value: 87.2, direction: 'above', since: 1 }, // 缺 threshold
+      { id: 'fps', value: '25.4', threshold: 30, direction: 'below', since: 1 }, // value 为字符串
+      { id: 'memory_percent', value: 91, threshold: 90, direction: 'up', since: 1 }, // direction 非法
+      { id: 'rx_rate_kbps', value: 900, threshold: 800, direction: 'above' }, // 缺 since
+    ]
+    expect(extractAlerts(malformed)).toEqual([])
+
+    const valid = makeAlert()
+    expect(extractAlerts([...malformed, valid])).toEqual([valid])
+
+    // 畸形数据喂给 notifier 不 throw、不弹 toast（过滤后为空；即使直接喂原始数组也安全）
+    const notifier = createAlertNotifier()
+    expect(() => notifier.update(extractAlerts(malformed))).not.toThrow()
+    expect(() => notifier.update(malformed as unknown as AlertItem[])).not.toThrow()
+    expect(elMessage.warning).not.toHaveBeenCalled()
+  })
 })
 
 describe('alertLabel', () => {

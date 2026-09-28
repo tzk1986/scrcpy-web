@@ -53,7 +53,7 @@
     <!-- 活动告警徽标条（方案 24）：面板开着也能一眼看到异常 -->
     <div v-if="activeAlerts.length" class="alert-bar">
       <span v-for="a in activeAlerts" :key="a.id" class="alert-chip">
-        {{ alertLabel(a.id) }} {{ a.value !== null ? a.value.toFixed(1) : '-' }}
+        {{ alertLabel(a.id) }} {{ a.value != null ? a.value.toFixed(1) : '-' }}
       </span>
     </div>
 
