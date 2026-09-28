@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 taskkill /IM OpenScrcpy.exe /F >nul 2>&1
 if %errorlevel%==0 (
     echo OpenScrcpy 服务已停止
