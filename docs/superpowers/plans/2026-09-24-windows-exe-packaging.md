@@ -925,9 +925,14 @@ def acquire_single_instance_mutex(name: str = _SINGLE_INSTANCE_MUTEX) -> bool:
     """
     if sys.platform != "win32":
         return True
-    kernel32 = ctypes.windll.kernel32
-    kernel32.CreateMutexW(None, False, name)
-    return kernel32.GetLastError() != _ERROR_ALREADY_EXISTS
+    # use_last_error：ctypes 紧随调用捕获错误码；直读 GetLastError 存在被
+    # 中间调用污染的隐患（任务 3 审查 M1 修正）
+    create_mutex = ctypes.windll.kernel32.CreateMutexW
+    create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    create_mutex.restype = ctypes.c_void_p
+    create_mutex.use_last_error = True
+    create_mutex(None, False, name)
+    return ctypes.get_last_error() != _ERROR_ALREADY_EXISTS
 
 
 def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
@@ -1076,7 +1081,14 @@ def main() -> int:
         daemon=True,
     )
     server_thread.start()
-    launcher.wait_until_port_ready(host, port)
+    if not launcher.wait_until_port_ready(host, port):
+        # 服务起不来时不得静默开浏览器到死端口（任务 3 审查 Important F1 修正）：
+        # frozen 下 stderr 已重定向到日志文件；非零退出码便于双击场景排查
+        print(
+            f"[OpenScrcpy] 服务在 {host}:{port} 启动超时，请查看 logs/openscrcpy.log",
+            file=sys.stderr,
+        )
+        return 1
     webbrowser.open(f"http://{host}:{port}")
     server_thread.join()
     return 0
