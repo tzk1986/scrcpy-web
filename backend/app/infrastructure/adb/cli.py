@@ -30,6 +30,7 @@ from typing import AsyncIterator, Callable
 from app.core.config import settings
 from app.core.exceptions import AdbError, DeviceUnreachableError
 from app.core.logging import get_logger
+from app.core.platform import CREATE_NO_WINDOW
 from app.domain.device import DeviceInfo
 from app.domain.ports import ShellSession
 from app.infrastructure.adb.reachability import probe_tcp
@@ -84,6 +85,7 @@ class AdbCliDriver:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
             )
         except FileNotFoundError:
             logger.error("adb_not_found", path=self.adb_path)
@@ -242,6 +244,7 @@ class AdbCliDriver:
             f"{cmd} 2>&1",  # 合并 stderr 到 stdout
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
         )
         assert proc.stdout is not None and proc.stderr is not None
         # 备用：启动后台任务消费 stderr（防止极端情况）
@@ -370,6 +373,7 @@ class AdbCliDriver:
             self._LOGCAT_SINCE_NOW_CMD,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
         )
         assert proc.stdout is not None and proc.stderr is not None
         # 新增：启动后台任务消费 stderr，防止管道缓冲区满导致死锁
@@ -434,6 +438,7 @@ class AdbCliDriver:
             self.adb_path, "-s", device_id, "exec-out", "screencap", "-p",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
         )
         stdout, stderr = await proc.communicate()
 

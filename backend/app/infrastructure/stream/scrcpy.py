@@ -43,6 +43,7 @@ from typing import Any, AsyncIterator
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.platform import CREATE_NO_WINDOW
 from app.domain.ports import EncoderOpts
 from app.scrcpy.server_manager import ServerManager
 from app.scrcpy.control_sender import ControlSender, ACTION_DOWN, ACTION_UP, ACTION_MOVE
@@ -145,6 +146,7 @@ class ScrcpyEncoder:
                 f"tcp:{self._local_port}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
             )
             await asyncio.wait_for(cleanup.communicate(), timeout=5)
         except Exception:
@@ -173,6 +175,7 @@ class ScrcpyEncoder:
             f"localabstract:{self._socket_name}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
         )
         _, fwd_err = await asyncio.wait_for(
             forward_proc.communicate(),
@@ -222,6 +225,7 @@ class ScrcpyEncoder:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
         )
         self._running = True
 
@@ -331,6 +335,7 @@ class ScrcpyEncoder:
                     settings().adb.path, "-s", device_id, "shell", "wm", "size",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    creationflags=CREATE_NO_WINDOW,
                 )
                 stdout, _ = await asyncio.wait_for(resolution_proc.communicate(), timeout=5.0)
                 # 解析输出，如 "Physical size: 1080x1920"
@@ -657,7 +662,9 @@ class ScrcpyEncoder:
                 x, y = data["x"], data["y"]
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id,
-                    "shell", "input", "tap", str(x), str(y))
+                    "shell", "input", "tap", str(x), str(y),
+                    creationflags=CREATE_NO_WINDOW,
+                )
 
             elif action == "swipe":
                 x1, y1 = data["x1"], data["y1"]
@@ -665,7 +672,9 @@ class ScrcpyEncoder:
                 duration = data.get("duration", 300)
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
-                    str(x1), str(y1), str(x2), str(y2), str(duration))
+                    str(x1), str(y1), str(x2), str(y2), str(duration),
+                    creationflags=CREATE_NO_WINDOW,
+                )
 
             elif action == "long_press":
                 x, y = data["x"], data["y"]
@@ -673,18 +682,24 @@ class ScrcpyEncoder:
                 # 同点长时 swipe 是 adb 模拟长按的标准方式
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
-                    str(x), str(y), str(x), str(y), str(duration))
+                    str(x), str(y), str(x), str(y), str(duration),
+                    creationflags=CREATE_NO_WINDOW,
+                )
 
             elif action == "key":
                 keycode = data["keycode"]
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id,
-                    "shell", "input", "keyevent", str(keycode))
+                    "shell", "input", "keyevent", str(keycode),
+                    creationflags=CREATE_NO_WINDOW,
+                )
 
             elif action == "text":
                 text = data["text"]
                 await asyncio.create_subprocess_exec(
-                    settings().adb.path, "-s", self._device_id, "shell", "input", "text", text)
+                    settings().adb.path, "-s", self._device_id, "shell", "input", "text", text,
+                    creationflags=CREATE_NO_WINDOW,
+                )
 
             else:
                 logger.warning("unknown_input_action_fallback", action=action)
@@ -739,6 +754,7 @@ class ScrcpyEncoder:
                     f"tcp:{self._local_port}",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    creationflags=CREATE_NO_WINDOW,
                 )
                 await asyncio.wait_for(cleanup.communicate(), timeout=5)
             except Exception:

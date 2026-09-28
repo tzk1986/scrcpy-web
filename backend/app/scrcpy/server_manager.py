@@ -40,6 +40,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.platform import CREATE_NO_WINDOW
 from .constants import (
     SCRCPY_SERVER_REMOTE_PATH,
     SCRCPY_SERVER_VERSION,
@@ -125,6 +126,7 @@ class ServerManager:
                 SCRCPY_SERVER_REMOTE_PATH,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
             )
 
             stdout, stderr = await asyncio.wait_for(
@@ -174,6 +176,7 @@ class ServerManager:
                 "ls", "-l", SCRCPY_SERVER_REMOTE_PATH,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
             )
 
             stdout, stderr = await asyncio.wait_for(
@@ -227,6 +230,7 @@ class ServerManager:
                 "rm", SCRCPY_SERVER_REMOTE_PATH,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
             )
 
             stdout, stderr = await asyncio.wait_for(

@@ -42,6 +42,7 @@ from typing import AsyncGenerator, Callable
 from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.core.logging import get_logger
+from app.core.platform import CREATE_NO_WINDOW
 from app.infrastructure.adb.winpty import ConPtyProcess
 
 logger = get_logger(__name__)
@@ -155,6 +156,7 @@ class InteractiveShell:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
         )
 
     async def _read_until_prompt(
