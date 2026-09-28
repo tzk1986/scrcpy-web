@@ -8,11 +8,12 @@
 
 - ✅ 后端 logcat 收集框架（DebugService._collect_logcat + threadtime 解析 + SQLite 持久化）
 - ✅ 前端日志展示组件（LogcatView：实时推送 + 自动滚动 + LIVE 指示器）
-- ✅ 虚拟滚动优化（vue-virtual-scroller，支持 50K 日志）
+- ⏳ 虚拟滚动：曾实现（2026-09-09，vue-virtual-scroller）后于 `5f2b92f` 移除，当前为 v-for 全量渲染（缓冲上限 5 万条）——如重做需与语法高亮一并规划（2026-09-28 核查订正）
+- ✅ 日志缓冲上限 50000 条（FIFO，`frontend/src/stores/debug.ts:138-143`）
 - ✅ 实时过滤（服务端 level/tag 过滤 + 前端级别/搜索过滤）
 - ✅ 导出功能（JSON / CSV）
 - ✅ 智能精简（级别过滤 + 速率限制）与自动清理（按时间/容量）
-- ⏳ 日志语法高亮——可选增强（当前以级别着色替代）
+- ⏳ 日志语法高亮——可选增强（当前以级别着色替代；与虚拟滚动重做绑定，2026-09-28 评估暂缓）
 
 > 下文「实现步骤」中的 ⏳ 为方案编写时的规划标记（历史保留），实际完成状态以本节与 `进度追踪.md` 为准。
 
@@ -387,7 +388,7 @@ function highlightMessage(message: string): string {
 
 ## 验收标准
 
-- ✅ 虚拟滚动流畅（5 万条不卡顿）
+- ⏳ 虚拟滚动流畅（5 万条不卡顿）——曾实现后移除，当前全量渲染，见状态节订正
 - ✅ 实时日志推送（WS log / log_batch 断线续传）
 - ✅ 多级过滤（服务端 level/tag；前端级别 + 搜索）
 - ✅ 导出为 CSV/JSON
@@ -395,7 +396,7 @@ function highlightMessage(message: string): string {
 
 ## 交付物
 
-- ✅ LogcatView 组件（虚拟滚动）
+- ✅ LogcatView 组件（当前全量渲染；虚拟滚动已移除，见状态节）
 - ✅ 实时更新逻辑
 - ✅ 导出 API
 - ⏳ 日志高亮（未实现，记为可选增强）
