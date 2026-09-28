@@ -1350,14 +1350,14 @@ Run: 全量 `PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/e2e -q 
 - 默认绑定 127.0.0.1:8765（仅本机访问：一方面避免 Windows 防火墙弹窗，
   另一方面非 HTTPS 的局域网 http 不具备安全上下文、WebCodecs 不可用，
   视频会退化为截图模式——局域网使用请自行承担该后果）
-- 8765 被占时自动顺延（8766、8767…，最多 5 次），实际端口记录在 `data/port.txt`
+- 8765 被占时自 8765 起依次尝试共 5 个端口（8766…最多到 8769），实际端口记录在 `data/port.txt`
 - 重复双击不会起第二实例：自动打开浏览器指向已运行实例
 
 ## adb 端口冲突（5037）
 
 本包自带 adb 并默认使用标准 adb server 端口 5037。若本机已有 Android
-Studio 等其他 adb 环境，新版 adb 客户端会**杀掉旧 server**（adb 官方行为）。
-隔离方案：为绿色版单独设置环境变量后启动
+Studio 等其他 adb 环境且其 server 版本与本包不一致，adb 客户端会**杀掉旧
+server** 重新拉起（adb 官方行为）。隔离方案：为绿色版单独设置环境变量后启动
 
 ```powershell
 $env:ANDROID_ADB_SERVER_PORT = 5039
@@ -1368,7 +1368,7 @@ $env:ANDROID_ADB_SERVER_PORT = 5039
 
 - 用户数据（`data/`、`config/`、`logs/`）位于 exe 同级；exe 同级不可写
   （如装在 Program Files）时回落 `%LOCALAPPDATA%\OpenScrcpy`
-- 配置文件改成 exe 同级的 `config/base.yaml` 后 2 秒内热重载生效（无需重启）
+- 配置文件改成 exe 同级的 `config/base.yaml` 后 2 秒内热重载生效（无需重启；端口、数据路径等仅启动时读取的配置除外）
 - **升级**：解压新版并覆盖 `OpenScrcpy.exe` 与 `_internal/` 时，**保留**
   `data/` 与 `config/`（用户数据永不写入 `_internal`，覆盖即升级、数据不丢）
 
