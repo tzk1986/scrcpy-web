@@ -397,7 +397,8 @@ async def test_events_stream_terminates_on_shutdown_requested(
 
         assert launcher.request_shutdown() is True
         with pytest.raises(StopAsyncIteration):
-            await stream.__anext__()
+            # wait_for 兜底：回归时生成器不返回则测试挂死蔓延全仓，须有界失败
+            await asyncio.wait_for(stream.__anext__(), timeout=2.0)
         assert fake._on_device_connected == []
         assert fake._on_device_disconnected == []
     finally:
