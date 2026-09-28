@@ -50,7 +50,5 @@ metrics:
   max_rows_total: 500000      # 缓存态容量上限（Perf+Network 合计行数）
 
 security:
-  jwt_algorithm: HS256
-  jwt_expire_minutes: 1440
   cors_origins:
     - http://localhost:8080
