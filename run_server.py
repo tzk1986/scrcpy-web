@@ -72,7 +72,14 @@ def main() -> int:
         daemon=True,
     )
     server_thread.start()
-    launcher.wait_until_port_ready(host, port)
+    if not launcher.wait_until_port_ready(host, port):
+        # 服务起不来时不得静默开浏览器到死端口（任务 3 审查 Important F1 修正）：
+        # frozen 下 stderr 已重定向到日志文件；非零退出码便于双击场景排查
+        print(
+            f"[OpenScrcpy] 服务在 {host}:{port} 启动超时，请查看 logs/openscrcpy.log",
+            file=sys.stderr,
+        )
+        return 1
     webbrowser.open(f"http://{host}:{port}")
     server_thread.join()
     return 0

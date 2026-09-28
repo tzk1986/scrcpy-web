@@ -33,9 +33,16 @@ def acquire_single_instance_mutex(name: str = _SINGLE_INSTANCE_MUTEX) -> bool:
     """
     if sys.platform != "win32":
         return True
-    kernel32 = ctypes.windll.kernel32
-    kernel32.CreateMutexW(None, False, name)
-    return bool(kernel32.GetLastError() != _ERROR_ALREADY_EXISTS)
+    # use_last_error 必须走 WinDLL 构造参数：缓存的 _NamedFuncPointer 没有
+    # use_last_error 实例属性（对函数指针直接赋值只静默写进 __dict__，调用
+    # 机制不生效，get_last_error 恒为 0——修复轮实证）。构造参数会把
+    # _FUNCFLAG_USELASTERROR 写入该 DLL 全部函数指针，调用后紧跟捕获
+    # GetLastError，规避中间调用污染（任务 3 审查 M1 修正）
+    create_mutex = ctypes.WinDLL("kernel32", use_last_error=True).CreateMutexW
+    create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    create_mutex.restype = ctypes.c_void_p
+    create_mutex(None, False, name)
+    return ctypes.get_last_error() != _ERROR_ALREADY_EXISTS
 
 
 def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
