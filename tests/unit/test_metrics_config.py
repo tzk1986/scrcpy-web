@@ -23,6 +23,18 @@ def test_metrics_config_defaults() -> None:
     assert metrics.retention_days == 3
     assert metrics.max_rows_total == 500000
 
+    th = metrics.thresholds
+    assert th.cpu_percent.enabled is True
+    assert th.cpu_percent.above == 80.0 and th.cpu_percent.below is None
+    assert th.memory_percent.above == 90.0
+    assert th.fps.below == 30.0 and th.fps.above is None
+    assert th.rx_rate_kbps.enabled is False
+    assert th.tx_rate_kbps.enabled is False
+    assert th.cpu_percent.consecutive == 3
+    assert th.cpu_percent.clear_margin == 5.0
+    assert th.cpu_percent.clear_consecutive == 3
+    assert th.cpu_percent.cooldown == 60.0
+
 
 def test_base_yaml_has_metrics_section() -> None:
     """base.yaml 显式声明 metrics 节（与默认值一致，防漂移）。"""
@@ -37,7 +49,30 @@ def test_base_yaml_has_metrics_section() -> None:
         "recording": False,
         "retention_days": 3,
         "max_rows_total": 500000,
+        "thresholds": {
+            "cpu_percent": {"above": 80.0, "consecutive": 3, "clear_margin": 5.0,
+                            "clear_consecutive": 3, "cooldown": 60},
+            "memory_percent": {"above": 90.0, "consecutive": 3, "clear_margin": 5.0,
+                               "clear_consecutive": 3, "cooldown": 60},
+            "fps": {"below": 30.0, "consecutive": 3, "clear_margin": 5.0,
+                    "clear_consecutive": 3, "cooldown": 60},
+            "rx_rate_kbps": {"enabled": False, "above": 0.0, "consecutive": 3,
+                             "clear_margin": 0.0, "clear_consecutive": 3, "cooldown": 60},
+            "tx_rate_kbps": {"enabled": False, "above": 0.0, "consecutive": 3,
+                             "clear_margin": 0.0, "clear_consecutive": 3, "cooldown": 60},
+        },
     }
+
+
+def test_thresholds_partial_override_parses() -> None:
+    """YAML 局部覆盖经 Settings(**config) 解析为嵌套模型，未覆盖字段回落默认。"""
+    from config.settings import Settings
+
+    s = Settings(metrics={"thresholds": {"cpu_percent": {"above": 50.0}}})
+
+    assert s.metrics.thresholds.cpu_percent.above == 50.0
+    assert s.metrics.thresholds.cpu_percent.consecutive == 3   # 未覆盖字段回落默认
+    assert s.metrics.thresholds.fps.below == 30.0              # 未覆盖指标回落默认
 
 
 # ---------------------------------------------------------------------------

@@ -183,6 +183,32 @@ class DebugConfig(BaseSettings):
     restore_max_sessions: int = 20  # 重启最多恢复的会话数（限制恢复时间）
 
 
+class AlertRuleConfig(BaseSettings):
+    """单条性能告警规则（方案 24 §3.2）。"""
+
+    enabled: bool = True
+    above: float | None = None  # 越大越坏判据（与 below 二选一，方向即判据）
+    below: float | None = None  # 越小越坏判据
+    consecutive: int = 3        # 连续越限 N 次触发（按有效判定样本计）
+    clear_margin: float = 5.0   # 迟滞余量：解除需回落/回升越过该余量
+    clear_consecutive: int = 3  # 连续安全 M 次解除
+    cooldown: float = 60.0      # 通知冷却（秒）；冷却内触发进徽标但不弹 toast
+
+
+class MetricAlertsConfig(BaseSettings):
+    """各指标的告警规则集（metrics.thresholds，方案 24）。"""
+
+    cpu_percent: AlertRuleConfig = Field(default_factory=lambda: AlertRuleConfig(above=80.0))
+    memory_percent: AlertRuleConfig = Field(default_factory=lambda: AlertRuleConfig(above=90.0))
+    fps: AlertRuleConfig = Field(default_factory=lambda: AlertRuleConfig(below=30.0))
+    rx_rate_kbps: AlertRuleConfig = Field(
+        default_factory=lambda: AlertRuleConfig(enabled=False, above=0.0)
+    )
+    tx_rate_kbps: AlertRuleConfig = Field(
+        default_factory=lambda: AlertRuleConfig(enabled=False, above=0.0)
+    )
+
+
 class MetricsConfig(BaseSettings):
     buffer_size: int = 3600  # Perf 内存暂存条数（@1s 采样约 1 小时/设备）
     network_buffer_size: int = 1800  # Network 内存暂存条数（@2s 采样约 1 小时/设备）
@@ -192,6 +218,7 @@ class MetricsConfig(BaseSettings):
     recording: bool = False  # 录制（落盘暂存）总开关，默认关闭
     retention_days: int = 3  # 缓存态保留期（天）
     max_rows_total: int = 500000  # 缓存态容量上限（Perf+Network 合计行数）
+    thresholds: MetricAlertsConfig = Field(default_factory=MetricAlertsConfig)
 
 
 class SecurityConfig(BaseSettings):

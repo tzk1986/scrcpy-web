@@ -48,6 +48,15 @@ metrics:
   recording: false            # 录制（落盘暂存）总开关，默认关闭
   retention_days: 3           # 缓存态保留期（天）
   max_rows_total: 500000      # 缓存态容量上限（Perf+Network 合计行数）
+  # 阈值告警（方案 24）：连续 N 次越限触发；迟滞余量 + 连续 M 次安全解除；
+  # 冷却期内重复触发仍进徽标但不弹 toast。consecutive 按「有效判定样本数」计
+  # （fps 仅计实测 gfxinfo 窗口），各指标墙钟时限见 方案/24 §3.1 时限表
+  thresholds:
+    cpu_percent:    { above: 80.0, consecutive: 3, clear_margin: 5.0, clear_consecutive: 3, cooldown: 60 }
+    memory_percent: { above: 90.0, consecutive: 3, clear_margin: 5.0, clear_consecutive: 3, cooldown: 60 }
+    fps:            { below: 30.0, consecutive: 3, clear_margin: 5.0, clear_consecutive: 3, cooldown: 60 }
+    rx_rate_kbps:   { enabled: false, above: 0.0, consecutive: 3, clear_margin: 0.0, clear_consecutive: 3, cooldown: 60 }
+    tx_rate_kbps:   { enabled: false, above: 0.0, consecutive: 3, clear_margin: 0.0, clear_consecutive: 3, cooldown: 60 }
 
 security:
   cors_origins:
