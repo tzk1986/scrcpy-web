@@ -39,7 +39,14 @@ def _serve(server_app, host: str, port: int) -> None:
     from app.core import launcher
 
     server = uvicorn.Server(uvicorn.Config(server_app, host=host, port=port, reload=False))
-    launcher.register_shutdown_handler(server.request_shutdown)
+
+    def _trigger_shutdown() -> None:
+        # uvicorn 无 request_* 公开停机方法；should_exit 是主循环轮询的优雅停机
+        # 标志（信号处理 handle_exit 亦置此属性，方案 23 §5.2-T2 原文语义）。
+        # 置位后当前响应写完才收循环，并触发 lifespan 关闭清理。
+        server.should_exit = True
+
+    launcher.register_shutdown_handler(_trigger_shutdown)
     server.run()
 
 
