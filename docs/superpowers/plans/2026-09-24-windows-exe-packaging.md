@@ -925,12 +925,13 @@ def acquire_single_instance_mutex(name: str = _SINGLE_INSTANCE_MUTEX) -> bool:
     """
     if sys.platform != "win32":
         return True
-    # use_last_error：ctypes 紧随调用捕获错误码；直读 GetLastError 存在被
-    # 中间调用污染的隐患（任务 3 审查 M1 修正）
-    create_mutex = ctypes.windll.kernel32.CreateMutexW
+    # use_last_error 必须走 WinDLL 构造参数：缓存的 _NamedFuncPointer 没有
+    # use_last_error 实例属性（对函数指针直接赋值是静默 no-op，get_last_error
+    # 恒 0——任务 3 修复轮实证）；构造参数把 _FUNCFLAG_USELASTERROR 写入该
+    # DLL 全部函数指针，调用后紧跟捕获 GetLastError，规避中间调用污染
+    create_mutex = ctypes.WinDLL("kernel32", use_last_error=True).CreateMutexW
     create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
     create_mutex.restype = ctypes.c_void_p
-    create_mutex.use_last_error = True
     create_mutex(None, False, name)
     return ctypes.get_last_error() != _ERROR_ALREADY_EXISTS
 
