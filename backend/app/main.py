@@ -61,10 +61,9 @@ def _compute_frontend_dist() -> Path:
       （无 backend/ 段），不能复用同一表达式。
     """
     if getattr(sys, "frozen", False):
-        bundle_root = getattr(sys, "_MEIPASS", None)
-        if bundle_root:
-            return Path(bundle_root) / "frontend" / "dist"
-        return Path(__file__).resolve().parent.parent / "frontend" / "dist"
+        # PyInstaller 6 冻结运行时必设 _MEIPASS（onedir 下 = <产物>/_internal）；
+        # 若缺失宁可导入时报错（响亮暴露构建异常）也不静默指向错误路径
+        return Path(getattr(sys, "_MEIPASS")) / "frontend" / "dist"
     return Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
