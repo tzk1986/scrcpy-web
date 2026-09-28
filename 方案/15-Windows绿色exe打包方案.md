@@ -1,7 +1,7 @@
 # 15 - Windows 绿色 exe 打包方案（调研存档）
 
 > **状态：正式实施已完成（2026-09-28）——任务 0.5~6 全部实施并通过干净环境全链路验证（含真机），发布产物可用**
-> **正式实施验证（2026-09-28）**：干净环境两次构建（首次暴露并修复任务 4 spec 的 winpty 导入名缺陷）、zip 实测 **19.0MiB**（onedir 42MiB / 123 文件）；自动探测 3/3 PASS；单实例/端口回退（8765→8766）/随包 adb（`_internal\tools\adb.exe` 实证，5037 隔离未触碰）全部实证；真机 .18 / .25 H.264 出流、断开重连、**PTY 运行期交互**（逐键回显 + 命令执行）均通过；.33 超时不可达如实记录。详情见 §9.6 正式版验证小节。
+> **正式实施验证（2026-09-28）**：干净环境两次构建（首次暴露并修复任务 4 spec 的 winpty 导入名缺陷）、zip 实测 **19.0MiB**（onedir 42MiB / 123 文件）；自动探测 3/3 PASS；单实例/端口回退（8765→8766）/随包 adb（`_internal\tools\adb.exe` 实证，5037 隔离未触碰）全部实证；真机 .18 / .25 H.264 出流、断开重连、**PTY 运行期交互**（逐键回显 + 命令执行）均通过；.33 超时不可达如实记录。复测期又发现并修复**noconsole 窗口抑制缺陷**（adb spawn 周期弹窗，18 处统一 CREATE_NO_WINDOW，提交 255dfb5，复测零窗口）。详情见 §9.6 正式版验证小节。
 > **决策（2026-09-17）**：当前阶段优先完成现有版本的功能实现与体验优化；待功能与体验达标后，以本文档为基础进行**二次评估**再决定是否实施打包。
 > **二次评估（2026-09-24）**：§六 六条触发条件已全部满足；代码走查发现 2 项打包硬前置与若干修订点，外部经验补充 9 类坑，详见 §八。**两项硬前置已实施完成并提交。**
 > **第三批确认（2026-09-24）**：外置文件全部可随包分发（用户除 Chrome 外零安装）；体积预估 onedir ≈45MB / zip ≈22MB；第三批走查 13 项发现 + 与同类绿色包（scrcpy / VS Code Portable / PAF 规范 / Picard）对标评估结论：方案合理，详见 §九。
@@ -315,3 +315,9 @@
 4. 截图模式回退：非 Chrome 或局域网 http 打开观察（预期退化为截图模式，控制仍可用）。
 5. §8.6-4/5：OneDrive/网络盘/中文路径、360/火绒杀软——发布后观察项；Win10 <1809 winpty 回退 backend——未实测观察项。
 6. USB 直连（三件套已注入、构建告警消失，但本机验证仅有 TCP 设备）。
+
+**noconsole 窗口抑制复测（2026-09-28，验证期用户报告"不停开启终端并关闭"）**：
+
+- **现象与根因**：首次验证产物运行期间周期闪现终端窗口（设备轮询周期，数秒一次）。按约束 7 调研：PyInstaller `console=False`（windowed）宿主无控制台，spawn 控制台子系统程序（adb.exe）时 Windows 为其**新建可见控制台窗口**——设备轮询每轮 `adb devices` 即闪一次。spike 与首轮验证只验服务功能未观察窗口行为；源码模式因 run_server 自带控制台（子进程继承）天然无此问题，故从未暴露。此缺陷同时为 §8.6 清单新增经验：**windowed 打包的"无窗口"宣称必须连同高频子进程路径一起观察**。
+- **修复（提交 255dfb5）**：新建 `backend/app/core/platform.py` 定义 `CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)`（getattr 兜底保 Linux CI mypy；非 Windows 值为 0，Popen 忽略，零副作用）；全后端 **18 处** adb spawn（cli.py 4 / shell.py 1 / stream/scrcpy.py 10 / server_manager.py 3——含 `adb forward`/`push`/`shell input` 回退等全部路径）统一加 `creationflags=CREATE_NO_WINDOW,`；ast 回归测试 `tests/unit/test_subprocess_window_suppression.py` 锁定四文件所有 `create_subprocess_exec` 必带该 kwarg，防未来新增 spawn 复发。winpty.py 的 taskkill 早已带同款 flag；ConPTY 路径由 pywinpty 托管宿主，不经可见窗口。
+- **复测**：第三次构建 exit 0（zip SHA256 `90de9745…`，体积同前）；修复后 exe 运行 60s+，两轮窗口采样（全量 MainWindowHandle 快照，采样器经 27 基线可见窗口进程验证有效）**零新增可见窗口**，同期日志 `listing_devices` 周期执行（轮询持续发生、adb 高频 spawn 未中断）、自动探测 3/3 PASS——窗口抑制生效且功能无回归。补充试验：pythonw（无控制台宿主）裸 spawn 对照组在采样下未复现弹窗，本机环境与 exe 路径存在差异，不作为反证，结论以 exe 实机复测为准。
