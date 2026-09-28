@@ -17,6 +17,10 @@ from pathlib import Path
 
 _SINGLE_INSTANCE_MUTEX = "OpenScrcpy-SingleInstance-Mutex"
 _ERROR_ALREADY_EXISTS = 183
+# SO_EXCLUSIVEADDRUSE 仅在 Windows typeshed 定义，直引会让 Linux CI 的 mypy
+# 报 attr-defined。此选项运行时仅 Windows 有效，getattr 兜底仅为跨平台静态检查；
+# 非 Windows 值为 0，setsockopt 抛 OSError 由下方 except 吞掉，语义不变。
+_SO_EXCLUSIVEADDRUSE = getattr(socket, "SO_EXCLUSIVEADDRUSE", 0)
 
 
 def fix_dll_search_path() -> None:
@@ -55,7 +59,7 @@ def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
         port = start_port + offset
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                sock.setsockopt(socket.SOL_SOCKET, _SO_EXCLUSIVEADDRUSE, 1)
             except (AttributeError, OSError):
                 pass  # 非 Windows 无此选项，默认语义已足够
             try:

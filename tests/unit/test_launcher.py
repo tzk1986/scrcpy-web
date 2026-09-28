@@ -94,6 +94,7 @@ def test_redirect_std_streams_writes_to_file(tmp_path):
         sys.stdout, sys.stderr = old_out, old_err
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="CreateMutex 单实例锁仅 Windows 实现")
 def test_single_instance_mutex_second_acquire_false():
     name = f"openscrcpy-test-mutex-{uuid.uuid4().hex}"
     assert launcher.acquire_single_instance_mutex(name) is True
