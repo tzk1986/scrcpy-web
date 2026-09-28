@@ -50,11 +50,18 @@
       </div>
     </div>
 
+    <!-- 活动告警徽标条（方案 24）：面板开着也能一眼看到异常 -->
+    <div v-if="activeAlerts.length" class="alert-bar">
+      <span v-for="a in activeAlerts" :key="a.id" class="alert-chip">
+        {{ alertLabel(a.id) }} {{ a.value !== null ? a.value.toFixed(1) : '-' }}
+      </span>
+    </div>
+
     <!-- 实时指标卡片 -->
     <div class="metrics-grid">
       <div class="metric-card">
         <div class="metric-label">CPU 使用率</div>
-        <div class="metric-value" :class="{ warning: latestMetrics.cpu_percent > 80 }">
+        <div class="metric-value" :class="{ warning: hasAlert('cpu_percent') }">
           {{ latestMetrics.cpu_percent?.toFixed(1) || '0.0' }}%
         </div>
         <div class="metric-bar">
@@ -64,7 +71,7 @@
 
       <div class="metric-card">
         <div class="metric-label">内存使用</div>
-        <div class="metric-value">
+        <div class="metric-value" :class="{ warning: hasAlert('memory_percent') }">
           {{ latestMetrics.used_memory_mb?.toFixed(0) || '0' }} MB
         </div>
         <div class="metric-bar">
@@ -77,7 +84,7 @@
 
       <div class="metric-card">
         <div class="metric-label">帧率</div>
-        <div class="metric-value" :class="{ warning: latestMetrics.fps && latestMetrics.fps < 30 }">
+        <div class="metric-value" :class="{ warning: hasAlert('fps') }">
           {{ latestMetrics.fps?.toFixed(0) || '-' }} FPS
         </div>
         <!-- gfxinfo 每 5 轮采样一次（后端降频），非 gfxinfo 轮 jank 恒 0，
@@ -137,6 +144,7 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, DataZoomComponent } from 'echarts/components'
 import { api } from '@/services/api'
 import { WebSocketService } from '@/services/websocket'
+import { alertLabel, createAlertNotifier, extractAlerts, type AlertItem } from '@/services/alerts'
 
 // 注册 ECharts 组件
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, DataZoomComponent])
@@ -150,6 +158,7 @@ interface PerfMetrics {
   jank_count: number
   current_activity: string
   top_package: string
+  alerts?: AlertItem[]
 }
 
 const props = defineProps<{
@@ -159,6 +168,14 @@ const props = defineProps<{
 const metricsHistory = ref<PerfMetrics[]>([])
 const wsConnected = ref(false)
 let ws: WebSocketService | null = null
+
+// 活动告警（方案 24）：WS 每帧携带当前快照，驱动徽标条与卡片警示色
+const activeAlerts = ref<AlertItem[]>([])
+const alertNotifier = createAlertNotifier()
+
+function hasAlert(id: string): boolean {
+  return activeAlerts.value.some((a) => a.id === id)
+}
 
 /** 录制状态（LIVE 徽标同源样式，方案 18 Step 6）。 */
 const isRecording = ref(false)
@@ -402,6 +419,8 @@ function connectWebSocket() {
     if (typeof data === 'string') {
       try {
         const metrics = JSON.parse(data) as PerfMetrics
+        activeAlerts.value = extractAlerts(metrics.alerts)
+        alertNotifier.update(activeAlerts.value)
         metricsHistory.value.push(metrics)
 
         // 保留最近 60 秒数据
@@ -493,6 +512,21 @@ function disconnectWebSocket() {
 
 .metric-value.warning {
   color: #E6A23C;
+}
+
+.alert-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.alert-chip {
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #e6a23c;
+  background: #fdf6ec;
+  border: 1px solid #f5dab1;
 }
 
 .metric-bar {

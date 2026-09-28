@@ -50,6 +50,13 @@
       </div>
     </div>
 
+    <!-- 活动告警徽标条（方案 24） -->
+    <div v-if="activeAlerts.length" class="alert-bar">
+      <span v-for="a in activeAlerts" :key="a.id" class="alert-chip">
+        {{ alertLabel(a.id) }} {{ a.value !== null ? a.value.toFixed(1) : '-' }}
+      </span>
+    </div>
+
     <!-- WiFi 状态栏 -->
     <div class="wifi-bar" :class="{ connected: wifiConnected }">
       <span class="wifi-icon">{{ wifiConnected ? '📶' : '📵' }}</span>
@@ -134,6 +141,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import { api } from '@/services/api'
+import { alertLabel, createAlertNotifier, extractAlerts, type AlertItem } from '@/services/alerts'
 
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -146,6 +154,7 @@ interface NetworkStats {
   active_connections: number
   wifi_connected: boolean
   wifi_ssid: string | null
+  alerts?: AlertItem[]
 }
 
 interface NetworkConnection {
@@ -165,6 +174,10 @@ const props = defineProps<{
 const currentStats = ref<Partial<NetworkStats>>({})
 const connections = ref<NetworkConnection[]>([])
 const connectionFilter = ref<'all' | 'tcp' | 'udp' | 'established'>('all')
+
+// 活动告警（方案 24）：轮询响应即当前快照，驱动徽标条与 toast 通知
+const activeAlerts = ref<AlertItem[]>([])
+const alertNotifier = createAlertNotifier()
 
 /** 录制状态（LIVE 徽标同源样式，方案 18 Step 6）。 */
 const isRecording = ref(false)
@@ -297,6 +310,8 @@ async function fetchData() {
     // 获取网络统计
     const stats = await api.getNetworkStats(props.deviceId)
     currentStats.value = stats
+    activeAlerts.value = extractAlerts(stats.alerts)
+    alertNotifier.update(activeAlerts.value)
 
     // 更新历史数据
     const now = new Date()
@@ -541,6 +556,21 @@ function getStateTagType(state: string): '' | 'success' | 'warning' | 'info' | '
 
 .metric-value.tx {
   color: #E6A23C;
+}
+
+.alert-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.alert-chip {
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #e6a23c;
+  background: #fdf6ec;
+  border: 1px solid #f5dab1;
 }
 
 .metric-detail {

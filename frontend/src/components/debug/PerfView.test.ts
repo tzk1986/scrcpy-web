@@ -422,4 +422,55 @@ describe('PerfView', () => {
     expect(elMessage.error).toHaveBeenCalledWith('导出失败: boom')
     wrapper.unmount()
   })
+
+  it('alerts 消息渲染徽标条并驱动卡片警示色；同 episode 只弹一次 toast', async () => {
+    const wrapper = mountView()
+    const ws = latestWs()
+
+    const alerts = [
+      { id: 'cpu_percent', value: 87.2, threshold: 80, direction: 'above', since: 1, notify: true },
+      { id: 'memory_percent', value: 93.5, threshold: 90, direction: 'above', since: 2, notify: false },
+      { id: 'fps', value: 25.4, threshold: 30, direction: 'below', since: 3, notify: true },
+    ]
+    ws.messageHandler!(JSON.stringify({ ...metrics, alerts }))
+    await nextTick()
+
+    // 徽标条：3 枚 chip
+    const chips = wrapper.findAll('.alert-chip')
+    expect(chips).toHaveLength(3)
+    expect(chips[0].text()).toContain('CPU 使用率')
+    expect(chips[0].text()).toContain('87.2')
+
+    // 卡片警示色由 alerts 驱动（cpu/内存/fps 三卡均 warning）
+    const values = wrapper.findAll('.metric-value')
+    expect(values[0].classes()).toContain('warning')
+    expect(values[1].classes()).toContain('warning')
+    expect(values[2].classes()).toContain('warning')
+
+    // notify=true 两枚各弹一次；notify=false 不弹
+    expect(elMessage.warning).toHaveBeenCalledTimes(2)
+
+    // 同 episode 第二帧：不再弹、徽标仍在
+    ws.messageHandler!(JSON.stringify({ ...metrics, alerts }))
+    await nextTick()
+    expect(elMessage.warning).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('.alert-chip')).toHaveLength(3)
+
+    // 告警解除（空数组）：徽标消失、卡片警示色消失
+    ws.messageHandler!(JSON.stringify({ ...metrics, alerts: [] }))
+    await nextTick()
+    expect(wrapper.findAll('.alert-chip')).toHaveLength(0)
+    expect(wrapper.findAll('.metric-value')[0].classes()).not.toContain('warning')
+  })
+
+  it('无 alerts 键的消息不渲染徽标、不弹 toast（既有推送防御式兼容）', async () => {
+    const wrapper = mountView()
+    const ws = latestWs()
+
+    ws.messageHandler!(JSON.stringify(metrics))
+    await nextTick()
+
+    expect(wrapper.findAll('.alert-chip')).toHaveLength(0)
+    expect(elMessage.warning).not.toHaveBeenCalled()
+  })
 })

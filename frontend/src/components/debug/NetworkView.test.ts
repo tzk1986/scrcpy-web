@@ -442,4 +442,36 @@ describe('NetworkView', () => {
     expect(elMessage.error).toHaveBeenCalledWith('导出失败: boom')
     wrapper.unmount()
   })
+
+  it('轮询响应含 alerts → 渲染徽标条并弹一次 toast；同 episode 下一轮不再弹', async () => {
+    vi.useFakeTimers()
+    mockApi.getNetworkStats.mockResolvedValue({
+      ...stats,
+      alerts: [
+        { id: 'rx_rate_kbps', value: 900, threshold: 800, direction: 'above', since: 1, notify: true },
+      ],
+    })
+    mockApi.getNetworkConnections.mockResolvedValue({ connections: [] })
+    const wrapper = mountView()
+    await flushPromises()
+
+    const chips = wrapper.findAll('.alert-chip')
+    expect(chips).toHaveLength(1)
+    expect(chips[0].text()).toContain('接收速率')
+    expect(elMessage.warning).toHaveBeenCalledTimes(1)
+
+    // 下一轮轮询（2s）：同一 episode（id:since 未变）→ 不再弹
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(elMessage.warning).toHaveBeenCalledTimes(1)
+  })
+
+  it('无 alerts 键的响应不渲染徽标', async () => {
+    mockApi.getNetworkStats.mockResolvedValue({ ...stats })
+    mockApi.getNetworkConnections.mockResolvedValue({ connections: [] })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.findAll('.alert-chip')).toHaveLength(0)
+    expect(elMessage.warning).not.toHaveBeenCalled()
+  })
 })
