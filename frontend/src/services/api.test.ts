@@ -259,3 +259,19 @@ describe('网络监控 API 与错误传播', () => {
     await expect(api.closeDebugSession('s1')).rejects.toThrow('delete failed')
   })
 })
+
+describe('系统 API（方案 23 T2）', () => {
+  it('shutdownSystem 请求 POST /system/shutdown 并透传结果', async () => {
+    mockClient.post.mockResolvedValue({ data: { accepted: true, message: '服务正在退出' } })
+    const result = await api.shutdownSystem()
+    expect(mockClient.post).toHaveBeenCalledWith('/system/shutdown')
+    expect(result.accepted).toBe(true)
+  })
+
+  it('getHealth 以空 baseURL 越过 /api 前缀请求 /health', async () => {
+    mockClient.get.mockResolvedValue({ data: { status: 'ok' } })
+    const result = await api.getHealth()
+    expect(mockClient.get).toHaveBeenCalledWith('/health', { baseURL: '', timeout: 2000 })
+    expect(result.status).toBe('ok')
+  })
+})

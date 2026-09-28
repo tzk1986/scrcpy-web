@@ -90,6 +90,26 @@ export const api = {
     return res.data as { success: boolean }
   },
 
+  // ==================== 系统 API ====================
+
+  /**
+   * 请求服务优雅退出。
+   * 对应：POST /api/system/shutdown
+   */
+  async shutdownSystem() {
+    const res = await client.post('/system/shutdown')
+    return res.data as { accepted: boolean; message?: string }
+  },
+
+  /**
+   * 服务健康检查（退出确认轮询用）。
+   * 对应：GET /health（位于 /api 前缀之外，需空 baseURL 越过）
+   */
+  async getHealth() {
+    const res = await client.get('/health', { baseURL: '', timeout: 2000 })
+    return res.data as { status: string }
+  },
+
   // ==================== 调试 API ====================
 
   /**
