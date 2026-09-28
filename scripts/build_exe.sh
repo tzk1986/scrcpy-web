@@ -30,8 +30,10 @@ python -m pip install . "pyinstaller==$PYINSTALLER_PIN"
 echo "==> [4/6] PyInstaller 构建"
 pyinstaller --distpath dist --workpath build/pyi openscrcpy.spec
 
-echo "==> [5/6] 清理运行时数据并打包 zip（§9.5：zip 不得携带 data/）"
+echo "==> [5/6] 清理运行时数据、注入 stop.bat 并打包 zip（§9.5：zip 不得携带 data/）"
 rm -rf dist/OpenScrcpy/data
+cp scripts/stop.bat dist/OpenScrcpy/stop.bat
+unix2dos dist/OpenScrcpy/stop.bat  # bat 需 CRLF 行尾（LF 下多行块解析有兼容坑）
 python -m zipfile -c "dist/OpenScrcpy-win64-$VERSION.zip" dist/OpenScrcpy
 
 echo "==> [6/6] 校验和"
