@@ -27,12 +27,14 @@ WINPTY_BIN_NAMES = ["conpty.dll", "winpty.dll", "OpenConsole.exe", "winpty-agent
 def _winpty_binaries() -> list[tuple[str, str]]:
     """pywinpty 无官方 hook（§8.4-1）：显式注入包内 4 个非扩展二进制。
 
-    _winpty.cp310-win_amd64.pyd 为扩展模块，PyInstaller 自动收集，
-    不在此列。构建机必须已安装 pywinpty（干净 venv pip install .）。
+    导入名是 `winpty`（wheel 顶层包名，任务 6 实测 2.0.12/3.0.5 均如此，
+    发行名 pywinpty 本身无同名模块）；_winpty.cp310-win_amd64.pyd 为扩展
+    模块，PyInstaller 自动收集，不在此列。构建机必须已安装 pywinpty
+    （干净 venv pip install .）。
     """
-    import pywinpty
+    import winpty
 
-    pkg_dir = Path(pywinpty.__file__).parent
+    pkg_dir = Path(winpty.__file__).parent
     return [(str(pkg_dir / name), "winpty") for name in WINPTY_BIN_NAMES]
 
 

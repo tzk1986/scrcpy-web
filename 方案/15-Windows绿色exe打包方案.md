@@ -1,11 +1,12 @@
 # 15 - Windows 绿色 exe 打包方案（调研存档）
 
-> **状态：二次评估完成（2026-09-24）——方案 A 可用，待排期实施**
+> **状态：正式实施已完成（2026-09-28）——任务 0.5~6 全部实施并通过干净环境全链路验证（含真机），发布产物可用**
+> **正式实施验证（2026-09-28）**：干净环境两次构建（首次暴露并修复任务 4 spec 的 winpty 导入名缺陷）、zip 实测 **19.0MiB**（onedir 42MiB / 123 文件）；自动探测 3/3 PASS；单实例/端口回退（8765→8766）/随包 adb（`_internal\tools\adb.exe` 实证，5037 隔离未触碰）全部实证；真机 .18 / .25 H.264 出流、断开重连、**PTY 运行期交互**（逐键回显 + 命令执行）均通过；.33 超时不可达如实记录。详情见 §9.6 正式版验证小节。
 > **决策（2026-09-17）**：当前阶段优先完成现有版本的功能实现与体验优化；待功能与体验达标后，以本文档为基础进行**二次评估**再决定是否实施打包。
 > **二次评估（2026-09-24）**：§六 六条触发条件已全部满足；代码走查发现 2 项打包硬前置与若干修订点，外部经验补充 9 类坑，详见 §八。**两项硬前置已实施完成并提交。**
 > **第三批确认（2026-09-24）**：外置文件全部可随包分发（用户除 Chrome 外零安装）；体积预估 onedir ≈45MB / zip ≈22MB；第三批走查 13 项发现 + 与同类绿色包（scrcpy / VS Code Portable / PAF 规范 / Picard）对标评估结论：方案合理，详见 §九。
 > **spike 构建已验证（2026-09-24）**：临时目录一次性构建 + 运行验证通过（frozen 资源解析、随包 adb 子进程、/health 与 /api/devices 均正常）；体积实测钉死 **onedir 42MiB / zip 18.9MiB**；暴露的 2 项路径缺陷（§9.3-14 数据路径按 cwd 解析、§9.3-15 误读系统 PATH）**已修复（51534c2）并复测通过**。详见 §9.5。
-> 性质：可行性调研（Spike），未写任何实现代码。
+> 性质：可行性调研（Spike）与正式实施记录（0.5~6 任务提交见 §8.5）。
 
 ## 一、结论
 
@@ -124,26 +125,26 @@
 
 | 原任务 | 修订 |
 |--------|------|
-| （新增）任务 0 | 统一 13 处裸 `adb` 调用（§8.3-1）——打包硬前置，也是独立健壮性修复——**已完成**（2026-09-24） |
-| （新增）任务 0.5 | `scripts/fetch_tools.py`：从官方源下载 + SHA256 校验 **adb 三件套**（adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll）与 scrcpy-server.jar（§9.3-6/12，§9.4 对标修订）——发布构建可复现的前置；pyproject 删除零使用的 `aiofiles`（§9.3-7）顺手完成 |
-| 1 冻结感知资源路径 | 增加：winpty 4 个二进制注入（§8.4-1）；配置/data 路径"exe 同级优先 + APPDATA 回落"（§8.4-7）**必须同时改 `config_watch.py` 的 `CONFIG_DIR`**（§9.3-4）；`scrcpy_recordings` TEMP 清理经查为**死代码**（backend 无生产者），可随改造删除。**其中 data 路径锚定已完成（51534c2，§9.3-14）；config 部分待实施** |
-| 2 前端静态托管 | 不变（`main.py` 确无 `StaticFiles` 挂载，仍待实施；前端 `/api` 相对路径 + `location.host` 已确认零改动）；**SPA fallback 为必须项**（history 路由实测确认，§9.3-10） |
-| 3 启动器体验 | 增加：noconsole 文件日志（§8.4-3）、`SetDllDirectoryW(None)`（§8.4-2）、单实例 mutex + 端口试绑回退（§8.4-6）；绑定地址改 `127.0.0.1`（防火墙 + WebCodecs 安全上下文双重理由，§9.3-5）；**入口改为 `from app.main import app` 传对象**（§9.3-1） |
-| 4 spec + 构建脚本 | 修订：依赖上游 hook（升级工具链即可），**不手写 collect_submodules**；关 UPX；`src:dest` datas 写法并按 §9.1 表格对齐注入目标；`pathex` 含仓库根 + `backend/`（§9.3-2）；`hiddenimports=['app.main']`（§9.3-1）；`excludes=['rich','pygments','tkinter','pytest','pywin32']`（§9.3-8）；构建顺序 `npm ci && npm run build` → PyInstaller（§9.3-11） |
-| 5 产物治理 | 不变；补：打包前清理死配置（`scrcpy_path`/`jwt_secret`，§9.3-9） |
-| 6 干净环境验证 | 不变；补充"存疑项实测"（见下）；构建环境用**干净 venv**（本机 dev 环境已漂移，§9.3-7） |
+| （新增）任务 0 | 统一 13 处裸 `adb` 调用（§8.3-1）——打包硬前置，也是独立健壮性修复——**已完成（8511d55）** |
+| （新增）任务 0.5 | `scripts/fetch_tools.py`：从官方源下载 + SHA256 校验 **adb 三件套**（adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll）与 scrcpy-server.jar（§9.3-6/12，§9.4 对标修订）——发布构建可复现的前置；pyproject 删除零使用的 `aiofiles`（§9.3-7）顺手完成——**已完成（88c9f3d）** |
+| 1 冻结感知资源路径 | 增加：winpty 4 个二进制注入（§8.4-1）；配置/data 路径"exe 同级优先 + APPDATA 回落"（§8.4-7）**必须同时改 `config_watch.py` 的 `CONFIG_DIR`**（§9.3-4）；`scrcpy_recordings` TEMP 清理经查为**死代码**（backend 无生产者），随改造删除。data/config 路径锚定与 config_watch 同步——**已完成（51534c2 + 8cc5352）** |
+| 2 前端静态托管 | 不变（前端 `/api` 相对路径 + `location.host` 已确认零改动）；**SPA fallback 为必须项**（history 路由实测确认，§9.3-10）——**已完成（153eab6）**，深链/刷新回归 200 实证见 §9.5 |
+| 3 启动器体验 | 增加：noconsole 文件日志（§8.4-3）、`SetDllDirectoryW(None)`（§8.4-2）、单实例 mutex + 端口试绑回退（§8.4-6）；绑定地址改 `127.0.0.1`（防火墙 + WebCodecs 安全上下文双重理由，§9.3-5）；**入口改为 `from app.main import app` 传对象**（§9.3-1）——**已完成（b43633b）**，运行实证见 §9.5 |
+| 4 spec + 构建脚本 | 修订：依赖上游 hook（升级工具链即可），**不手写 collect_submodules**；关 UPX；`src:dest` datas 写法并按 §9.1 表格对齐注入目标；`pathex` 含仓库根 + `backend/`（§9.3-2）；`hiddenimports=['app.main']`（§9.3-1）；`excludes=['rich','pygments','tkinter','pytest','pywin32']`（§9.3-8）；构建顺序 `npm ci && npm run build` → PyInstaller（§9.3-11）——**已完成（db122a3 + 任务 6 修复 spec winpty 导入名）** |
+| 5 产物治理 | 不变；补：打包前清理死配置（`scrcpy_path`/`jwt_secret`，§9.3-9）、发布文档（端口/单实例/adb 5037 隔离/数据升级保留/杀软/DebugView）——**已完成（17e7814）** |
+| 6 干净环境验证 | 不变；补充"存疑项实测"（见下）；构建环境用**干净 venv**（本机 dev 环境已漂移，§9.3-7）——**验证通过（2026-09-28，详细见 §9.6 正式版验证小节）** |
 | 7 端口可配置化 | **已完成**（2026-09-24 复核），无需再排 |
 
 另：§五 风险清单"局域网访问留配置开关"一条按 §9.3-5 修正——局域网访问不只是防火墙问题，`http://` 非安全上下文下 WebCodecs 不可用（视频退化为截图模式），绿色版定位为**本机工具**（`127.0.0.1`），局域网视频需求须另行 HTTPS 方案。
 
 ### 8.6 待实测清单（外部调研存疑项）
 
-1. pywinpty 在 PyInstaller 下二进制的收全情况（含 Win10 <1809 无 ConPTY 回退 winpty 后端的路径）——**收全已实测（spike 产物 5 件齐：conpty.dll / winpty.dll / OpenConsole.exe / winpty-agent.exe / _winpty.pyd）；运行期 PTY 交互待正式实施验证**
-2. hook-pydantic 在锁定版本 + 构建 Python 组合下是否完全免手工干预——**已实测（spike 未加任何 pydantic 手工处理，收集与运行均正常）**
-3. Nuitka 第二候选对照（构建耗时、uvicorn/pywinpty 资源收全率）——本项目纯 Python 依赖为主，PyInstaller 仍是首选
-4. 免安装目录位于 OneDrive / 网络盘 / 中文路径时的行为
-5. 目标环境杀软（Defender/360/火绒）误报实测与代码签名成本收益
-6. 自动开浏览器 + 端口回退 + 服务就绪的时序竞态（慢机需重试策略）
+1. pywinpty 在 PyInstaller 下二进制的收全情况（含 Win10 <1809 无 ConPTY 回退 winpty 后端的路径）——**收全已实测（spike 产物 5 件齐：conpty.dll / winpty.dll / OpenConsole.exe / winpty-agent.exe / _winpty.pyd）；运行期 PTY 交互正式版实测通过（2026-09-28，见 §9.6）**：真机 .18 会话逐键回显 + 命令执行 + prompt 返回，exe 进程模块证据 `_winpty.pyd`/`winpty.dll`/`conpty.dll` 均加载自 `_internal\winpty\`。**Win10 <1809 的 winpty 回退 backend 路径仍未实测**（本机 Win11 走 ConPTY，winpty-agent.exe 不参与）
+2. hook-pydantic 在锁定版本 + 构建 Python 组合下是否完全免手工干预——**已实测（spike 与正式版均未加任何 pydantic 手工处理，收集与运行均正常）**
+3. Nuitka 第二候选对照（构建耗时、uvicorn/pywinpty 资源收全率）——本项目纯 Python 依赖为主，PyInstaller 仍是首选；正式版构建成功佐证（首次失败为 spec 导入名缺陷，修复后 exit 0，见 §9.6）
+4. 免安装目录位于 OneDrive / 网络盘 / 中文路径时的行为——**发布后观察项**（本机无法低成本模拟；发布说明已建议避开 OneDrive/网络盘，exe 同级不可写时回落 LOCALAPPDATA 并有测试覆盖）
+5. 目标环境杀软（Defender/360/火绒）误报实测与代码签名成本收益——**发布后观察项**；本机 Win11 Defender 实时防护开启下构建、运行、zip 校验全程未触发误报（360/火绒未测）；已关 UPX 缓解
+6. 自动开浏览器 + 端口回退 + 服务就绪的时序竞态（慢机需重试策略）——**基本落结（2026-09-28 实证）**：自动开浏览器生效且页面加载（前置浏览器进程持续连入 `/api/devices/events`）；8765 被占回退 8766 后浏览器同样正常连入；慢机极端竞态仍为观察项（`wait_until_port_ready` 15s 超时后失败退出而非开死页，见任务 3）
 
 ### 8.7 其他复核记录（数字更新）
 
@@ -275,3 +276,42 @@
 - 跨版本稳健性：修复行为在 pydantic-settings 2.14.2（本机）与 2.15.0（干净 venv）实测一致
 
 **未覆盖（留给正式实施）**：三件套 DLL 未在 spike 注入（USB 直连未验）；`--noconsole` 文件日志、单实例、自动开浏览器时序；PTY 运行期交互；杀软误报与 OneDrive/中文路径（§8.6-4/5/6）；config 的"exe 同级优先 + config_watch 同步"（本轮仅数据路径锚定，config 部分待任务 1）。
+
+### 9.6 正式版全链路验证（2026-09-28，任务 6）
+
+**构建**（`scripts/build_exe.sh`，干净 venv + PyInstaller 6.22.3 锁定；fetch_tools 四件 SHA256 全部校验通过）：
+
+- 第一次构建在 PyInstaller 步骤失败，根因是任务 4 spec 的**隐藏缺陷**：`_winpty_binaries()` 使用 `import pywinpty`，而 pywinpty 发行版的导入名是 `winpty`（wheel 顶层包实测：2.0.12 与 3.0.5 均无 `pywinpty` 模块，应用代码亦一直 `import winpty`）。spike 用临时 spec（已删）从未走到该行，正式 spec 入库后首次真实构建即暴露。已修复为 `import winpty`（openscrcpy.spec），第二次构建 exit 0。
+- 产物：**onedir 42MiB（43,497,961 B，123 文件，spike 121 + 三件套两 DLL）**；**发布 zip deflate 19.0MiB（19,898,372 B）**，SHA256 `e87c4d9b…`，zip 内**无 `data/`** 条目（已程序化断言）。与 spike 钉死的 42MiB/18.9MiB 数量级一致。
+- 构建告警仅剩 3 条无害项：`ext-ms-win-uiacore-*` API set 虚拟 DLL（OpenConsole.exe 依赖）×2、`tzdata` hidden import 未找到。spike 曾出现的 `could not resolve 'AdbWinApi.dll'` 告警**已消失**（三件套注入佐证）。
+- 资源注入核对：`_internal/tools/`（adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll）、`_internal/app/scrcpy/scrcpy-server.jar`、`_internal/config/*.yaml`×6、`_internal/frontend/dist/`（3MiB）、`_internal/winpty/` 5 件齐。
+
+**运行验证（半自动探测 `tests/manual/verify_packaged_exe.py`，全部 PASS）**：
+
+- `/health`、`/api/devices`、SPA 首页 3/3 PASS；**SPA fallback 实证**：`GET /devices/nonexistent` 200（index.html），`GET /api/nonexistent` 保持 404（API/WS 命名空间不被吞）。
+- **数据落点**：两次均从**中性 cwd**（仓库根）启动，`data/port.txt`、`data/debug.sqlite`、`logs/openscrcpy.log` 全部落 exe 同级——cwd 漂移防护生效（§9.3-14）。
+- **单实例 + 端口回退**：python holder 占 8765 后启动 → exe 落 8766、`port.txt`=8766、8766 上 /health 与深链均 200；第二次启动立即退出（exit 0、进程数恒 1、port.txt 不变）→ 单实例 mutex 分支实证。holder 清理后 exe 仍稳定在 8766。
+- **自动开浏览器实证**：服务日志出现 `GET /api/devices/events` 200 持续连入（前端页面已加载并订阅 SSE），且回退到 8766 后同样连入（浏览器指向新端口）。
+- **随包 adb 实证**（§9.5 验证技巧，`ANDROID_ADB_SERVER_PORT=5039` 全程隔离）：exe 触发的 adb server 进程 `ExecutablePath = <产物>\_internal\tools\adb.exe`（命令行 `adb -L tcp:5039 fork-server server`）；本机既有 5037 dev server（更早 PID）**未被触碰**——隔离方案与 `SetDllDirectoryW(None)` 均按预期工作。
+- **日志**：两轮运行共 167 行，0 异常堆栈、0 错误事件（唯一一次异常系本验证脚本自身误用端点制造的已知噪声：向 `/api/sessions`（协作会话仓）建会话后连 debug WS，DebugService 查无此会话抛 404——既有 dev 行为，非打包缺陷，已在验证脚本中改用正确的 `/api/debug/sessions`）。
+
+**真机验证（2026-09-28，随包 adb、设备经 5039 server）**：
+
+| 设备 | 连接 | /api/devices | H.264 出流统计（30s，WS 127.0.0.1） | 控制链路 |
+|------|------|-------------|--------------------------------------|---------|
+| 192.168.8.18（rk3568_r / Android 11） | ✅ | 在线（model/resolution/battery 全量元数据） | config `avc1.42C020` 1360x768；**114 帧 / 12 关键帧 / avg 3.80fps**（静止屏节流，逐秒 min1/max11）；起始码非法包 0、config 1、restarting 0、error 0 | PTY 交互通过（见下）；鼠标/触屏见人工清单 |
+| 192.168.8.25（rk3288 / Android 7.1.2） | ✅ | 在线 | config `avc1.42E01F` 1360x768；**43 帧 / 11 关键帧 / avg 1.43fps**；非法包 0、error 0 | 同上 |
+| 192.168.8.33 | ❌ **超时不可达**（TCP 10060，与打包无关，设备不在线/网络侧问题）——如实记录，未反复重试 | — | — | — |
+
+- **断开重连**：`adb disconnect .18` → `/api/devices` 即时移除；`adb connect` → 重新出现并恢复元数据。
+- **PTY 运行期交互**（§8.6-1 收尾项）：`POST /api/debug/sessions` + `/ws/debug/{id}` subscribe → **input 逐字符回显**（'e'→'cho O'→…逐包到达）、设备执行命令、返回设备 prompt `rk3568_r:/ $`——冻结产物内 ConPTY 全链路可用；模块级证据：exe 进程已加载 `_internal\winpty\_winpty.cp310-win_amd64.pyd`、`winpty.dll`、`conpty.dll`。
+- **截图模式回退**：未强制触发（需非 WebCodecs 环境，低成本手段无），记为观察项。
+
+**留待人工/发布后观察**（自动化不可覆盖或未覆盖）：
+
+1. 浏览器肉眼渲染确认：打开 http://127.0.0.1:8766（验证后 exe 保持运行），确认设备卡、视频画面、控制面板正常。
+2. UI 层控制链路：在视频画面上鼠标点击/滑动/文本输入（后端输入通道与真机 stream 已程序化实证，UI 手势层需人手）。
+3. PTY debug 会话运行期人工交互（程序已实证逐键回显，终端小部件 UI 体验需人手）。
+4. 截图模式回退：非 Chrome 或局域网 http 打开观察（预期退化为截图模式，控制仍可用）。
+5. §8.6-4/5：OneDrive/网络盘/中文路径、360/火绒杀软——发布后观察项；Win10 <1809 winpty 回退 backend——未实测观察项。
+6. USB 直连（三件套已注入、构建告警消失，但本机验证仅有 TCP 设备）。
