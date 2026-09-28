@@ -30,7 +30,7 @@ def _serve(server_app, host: str, port: int) -> None:
     """以可被在线端点优雅停止的方式跑 uvicorn（dev 与 frozen 共用）。
 
     uvicorn.run 内部即 Config + Server.run，此处显式持有 Server 实例并
-    注册 request_shutdown（仅置 should_exit 标志，当前响应写完后停机，
+    注册停机回调（闭包置 should_exit 标志，当前响应写完后停机，
     同时触发 FastAPI lifespan 关闭清理）。导入放函数内：frozen 下必须先
     接管标准流再加载任何 app 子模块（见 main 开头注释），不破坏该顺序。
     """
@@ -60,8 +60,6 @@ def main() -> int:
 
         launcher.redirect_std_streams(app_base_dir() / "logs" / "openscrcpy.log")
         launcher.fix_dll_search_path()
-
-    import uvicorn
 
     from app.core.config import settings
     from app.main import app  # 传对象：PyInstaller 静态分析可收集 app.main（§9.3-1）

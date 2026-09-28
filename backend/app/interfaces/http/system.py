@@ -48,9 +48,9 @@ async def shutdown_endpoint() -> dict[str, Any]:
     """
     请求优雅停机（方案 23 T2）。
 
-    停机动作经启动器注册表触发（run_server 注册 uvicorn
-    Server.request_shutdown，仅置 should_exit 标志——当前响应完整送达
-    后才停止，浏览器可先拿到 accepted 再进入退出指引）。
+    停机动作经启动器注册表触发（run_server 注册的回调仅置 uvicorn
+    Server.should_exit 标志——当前响应完整送达后才停止，浏览器可先拿到
+    accepted 再进入退出指引）。
 
     docker 直跑 uvicorn（无注册回调）时返回 accepted=false 不假成功。
 

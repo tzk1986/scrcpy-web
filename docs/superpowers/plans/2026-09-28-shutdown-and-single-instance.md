@@ -6,7 +6,7 @@
 
 **Architecture:** 停机动作留在启动器层：`app/core/launcher.py` 提供进程级回调注册表，run_server.py（dev 与 frozen 两分支统一）持 uvicorn `Server` 实例并注册 `request_shutdown`；接口层 `POST /api/system/shutdown` 只做薄适配调用注册表。前端顶栏新增「退出服务」按钮（二次确认 + accepted 判定 + health 轮询退出指引）。D1 修复在 `find_available_port` 前加连接预检（`connect_ex`），任何监听者（含 0.0.0.0 通配绑定）都触发端口回退。
 
-**Tech Stack:** Python 3.10 / FastAPI / uvicorn（Server.request_shutdown）/ Vue 3 + Element Plus / vitest；PyInstaller 6.22.3（随包 stop.bat 经构建脚本复制注入，不碰 spec）。
+**Tech Stack:** Python 3.10 / FastAPI / uvicorn（Server.should_exit 闭包——045ae04 修订，原文误写 request_shutdown）/ Vue 3 + Element Plus / vitest；PyInstaller 6.22.3（随包 stop.bat 经构建脚本复制注入，不碰 spec）。
 
 **Spec:** `方案/23-绿色版退出与单开模式方案.md`（§6 决策已落定：退出机制 A+C、D1 立即排期、仅二次确认）。打包背景见 `方案/15-Windows绿色exe打包方案.md` §9。
 
@@ -267,7 +267,7 @@ _shutdown_handler: Callable[[], None] | None = None
 
 
 def register_shutdown_handler(handler: Callable[[], None] | None) -> None:
-    """登记优雅停机回调（run_server 启动时注册 uvicorn Server.request_shutdown）。
+    """登记优雅停机回调（run_server 启动时注册置 uvicorn Server.should_exit 的闭包）。
 
     进程内单例注册表：重复注册以最后一次为准（dev/frozen 各注册一次，
     互不叠加）；传 None 反注册（测试与 docker 直跑场景的诚实语义依赖此）。
@@ -295,9 +295,9 @@ async def shutdown_endpoint() -> dict[str, Any]:
     """
     请求优雅停机（方案 23 T2）。
 
-    停机动作经启动器注册表触发（run_server 注册 uvicorn
-    Server.request_shutdown，仅置 should_exit 标志——当前响应完整送达
-    后才停止，浏览器可先拿到 accepted 再进入退出指引）。
+    停机动作经启动器注册表触发（run_server 注册的回调仅置 uvicorn
+    Server.should_exit 标志——当前响应完整送达后才停止，浏览器可先拿到
+    accepted 再进入退出指引）。
 
     docker 直跑 uvicorn（无注册回调）时返回 accepted=false 不假成功。
 
@@ -323,7 +323,7 @@ def _serve(server_app, host: str, port: int) -> None:
     """以可被在线端点优雅停止的方式跑 uvicorn（dev 与 frozen 共用）。
 
     uvicorn.run 内部即 Config + Server.run，此处显式持有 Server 实例并
-    注册 request_shutdown（仅置 should_exit 标志，当前响应写完后停机，
+    注册停机回调（闭包置 should_exit 标志，当前响应写完后停机，
     同时触发 FastAPI lifespan 关闭清理）。导入放函数内：frozen 下必须先
     接管标准流再加载任何 app 子模块（见 main 开头注释），不破坏该顺序。
     """
@@ -332,7 +332,13 @@ def _serve(server_app, host: str, port: int) -> None:
     from app.core import launcher
 
     server = uvicorn.Server(uvicorn.Config(server_app, host=host, port=port, reload=False))
-    launcher.register_shutdown_handler(server.request_shutdown)
+
+    def _trigger_shutdown() -> None:
+        # uvicorn 无 request_* 公开停机方法；should_exit 是主循环轮询的优雅停机
+        # 标志（信号处理 handle_exit 亦置此属性，方案 23 §5.2-T2 原文语义）。
+        server.should_exit = True
+
+    launcher.register_shutdown_handler(_trigger_shutdown)
     server.run()
 ```
 
@@ -375,7 +381,7 @@ feat: 新增 /api/system/shutdown 优雅停机端点（方案 23 T2 后端）
 
 停机动作留在启动器层：launcher 提供进程级回调注册表，
 run_server（dev 与 frozen 统一）持有 uvicorn Server 实例并注册
-request_shutdown（should_exit 标志——响应完整送达后停机，触发
+停机闭包（should_exit 标志——响应完整送达后停机，触发
 lifespan 清理）；接口层仅薄适配。docker 直跑 uvicorn 无注册回调时
 返回 accepted=false 不假成功；重复请求幂等。
 

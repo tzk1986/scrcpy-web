@@ -91,7 +91,7 @@ _shutdown_handler: Callable[[], None] | None = None
 
 
 def register_shutdown_handler(handler: Callable[[], None] | None) -> None:
-    """登记优雅停机回调（run_server 启动时注册 uvicorn Server.request_shutdown）。
+    """登记优雅停机回调（run_server 启动时注册置 uvicorn Server.should_exit 的闭包）。
 
     进程内单例注册表：重复注册以最后一次为准（dev/frozen 各注册一次，
     互不叠加）；传 None 反注册（测试与 docker 直跑场景的诚实语义依赖此）。
