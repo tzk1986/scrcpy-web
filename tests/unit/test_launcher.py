@@ -50,6 +50,19 @@ def test_find_available_port_exhausted_raises():
         probe.close()
 
 
+def test_find_available_port_detects_wildcard_listener():
+    """D1 回归（方案 23 §1.2/§3.3）：0.0.0.0 通配绑定占用时，试绑 127.0.0.1
+    会成功误判可用；必须连接预检感知通配监听者并回退。"""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("0.0.0.0", 0))
+        probe.listen(1)
+        occupied = probe.getsockname()[1]
+        assert launcher.find_available_port("127.0.0.1", occupied, attempts=2) == occupied + 1
+    finally:
+        probe.close()
+
+
 def test_port_file_roundtrip(tmp_path):
     launcher.write_runtime_port(tmp_path / "port.txt", 8766)
     assert launcher.read_runtime_port(tmp_path / "port.txt") == 8766

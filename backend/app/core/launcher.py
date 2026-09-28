@@ -49,14 +49,29 @@ def acquire_single_instance_mutex(name: str = _SINGLE_INSTANCE_MUTEX) -> bool:
     return ctypes.get_last_error() != _ERROR_ALREADY_EXISTS
 
 
-def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
-    """从 start_port 起逐个试绑（探测后立即释放），返回第一个可用端口。
+def _port_has_listener(port: int, timeout: float = 0.5) -> bool:
+    """连接预检：目标端口存在任何监听者（含 0.0.0.0 通配绑定）即视为占用。
 
+    Windows 允许 0.0.0.0:port 与具体地址:port 共存且连接路由具体地址优先，
+    仅试绑具体地址会误判空闲（方案 23 缺陷 D1，§1.2/§3.3）——先连接预检
+    再试绑：通配绑定同样接受回环连接，正确触发回退。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(timeout)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
+    """从 start_port 起逐个探测，返回第一个可用端口。
+
+    探测 = 连接预检（感知任何监听者，含通配绑定，§23-D1）+ 试绑复核。
     Windows 下 SO_REUSEADDR 不阻止重复绑定，改用 SO_EXCLUSIVEADDRUSE
     （8.4-6 端口冲突回退的探测正确性依赖此语义）。
     """
     for offset in range(attempts):
         port = start_port + offset
+        if _port_has_listener(port):
+            continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
                 sock.setsockopt(socket.SOL_SOCKET, _SO_EXCLUSIVEADDRUSE, 1)
