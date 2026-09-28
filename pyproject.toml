@@ -14,7 +14,6 @@ dependencies = [
     "pywinpty>=2.0; sys_platform == 'win32'",
     "structlog>=24.1.0",
     "pyyaml>=6.0.1",
-    "aiofiles>=23.2.0",
     "websockets>=12.0",
     "python-multipart>=0.0.9",
 ]
@@ -53,5 +52,5 @@ mypy_path = "backend"
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = ["yaml", "winpty", "structlog.*", "aiosqlite", "aiofiles"]
+module = ["yaml", "winpty", "structlog.*", "aiosqlite"]
 ignore_missing_imports = true
