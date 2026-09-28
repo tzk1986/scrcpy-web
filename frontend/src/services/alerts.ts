@@ -30,6 +30,14 @@ const ALERT_LABELS: Record<string, string> = {
   tx_rate_kbps: '发送速率',
 }
 
+const ALERT_UNITS: Record<string, string> = {
+  cpu_percent: '%',
+  memory_percent: '%',
+  fps: 'fps',
+  rx_rate_kbps: 'kbps',
+  tx_rate_kbps: 'kbps',
+}
+
 export function alertLabel(id: string): string {
   return ALERT_LABELS[id] ?? id
 }
@@ -47,8 +55,9 @@ export function extractAlerts(data: unknown): AlertItem[] {
 
 function formatAlert(item: AlertItem): string {
   const label = alertLabel(item.id)
-  const value = typeof item.value === 'number' ? item.value.toFixed(1) : '-'
-  const threshold = item.threshold.toFixed(1)
+  const unit = ALERT_UNITS[item.id] ?? ''
+  const value = typeof item.value === 'number' ? `${item.value.toFixed(1)}${unit}` : '-'
+  const threshold = `${item.threshold.toFixed(1)}${unit}`
   return item.direction === 'above'
     ? `${label} ${value} 超过阈值 ${threshold}`
     : `${label} ${value} 低于阈值 ${threshold}`

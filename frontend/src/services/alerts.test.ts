@@ -83,16 +83,36 @@ describe('createAlertNotifier', () => {
     expect(elMessage.warning).toHaveBeenCalledTimes(2)
   })
 
-  it('文案：above 为「超过阈值」、below 为「低于阈值」', () => {
+  it('文案：above 为「超过阈值」、below 为「低于阈值」，数值带单位（spec §5）', () => {
     const notifier = createAlertNotifier()
     notifier.update([makeAlert()])
     notifier.update([makeAlert({ id: 'fps', direction: 'below', threshold: 30, value: 25.4, since: 1 })])
+    notifier.update([
+      makeAlert({ id: 'rx_rate_kbps', direction: 'above', threshold: 800, value: 900, since: 2 }),
+    ])
+    notifier.update([
+      makeAlert({ id: 'custom_metric', direction: 'above', threshold: 3, value: 5, since: 3 }),
+    ])
+    notifier.update([
+      makeAlert({ id: 'memory_percent', direction: 'above', threshold: 90, value: null, since: 4 }),
+    ])
 
     const first = elMessage.warning.mock.calls[0][0] as { message: string; grouping: boolean }
-    expect(first.message).toBe('CPU 使用率 87.2 超过阈值 80.0')
+    expect(first.message).toBe('CPU 使用率 87.2% 超过阈值 80.0%')
     expect(first.grouping).toBe(true)
 
     const second = elMessage.warning.mock.calls[1][0] as { message: string }
-    expect(second.message).toBe('帧率 25.4 低于阈值 30.0')
+    expect(second.message).toBe('帧率 25.4fps 低于阈值 30.0fps')
+
+    const third = elMessage.warning.mock.calls[2][0] as { message: string }
+    expect(third.message).toBe('接收速率 900.0kbps 超过阈值 800.0kbps')
+
+    // 未知 id：单位兜底为空串
+    const fourth = elMessage.warning.mock.calls[3][0] as { message: string }
+    expect(fourth.message).toBe('custom_metric 5.0 超过阈值 3.0')
+
+    // value=null：数值兜底为 '-'（不带单位），阈值仍带单位
+    const fifth = elMessage.warning.mock.calls[4][0] as { message: string }
+    expect(fifth.message).toBe('内存使用率 - 超过阈值 90.0%')
   })
 })
