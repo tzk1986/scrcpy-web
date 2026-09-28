@@ -867,8 +867,10 @@ Run:
 ```bash
 ./dist/OpenScrcpy/OpenScrcpy.exe &
 sleep 8
+PORT=$(cat dist/OpenScrcpy/data/port.txt)
+echo "实际端口: $PORT"
 for i in $(seq 1 30); do
-  curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8765/health | grep -q 200 && break
+  curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/health" | grep -q 200 && break
   sleep 0.5
 done
 echo "--- 第二次启动（应秒退） ---"
@@ -879,7 +881,7 @@ tasklist //FI "IMAGENAME eq OpenScrcpy.exe" | grep -ci openscrcpy
 cat dist/OpenScrcpy/data/port.txt
 ```
 
-Expected: 端口回退场景已解除（mock 已杀/8765 空闲）故首次起在 8765；二次启动进程自动退出（`exit 0`）、仅开浏览器指向 8765；进程计数 = 1；`port.txt` 仍 `8765`（未回退重写）。
+Expected: 首次启动的实际端口以 `port.txt` 为准（若 8765 仍被别的监听者占用——包括用户 dev 后端——则回退到 8766，二启单开断言**不依赖具体端口号**）；二次启动进程自动退出（`exit 0`）、仅开浏览器指向已运行实例；进程计数 = 1；`port.txt` 与首启一致（未回退重写）。
 
 - [ ] **Step 7: R4 stop.bat**
 
