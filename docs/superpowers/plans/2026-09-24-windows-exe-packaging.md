@@ -563,6 +563,9 @@ history 深链 fallback 到 index.html，API 路由优先命中，
 路径不得逃逸 dist 目录（../ 防护）。
 """
 
+import sys
+from pathlib import Path
+
 import app.main as main_module
 from app.main import create_app
 from fastapi.testclient import TestClient
@@ -578,66 +581,88 @@ def _make_fake_dist(tmp_path):
 
 
 def _client_with_dist(tmp_path, monkeypatch):
+    # 不用 with：不触发 lifespan 副作用（与项目其他 TestClient 用例一致）
     monkeypatch.setattr(main_module, "FRONTEND_DIST", _make_fake_dist(tmp_path))
     return TestClient(create_app(), raise_server_exceptions=False)
 
 
+def test_frontend_dist_source_points_repo():
+    assert main_module.FRONTEND_DIST == (
+        Path(main_module.__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    )
+
+
+def test_frontend_dist_frozen_uses_meipass(monkeypatch, tmp_path):
+    # frozen 下 __file__ = _MEIPASS/app/main.py，dist 在 _MEIPASS/frontend/dist
+    # （上溯级数与源码不同，审查 Critical 回归锁定）
+    fake_meipass = tmp_path / "_internal"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(fake_meipass), raising=False)
+    assert main_module._compute_frontend_dist() == fake_meipass / "frontend" / "dist"
+
+
 def test_index_served_at_root(tmp_path, monkeypatch):
-    with _client_with_dist(tmp_path, monkeypatch) as client:
-        r = client.get("/")
-        assert r.status_code == 200
-        assert "SPA" in r.text
+    client = _client_with_dist(tmp_path, monkeypatch)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "SPA" in r.text
 
 
 def test_deep_link_falls_back_to_index(tmp_path, monkeypatch):
     # history 路由（createWebHistory 已实测）：/devices/abc 无对应文件 → index.html
-    with _client_with_dist(tmp_path, monkeypatch) as client:
-        r = client.get("/devices/abc")
-        assert r.status_code == 200
-        assert "SPA" in r.text
+    client = _client_with_dist(tmp_path, monkeypatch)
+    r = client.get("/devices/abc")
+    assert r.status_code == 200
+    assert "SPA" in r.text
 
 
 def test_assets_directory_served(tmp_path, monkeypatch):
-    with _client_with_dist(tmp_path, monkeypatch) as client:
-        r = client.get("/assets/app.js")
-        assert r.status_code == 200
-        assert "assets" in r.text
+    client = _client_with_dist(tmp_path, monkeypatch)
+    r = client.get("/assets/app.js")
+    assert r.status_code == 200
+    assert "assets" in r.text
 
 
 def test_real_file_in_dist_served(tmp_path, monkeypatch):
-    with _client_with_dist(tmp_path, monkeypatch) as client:
-        r = client.get("/about.html")
-        assert r.status_code == 200
-        assert r.text == "about-page"
+    client = _client_with_dist(tmp_path, monkeypatch)
+    r = client.get("/about.html")
+    assert r.status_code == 200
+    assert r.text == "about-page"
 
 
 def test_api_routes_take_precedence(tmp_path, monkeypatch):
-    with _client_with_dist(tmp_path, monkeypatch) as client:
-        r = client.get("/health")
-        assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+    client = _client_with_dist(tmp_path, monkeypatch)
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
 
 
 def test_path_traversal_blocked(tmp_path, monkeypatch):
     secret = tmp_path / "secret.txt"
     secret.write_text("top-secret", encoding="utf-8")
-    with _client_with_dist(tmp_path, monkeypatch) as client:
-        r = client.get("/../secret.txt")
-        assert "top-secret" not in r.text
+    client = _client_with_dist(tmp_path, monkeypatch)
+    # httpx 会把 /../secret.txt 归一化为 /secret.txt（触达不到服务端防护），
+    # 用百分号编码形式让服务端真实收到逃逸路径，验证 containment 防护生效
+    r = client.get("/%2e%2e%2fsecret.txt")
+    assert "top-secret" not in r.text
+    assert "SPA" in r.text
 
 
 def test_unknown_api_path_stays_404(tmp_path, monkeypatch):
     # API 命名空间未注册路径不得被 SPA fallback 吞成 200 HTML
-    with _client_with_dist(tmp_path, monkeypatch) as client:
-        assert client.get("/api/nonexistent").status_code == 404
+    client = _client_with_dist(tmp_path, monkeypatch)
+    assert client.get("/api/nonexistent").status_code == 404
+    assert client.get("/api").status_code == 404
+    assert client.get("/api/nonexistent", method="HEAD").status_code == 404
+    assert client.get("/api/nonexistent", method="POST").status_code != 200
 
 
 def test_no_dist_no_mount(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "FRONTEND_DIST", tmp_path / "nonexistent")
-    with TestClient(create_app(), raise_server_exceptions=False) as client:
-        r = client.get("/")
-        assert r.status_code == 404
-        assert client.get("/health").status_code == 200
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    r = client.get("/")
+    assert r.status_code == 404
+    assert client.get("/health").status_code == 200
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -649,33 +674,54 @@ Expected: FAIL（index 未托管：`/` 404）
 
 `backend/app/main.py`：
 1. imports 增加 `from pathlib import Path`、`from fastapi import HTTPException`、`from fastapi.responses import FileResponse`、`from fastapi.staticfiles import StaticFiles`；
-2. 模块级常量（`create_app` 之前）：
+2. 模块级常量（`create_app` 之前）——**frozen 感知推导（Task 2 审查 Critical 修正）**：
 
 ```python
-FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+def _compute_frontend_dist() -> Path:
+    """
+    前端 dist 目录。
+
+    - 源码运行：仓库根（backend/app/main.py 上溯三级）→ <仓库>/frontend/dist
+    - 冻结运行（PyInstaller 6 onedir）：bundle 根 sys._MEIPASS（= <产物>/_internal）
+      → <产物>/_internal/frontend/dist，与 spec datas 目标 "frontend/dist" 一致。
+      注意：frozen 下 __file__ = _MEIPASS/app/main.py，上溯级数与源码不同
+      （无 backend/ 段），不能复用同一表达式。
+    """
+    if getattr(sys, "frozen", False):
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            return Path(bundle_root) / "frontend" / "dist"
+        return Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    return Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+
+FRONTEND_DIST = _compute_frontend_dist()
 ```
 
 3. `create_app()` 末尾（`return app` 之前）追加：
 
 ```python
     # --- 前端静态托管（方案 15 任务 2）--------------------------------------
-    # dist 存在（前端已构建或打包注入）才挂载；源码运行未构建时跳过。
+    # dist 完整（已构建或打包注入，index.html 存在为完整性判据）才挂载；
+    # 源码运行未构建/构建中断时跳过，避免 fallback 指向不存在的文件。
     # 顺序敏感：本块必须在所有 API/WS 路由之后，否则 catch-all 会吞掉 API。
-    if FRONTEND_DIST.is_dir():
+    if FRONTEND_DIST.is_dir() and (FRONTEND_DIST / "index.html").is_file():
         root = FRONTEND_DIST.resolve()
         assets_dir = root / "assets"
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-        @app.get("/{frontend_path:path}", include_in_schema=False)
+        @app.get("/{frontend_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
         async def spa_fallback(frontend_path: str) -> FileResponse:
-            # API/WS 命名空间的未匹配路径保持 404 语义，不被前端 fallback 吞掉
-            if frontend_path.startswith(("api/", "ws/")):
+            # API/WS 命名空间（首路径段）的未匹配路径保持 404 语义，
+            # 不被前端 fallback 吞成 200 HTML
+            if frontend_path.split("/", 1)[0] in ("api", "ws"):
                 raise HTTPException(status_code=404, detail="Not Found")
             # 命中 dist 内真实文件则直接返回（favicon 等根级资源），
-            # 否则一律 fallback 到 index.html（createWebHistory 深链/刷新）
+            # 否则一律 fallback 到 index.html（createWebHistory 深链/刷新）；
+            # containment 判定先于 stat，杜绝符号链接/编码逃逸路径被直接返回
             candidate = (root / frontend_path).resolve()
-            if frontend_path and candidate.is_file() and candidate.is_relative_to(root):
+            if frontend_path and candidate.is_relative_to(root) and candidate.is_file():
                 return FileResponse(candidate)
             return FileResponse(root / "index.html")
 ```
