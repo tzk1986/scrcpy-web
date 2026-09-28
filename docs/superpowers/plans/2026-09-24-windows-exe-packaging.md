@@ -653,8 +653,9 @@ def test_unknown_api_path_stays_404(tmp_path, monkeypatch):
     client = _client_with_dist(tmp_path, monkeypatch)
     assert client.get("/api/nonexistent").status_code == 404
     assert client.get("/api").status_code == 404
-    assert client.get("/api/nonexistent", method="HEAD").status_code == 404
-    assert client.get("/api/nonexistent", method="POST").status_code != 200
+    # httpx 的 get() 不接受 method= 参数（实测 0.28.1 TypeError），用 head()/post()
+    assert client.head("/api/nonexistent").status_code == 404
+    assert client.post("/api/nonexistent").status_code != 200
 
 
 def test_no_dist_no_mount(tmp_path, monkeypatch):
@@ -688,10 +689,9 @@ def _compute_frontend_dist() -> Path:
       （无 backend/ 段），不能复用同一表达式。
     """
     if getattr(sys, "frozen", False):
-        bundle_root = getattr(sys, "_MEIPASS", None)
-        if bundle_root:
-            return Path(bundle_root) / "frontend" / "dist"
-        return Path(__file__).resolve().parent.parent / "frontend" / "dist"
+        # PyInstaller 6 冻结运行时必设 _MEIPASS（onedir 下 = <产物>/_internal）；
+        # 若缺失宁可导入时报错（响亮暴露构建异常）也不静默指向错误路径
+        return Path(getattr(sys, "_MEIPASS")) / "frontend" / "dist"
     return Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
@@ -711,7 +711,9 @@ FRONTEND_DIST = _compute_frontend_dist()
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-        @app.get("/{frontend_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+        # 用 api_route 而非 @app.get：FastAPI 的 get() 不接受 methods= 参数
+        # （实测 0.141.1 TypeError），@app.api_route 是注册多方法路由的正式入口
+        @app.api_route("/{frontend_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
         async def spa_fallback(frontend_path: str) -> FileResponse:
             # API/WS 命名空间（首路径段）的未匹配路径保持 404 语义，
             # 不被前端 fallback 吞成 200 HTML
