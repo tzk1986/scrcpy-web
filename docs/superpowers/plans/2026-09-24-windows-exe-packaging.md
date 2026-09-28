@@ -626,6 +626,12 @@ def test_path_traversal_blocked(tmp_path, monkeypatch):
         assert "top-secret" not in r.text
 
 
+def test_unknown_api_path_stays_404(tmp_path, monkeypatch):
+    # API 命名空间未注册路径不得被 SPA fallback 吞成 200 HTML
+    with _client_with_dist(tmp_path, monkeypatch) as client:
+        assert client.get("/api/nonexistent").status_code == 404
+
+
 def test_no_dist_no_mount(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "FRONTEND_DIST", tmp_path / "nonexistent")
     with TestClient(create_app(), raise_server_exceptions=False) as client:
@@ -642,7 +648,7 @@ Expected: FAIL（index 未托管：`/` 404）
 - [ ] **Step 3: 实现 main.py 改造**
 
 `backend/app/main.py`：
-1. imports 增加 `from pathlib import Path`、`from fastapi.responses import FileResponse`、`from fastapi.staticfiles import StaticFiles`；
+1. imports 增加 `from pathlib import Path`、`from fastapi import HTTPException`、`from fastapi.responses import FileResponse`、`from fastapi.staticfiles import StaticFiles`；
 2. 模块级常量（`create_app` 之前）：
 
 ```python
@@ -663,6 +669,9 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "di
 
         @app.get("/{frontend_path:path}", include_in_schema=False)
         async def spa_fallback(frontend_path: str) -> FileResponse:
+            # API/WS 命名空间的未匹配路径保持 404 语义，不被前端 fallback 吞掉
+            if frontend_path.startswith(("api/", "ws/")):
+                raise HTTPException(status_code=404, detail="Not Found")
             # 命中 dist 内真实文件则直接返回（favicon 等根级资源），
             # 否则一律 fallback 到 index.html（createWebHistory 深链/刷新）
             candidate = (root / frontend_path).resolve()
