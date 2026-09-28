@@ -43,6 +43,18 @@ def _is_writable(directory: Path) -> bool:
         return False
 
 
+def _frozen_base_dir() -> Path | None:
+    """冻结运行的基目录：exe 同级（可写时）；不可写（Program Files 等）回落
+    %LOCALAPPDATA%/OpenScrcpy。源码运行返回 None。"""
+    if not getattr(sys, "frozen", False):
+        return None
+    exe_dir = Path(sys.executable).parent
+    if _is_writable(exe_dir):
+        return exe_dir
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    return Path(local_appdata) / "OpenScrcpy" if local_appdata else exe_dir
+
+
 def app_base_dir() -> Path:
     """
     应用数据基目录：数据等相对路径的锚点。
@@ -51,15 +63,24 @@ def app_base_dir() -> Path:
     - 冻结运行（PyInstaller）：exe 同级（绿色版可整体迁移/备份）；
       同级不可写（如 Program Files）时回落 %LOCALAPPDATA%/OpenScrcpy
     """
-    if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).parent
-        if _is_writable(exe_dir):
-            return exe_dir
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
-            return Path(local_appdata) / "OpenScrcpy"
-        return exe_dir
-    return Path(__file__).parent.parent
+    frozen_dir = _frozen_base_dir()
+    return frozen_dir if frozen_dir is not None else Path(__file__).parent.parent
+
+
+def config_base_dir() -> Path:
+    """
+    配置文件搜索目录（load_yaml_config 与 config_watch 共用）。
+
+    - 源码运行：仓库 config/
+    - 冻结运行：exe 同级 config/ 优先（存在 base.yaml 才生效，用户可改
+      并触发热重载），否则回落 bundle 内 config/（只读基线）
+    """
+    frozen_dir = _frozen_base_dir()
+    if frozen_dir is not None:
+        exe_config = frozen_dir / "config"
+        if (exe_config / "base.yaml").exists():
+            return exe_config
+    return Path(__file__).parent
 
 
 def _to_abs_path(value: str) -> str:
@@ -201,7 +222,7 @@ class Settings(BaseSettings):
 
 def load_yaml_config(env: str = "base") -> dict[str, Any]:
     """Load YAML configuration file"""
-    config_dir = Path(__file__).parent
+    config_dir = config_base_dir()
     config_file = config_dir / f"{env}.yaml"
 
     if not config_file.exists():

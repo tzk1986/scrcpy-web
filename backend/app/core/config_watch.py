@@ -30,15 +30,17 @@ from config.settings import reload_settings, settings
 
 logger = get_logger(__name__)
 
-CONFIG_DIR = Path(config_settings.__file__).parent
+def config_dir() -> Path:
+    """当前配置文件目录（frozen 下 exe 同级优先），与 config.settings 的加载路径一致。"""
+    return config_settings.config_base_dir()
 
 
 def watched_paths() -> list[Path]:
     """当前应监听的配置文件清单：base.yaml + 当前 APP_ENV 的环境文件。"""
-    paths = [CONFIG_DIR / "base.yaml"]
+    paths = [config_dir() / "base.yaml"]
     env = os.getenv("APP_ENV", "base")
     if env != "base":
-        env_file = CONFIG_DIR / f"{env}.yaml"
+        env_file = config_dir() / f"{env}.yaml"
         if env_file.exists():
             paths.append(env_file)
     return paths
