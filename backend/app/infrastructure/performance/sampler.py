@@ -40,6 +40,9 @@ class PerformanceMetrics:
     jank_count: int           # 卡顿帧数
     current_activity: str     # 当前前台 Activity 组件名
     top_package: str          # 当前前台应用包名
+    # fps 是否为本轮实测值（沿用 _last_fps / 空窗为 False）。仅服务端告警判定用，
+    # 不进 _metrics_to_dict / WS 消息 / 落库（方案 24 §4.3）
+    fps_fresh: bool = False
 
 
 class PerformanceSampler:
@@ -130,9 +133,9 @@ class PerformanceSampler:
             self._get_memory_usage(),
         )
         if self._round % self.GFXINFO_INTERVAL == 1:
-            fps, jank = await self._get_fps_and_jank(now, package)
+            fps, jank, fps_fresh = await self._get_fps_and_jank(now, package)
         else:
-            fps, jank = self._last_fps, 0
+            fps, jank, fps_fresh = self._last_fps, 0, False
 
         return PerformanceMetrics(
             ts=now,
@@ -143,6 +146,7 @@ class PerformanceSampler:
             jank_count=jank,
             current_activity=activity,
             top_package=package,
+            fps_fresh=fps_fresh,
         )
 
     async def _shell(self, cmd: str) -> str:
@@ -235,7 +239,9 @@ class PerformanceSampler:
             logger.warning("get_memory_usage_failed", device=self.device_id, error=str(e))
             return 0.0, 0.0
 
-    async def _get_fps_and_jank(self, now: float, package: str) -> tuple[float | None, int]:
+    async def _get_fps_and_jank(
+        self, now: float, package: str
+    ) -> tuple[float | None, int, bool]:
         """
         获取帧率和卡顿帧数。
 
@@ -247,13 +253,13 @@ class PerformanceSampler:
             package: 当前前台应用包名（由 _collect_once 消除重复查询后传入）。
 
         返回：
-            (fps, jank_delta) 元组。
+            (fps, jank_delta, fresh) 元组；fresh 表示 fps 是否为实测值。
             fps 可能为 None（首次采样或无法获取时）。
             jank_delta 是本周期内的卡顿帧增量。
         """
         try:
             if not package:
-                return None, 0
+                return None, 0, False
 
             # 获取该应用 gfxinfo（不用 grep，避免二进制输出问题）
             output = await self._shell(f"dumpsys gfxinfo {package}")
@@ -263,13 +269,14 @@ class PerformanceSampler:
             jank_match = re.search(r"Janky frames:\s*(\d+)", output)
 
             if not frames_match:
-                return None, 0
+                return None, 0, False
 
             total_frames = int(frames_match.group(1))
             total_jank = int(jank_match.group(1)) if jank_match else 0
 
             # 计算实时 FPS 和卡顿增量
             fps: float | None = None
+            fresh = False
             jank_delta = 0
             if self._prev_frames is not None and self._prev_ts is not None:
                 elapsed = now - self._prev_ts
@@ -285,6 +292,7 @@ class PerformanceSampler:
                     else:
                         fps = round(frame_delta / elapsed, 1)
                         self._last_fps = fps  # 记录有效 FPS
+                        fresh = True
                         jank_delta = max(0, total_jank - self._prev_jank)
 
             self._prev_frames = total_frames
@@ -292,13 +300,13 @@ class PerformanceSampler:
             self._prev_ts = now
             self._prev_package = package
 
-            return fps, jank_delta
+            return fps, jank_delta, fresh
 
         except (AdbError, asyncio.TimeoutError):
             raise  # 通信失败向上传播，由 sample() 统一计数停采
         except Exception as e:
             logger.warning("get_fps_failed", device=self.device_id, error=str(e))
-            return None, 0
+            return None, 0, False
 
     async def _get_current_activity(self) -> tuple[str, str]:
         """

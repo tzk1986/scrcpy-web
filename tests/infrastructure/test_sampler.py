@@ -8,9 +8,11 @@
     - 失联自动停采：连续 MAX_FAILURES 次失败后 sample() 结束（不再产出）
     - 失败计数重置：失败后成功采样一轮，计数清零、不误停
     - shell 总超时兜底：挂起的 shell 被 wait_for 打断并抛 TimeoutError
+    - fps_fresh：仅实测轮 True，空窗/应用切换/降频沿用均 False（方案 24 §4.3）
 """
 
 import asyncio
+import time
 
 import pytest
 
@@ -142,3 +144,38 @@ async def test_shell_timeout_raises(monkeypatch):
 
     with pytest.raises(asyncio.TimeoutError):
         await sampler._collect_once()
+
+
+async def test_fps_fresh_marks_measured_round_only():
+    """fps_fresh：实测轮 True；首轮空窗与应用切换沿用均 False（方案 24 §4.3）。"""
+    adb = FakeAdb(GOOD_OUTPUTS)
+    sampler = PerformanceSampler(adb, "device-X")
+    now = time.time()
+
+    fps, jank, fresh = await sampler._get_fps_and_jank(now, "com.example.app")
+    assert (fps, jank, fresh) == (None, 0, False)     # 首轮无基准
+
+    sampler._prev_frames = 100                        # 与 gfxinfo 输出一致（100 帧）
+    sampler._prev_jank = 0
+    sampler._prev_ts = now - 1.0
+    sampler._prev_package = "com.example.app"
+    fps, jank, fresh = await sampler._get_fps_and_jank(now + 1.0, "com.example.app")
+    assert fresh is True                              # 实测分支
+    assert fps is not None
+
+    fps, jank, fresh = await sampler._get_fps_and_jank(now + 2.0, "other.app")
+    assert fresh is False                             # 应用切换沿用
+    assert fps == sampler._last_fps
+
+
+async def test_collect_once_fps_fresh_false_on_reuse_round():
+    """非 gfxinfo 轮沿用 _last_fps：fps_fresh 必须为 False。"""
+    adb = FakeAdb(GOOD_OUTPUTS)
+    sampler = PerformanceSampler(adb, "device-X")
+    await sampler._collect_once()                     # 轮 1
+    sampler._last_fps = 25.5
+
+    m = await sampler._collect_once()                 # 轮 2：非 gfx 轮
+
+    assert m.fps == 25.5
+    assert m.fps_fresh is False

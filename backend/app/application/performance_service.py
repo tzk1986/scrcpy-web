@@ -16,6 +16,7 @@ import asyncio
 from collections import deque
 from typing import Any, AsyncIterator
 
+from app.application.alert_engine import AlertEngine, build_rules
 from app.core.config import settings
 from app.core.exceptions import RecordingDisabledError
 from app.core.logging import get_logger
@@ -69,6 +70,8 @@ class PerformanceService:
         self._recorders: dict[str, MetricRecorder] = {}
         # 最近一次停止原因（stopped/device_lost/config/shutdown），供 status 回显
         self._record_reasons: dict[str, str] = {}
+        # 告警引擎挂点（方案 24）：按设备实例化，随采样任务释放
+        self._alert_engines: dict[str, AlertEngine] = {}
 
     async def start_monitoring(self, device_id: str, interval: float = 1.0) -> None:
         """
@@ -88,6 +91,7 @@ class PerformanceService:
         self._samplers[device_id] = sampler
         self._buffers[device_id] = deque(maxlen=self.buffer_capacity)
         self._subscribers[device_id] = []
+        self._alert_engines[device_id] = AlertEngine(notify_window=max(3 * interval, 5.0))
 
         # 启动采集任务
         task = asyncio.create_task(self._sampling_loop(device_id, sampler, interval))
@@ -107,6 +111,18 @@ class PerformanceService:
             async for metrics in sampler.sample(interval):
                 # 存入缓冲区
                 self._buffers[device_id].append(metrics)
+
+                # 告警评估（方案 24）：先评估后推送，订阅者唤醒时快照已就绪
+                engine = self._alert_engines.get(device_id)
+                if engine is not None:
+                    engine.sync(build_rules())
+                    engine.evaluate("cpu_percent", metrics.cpu_percent, metrics.ts)
+                    engine.evaluate(
+                        "memory_percent", self._memory_percent(metrics), metrics.ts
+                    )
+                    engine.evaluate(
+                        "fps", metrics.fps, metrics.ts, fresh=metrics.fps_fresh
+                    )
 
                 # 推送给订阅者
                 for queue in self._subscribers.get(device_id, []):
@@ -177,6 +193,7 @@ class PerformanceService:
         self._tasks.pop(device_id, None)
         self._samplers.pop(device_id, None)
         self._buffers.pop(device_id, None)
+        self._alert_engines.pop(device_id, None)
 
         # 设备失联自动停采（sample() 自然结束，非 cancel 路径）时，
         # 通知订阅者结束；stop_monitoring 的 cancel 路径会先 pop 订阅者，
@@ -186,6 +203,20 @@ class PerformanceService:
                 queue.put_nowait(None)  # None 作为停止信号
             except Exception:
                 pass
+
+    @staticmethod
+    def _memory_percent(m: PerformanceMetrics) -> float | None:
+        """内存使用率（百分比）；total=0 时返回 None（引擎跳过该样本）。"""
+        if m.total_memory_mb <= 0:
+            return None
+        return m.used_memory_mb / m.total_memory_mb * 100
+
+    def get_alerts(self, device_id: str, sample_ts: float) -> list[dict[str, Any]]:
+        """当前活动告警快照（纯内存读取；无引擎时为空，方案 24 D5）。"""
+        engine = self._alert_engines.get(device_id)
+        if engine is None:
+            return []
+        return engine.snapshot(sample_ts)
 
     async def get_metrics(self, device_id: str, limit: int = 100) -> list[dict[str, Any]]:
         """

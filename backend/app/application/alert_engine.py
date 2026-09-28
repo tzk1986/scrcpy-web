@@ -181,18 +181,23 @@ class AlertEngine:
         return False
 
 
+# 无效规则告警去重（T2 补充项）：采样循环每 tick 热重载式调用 build_rules，
+# 误配置下按「无效签名变化」告警，避免按采样频率刷日志
+_last_invalid_signature: tuple[tuple[str, float | None, float | None], ...] | None = None
+
+
 def build_rules(metric_ids: tuple[str, ...] = METRIC_IDS) -> list[AlertRule]:
     """从配置构建规则集（只产出 enabled 且方向合法的规则，方案 24 §4.1）。"""
+    global _last_invalid_signature
     thresholds = settings().metrics.thresholds
     rules: list[AlertRule] = []
+    invalid: list[tuple[str, float | None, float | None]] = []
     for mid in metric_ids:
         cfg = getattr(thresholds, mid)
         if not cfg.enabled:
             continue
         if (cfg.above is None) == (cfg.below is None):
-            logger.warning(
-                "alert_rule_invalid", metric=mid, above=cfg.above, below=cfg.below
-            )
+            invalid.append((mid, cfg.above, cfg.below))
             continue
         rules.append(
             AlertRule(
@@ -205,4 +210,11 @@ def build_rules(metric_ids: tuple[str, ...] = METRIC_IDS) -> list[AlertRule]:
                 cooldown=cfg.cooldown,
             )
         )
+    signature = tuple(invalid)
+    if not invalid:
+        _last_invalid_signature = None  # 本次全部有效：下次无效可再告警
+    elif signature != _last_invalid_signature:
+        _last_invalid_signature = signature
+        for mid, above, below in invalid:
+            logger.warning("alert_rule_invalid", metric=mid, above=above, below=below)
     return rules

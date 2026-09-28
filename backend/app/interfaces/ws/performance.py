@@ -17,7 +17,10 @@
             "fps": 60,
             "jank_count": 0,
             "current_activity": "com.example/.MainActivity",
-            "top_package": "com.example"
+            "top_package": "com.example",
+            "alerts": [{"id": "cpu_percent", "value": 87.2, "threshold": 80,
+                        "direction": "above", "since": 1726045200.0,
+                        "notify": true}]
         }
 
 参考方案文档：方案/14-调试面板其他标签完善.md
@@ -69,6 +72,7 @@ async def stream_metrics(
                 "jank_count": metrics.jank_count,
                 "current_activity": metrics.current_activity,
                 "top_package": metrics.top_package,
+                "alerts": service.get_alerts(device_id, metrics.ts),
             }
             await websocket.send_json(data)
 

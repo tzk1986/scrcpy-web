@@ -295,3 +295,63 @@ async def test_cleanup_stops_all_devices() -> None:
     assert service._tasks == {}
     assert service._buffers == {}
     assert service._samplers == {}
+
+
+# ---------------------------------------------------------------------------
+# 告警挂点（方案 24 T2）
+# ---------------------------------------------------------------------------
+
+async def test_get_alerts_empty_without_engine():
+    """无监控（无引擎）时 get_alerts 返回 []。"""
+    service = NetworkService(FakeAdb(std_outputs()))
+    assert service.get_alerts(DEV, time.time()) == []
+
+
+async def test_alert_engine_created_and_released_on_stop():
+    """start 创建引擎；stop_monitoring 释放（网络服务无 _release_device 单点，走其一处）。"""
+    service = NetworkService(FakeAdb(std_outputs()))
+    await service.start_monitoring(DEV)
+
+    assert DEV in service._alert_engines
+    await service.stop_monitoring(DEV)
+    assert DEV not in service._alert_engines
+
+
+async def test_alert_engine_released_on_device_lost(monkeypatch, fast_loop) -> None:
+    """失联自然结束路径（_sampling_loop finally）同样释放引擎。"""
+    monkeypatch.setattr(settings().metrics, "lost_failures", 3)
+    service = NetworkService(DeadAdb())
+    await service.start_monitoring(DEV)
+
+    await wait_until(lambda: DEV not in service._tasks)
+
+    assert DEV not in service._alert_engines
+    assert service.get_alerts(DEV, time.time()) == []
+
+
+async def test_sampling_loop_evaluates_rate_metrics(monkeypatch, fast_loop) -> None:
+    """采样循环每轮 sync + evaluate rx/tx 两指标。"""
+    service = NetworkService(FakeAdb(std_outputs()))
+    await service.start_monitoring(DEV)
+
+    class SpyEngine:
+        def __init__(self) -> None:
+            self.synced = 0
+            self.evaluated: list[str] = []
+
+        def sync(self, rules: list) -> None:
+            self.synced += 1
+
+        def evaluate(self, metric_id: str, value: object, ts: float, fresh: bool = True) -> None:
+            self.evaluated.append(metric_id)
+
+        def snapshot(self, sample_ts: float) -> list:
+            return []
+
+    spy = SpyEngine()
+    service._alert_engines[DEV] = spy  # type: ignore[assignment]
+
+    await wait_until(lambda: spy.synced >= 1 and "rx_rate_kbps" in spy.evaluated)
+
+    await service.stop_monitoring(DEV)
+    assert "tx_rate_kbps" in spy.evaluated

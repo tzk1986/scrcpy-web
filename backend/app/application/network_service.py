@@ -18,6 +18,7 @@ import time
 from collections import deque
 from typing import Any
 
+from app.application.alert_engine import AlertEngine, build_rules
 from app.core.config import settings
 from app.core.exceptions import RecordingDisabledError
 from app.core.logging import get_logger
@@ -66,6 +67,8 @@ class NetworkService:
         self._recorders: dict[str, MetricRecorder] = {}
         # 最近一次停止原因（stopped/device_lost/config/shutdown），供 status 回显
         self._record_reasons: dict[str, str] = {}
+        # 告警引擎挂点（方案 24）：按设备实例化，随采样任务释放
+        self._alert_engines: dict[str, AlertEngine] = {}
 
     # ------------------------------------------------------------------
     # 监控生命周期
@@ -90,6 +93,9 @@ class NetworkService:
             maxlen=settings().metrics.network_buffer_size
         )
         self._last_access.setdefault(device_id, time.time())
+        self._alert_engines[device_id] = AlertEngine(
+            notify_window=max(3 * float(settings().metrics.network_interval), 5.0)
+        )
 
         task = asyncio.create_task(self._sampling_loop(device_id, sampler))
         self._tasks[device_id] = task
@@ -127,6 +133,13 @@ class NetworkService:
                 failures = 0
                 self._buffers[device_id].append(stats)
 
+                # 告警评估（方案 24）：每轮实测，fresh 恒 True
+                engine = self._alert_engines.get(device_id)
+                if engine is not None:
+                    engine.sync(build_rules())
+                    engine.evaluate("rx_rate_kbps", stats.rx_rate_kbps, stats.ts)
+                    engine.evaluate("tx_rate_kbps", stats.tx_rate_kbps, stats.ts)
+
                 # 录制落盘（缓存态，方案 18 Step 3）；总开关热重载
                 # true→false 时停录并停采（§3.6 状态机）
                 recorder = self._recorders.get(device_id)
@@ -150,6 +163,7 @@ class NetworkService:
             self._tasks.pop(device_id, None)
             self._samplers.pop(device_id, None)
             self._buffers.pop(device_id, None)
+            self._alert_engines.pop(device_id, None)
 
     async def stop_monitoring(self, device_id: str, record_reason: str = "stopped") -> None:
         """
@@ -173,6 +187,7 @@ class NetworkService:
         await self._finalize_recording(device_id, record_reason)
         self._samplers.pop(device_id, None)
         self._buffers.pop(device_id, None)
+        self._alert_engines.pop(device_id, None)
 
         logger.info("network_monitoring_stopped", device=device_id)
 
@@ -225,6 +240,13 @@ class NetworkService:
         if sampler is None:
             sampler = NetworkSampler(self.adb, device_id)
         return await sampler.get_connections(device_id)
+
+    def get_alerts(self, device_id: str, sample_ts: float) -> list[dict[str, Any]]:
+        """当前活动告警快照（纯内存读取；无引擎时为空，方案 24 D5）。"""
+        engine = self._alert_engines.get(device_id)
+        if engine is None:
+            return []
+        return engine.snapshot(sample_ts)
 
     def get_buffer_snapshot(self, device_id: str, limit: int = 50000) -> list[dict[str, Any]]:
         """

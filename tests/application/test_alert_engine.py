@@ -241,3 +241,49 @@ def test_build_rules_disabled_metric_excluded(monkeypatch: pytest.MonkeyPatch) -
 
     ids = [r.id for r in build_rules()]
     assert "cpu_percent" not in ids
+
+
+def test_build_rules_warns_invalid_per_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    """误配置告警去重（T2 补充项）：采样循环每 tick 调用，同一无效签名只告警一次。"""
+    from types import SimpleNamespace
+
+    from config.settings import settings as real_settings
+
+    metrics = real_settings().metrics.model_copy(deep=True)
+    metrics.thresholds.rx_rate_kbps.enabled = True
+    metrics.thresholds.rx_rate_kbps.above = None      # 同缺 → 无效
+    metrics.thresholds.rx_rate_kbps.below = None
+    monkeypatch.setattr(
+        "app.application.alert_engine.settings",
+        lambda: SimpleNamespace(metrics=metrics),
+    )
+    monkeypatch.setattr("app.application.alert_engine._last_invalid_signature", None)
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+
+    class FakeLogger:
+        def warning(self, event: str, **kwargs: object) -> None:
+            warnings.append((event, kwargs))
+
+    monkeypatch.setattr("app.application.alert_engine.logger", FakeLogger())
+
+    build_rules()
+    assert [r.id for r in build_rules()] == [       # 同一无效签名 → 不重复告警
+        "cpu_percent", "memory_percent", "fps",
+    ]
+    assert len(warnings) == 1
+    assert warnings[0][0] == "alert_rule_invalid"
+    assert warnings[0][1] == {"metric": "rx_rate_kbps", "above": None, "below": None}
+
+    metrics.thresholds.rx_rate_kbps.above = 5.0     # 仍无效但签名变化 → 再告警
+    metrics.thresholds.rx_rate_kbps.below = 10.0
+    build_rules()
+    assert len(warnings) == 2
+
+    metrics.thresholds.rx_rate_kbps.below = None    # 恢复有效 → 缓存重置
+    assert [r.id for r in build_rules()] == [
+        "cpu_percent", "memory_percent", "fps", "rx_rate_kbps",
+    ]
+    metrics.thresholds.rx_rate_kbps.above = None    # 再次无效 → 可再次告警
+    build_rules()
+    assert len(warnings) == 3

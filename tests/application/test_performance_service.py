@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import time
 from collections import deque
 
 import pytest
@@ -179,3 +180,97 @@ async def test_cleanup_stops_all_devices() -> None:
     assert service._tasks == {}
     assert service._buffers == {}
     assert service._samplers == {}
+
+
+# ---------------------------------------------------------------------------
+# 告警挂点（方案 24 T2）
+# ---------------------------------------------------------------------------
+
+class HighCpuAdb:
+    """CPU 恒 100%（user 递增、idle 不动）、内存 50% 的假 ADB。"""
+
+    def __init__(self) -> None:
+        self._user = 100
+        self.calls: list[str] = []
+
+    async def shell(self, device_id: str, cmd: str) -> str:
+        self.calls.append(cmd)
+        if cmd.startswith("cat /proc/stat"):
+            self._user += 100
+            return f"cpu  {self._user} 0 0 100 0 0 0 0 0 0\n"
+        if cmd.startswith("cat /proc/meminfo"):
+            return "MemTotal: 2048000 kB\nMemAvailable: 1024000 kB\n"
+        if cmd.startswith("dumpsys activity"):
+            return "mResumedActivity: ActivityRecord{abc123 u0 com.example.app/.MainActivity t123}\n"
+        if cmd.startswith("dumpsys gfxinfo"):
+            return "Total frames rendered: 100\nJanky frames: 5\n"
+        return ""
+
+
+async def test_get_alerts_snapshot_after_consecutive_breach():
+    """连续 CPU 越限（默认 above=80）→ get_alerts 返回活动快照；stop 后清空（方案 24 §7）。"""
+    service = PerformanceService(HighCpuAdb())
+    await service.start_monitoring("dev-A", interval=0)
+
+    alerts: list[dict] = []
+    for _ in range(500):
+        alerts = service.get_alerts("dev-A", time.time())
+        if alerts:
+            break
+        await asyncio.sleep(0.01)
+
+    assert alerts, "连续越限后应有活动告警"
+    assert alerts[0]["id"] == "cpu_percent"
+    assert alerts[0]["direction"] == "above"
+    assert alerts[0]["threshold"] == 80.0
+    assert alerts[0]["notify"] is True          # 首次触发，窗口内
+    assert isinstance(alerts[0]["since"], float)
+
+    await service.stop_monitoring("dev-A")
+    assert service.get_alerts("dev-A", time.time()) == []   # D5：释放即清空
+
+
+async def test_alert_engine_released_when_device_lost():
+    """失联自然结束路径（_release_device 单点）同样释放引擎。"""
+    service = PerformanceService(DeadAdb())
+    await service.start_monitoring("dev-B", interval=0)
+
+    for _ in range(500):
+        if "dev-B" not in service._tasks:
+            break
+        await asyncio.sleep(0.01)
+
+    assert "dev-B" not in service._alert_engines
+    assert service.get_alerts("dev-B", time.time()) == []
+
+
+async def test_sampling_loop_evaluates_each_round():
+    """采样循环每轮 sync + evaluate 各指标（先评估后推送）。"""
+    service = PerformanceService(HighCpuAdb())
+    await service.start_monitoring("dev-C", interval=0)
+
+    class SpyEngine:
+        def __init__(self) -> None:
+            self.synced = 0
+            self.evaluated: list[str] = []
+
+        def sync(self, rules: list) -> None:
+            self.synced += 1
+
+        def evaluate(self, metric_id: str, value: object, ts: float, fresh: bool = True) -> None:
+            self.evaluated.append(metric_id)
+
+        def snapshot(self, sample_ts: float) -> list:
+            return []
+
+    spy = SpyEngine()
+    service._alert_engines["dev-C"] = spy  # type: ignore[assignment]
+
+    for _ in range(500):
+        if spy.synced >= 2:
+            break
+        await asyncio.sleep(0.01)
+
+    await service.stop_monitoring("dev-C")
+    assert spy.synced >= 2
+    assert {"cpu_percent", "memory_percent", "fps"} <= set(spy.evaluated)

@@ -55,11 +55,14 @@ class FakeNetworkService:
         self,
         stats: NetworkStats | None = None,
         connections: list[NetworkConnection] | None = None,
+        alerts: list[dict[str, Any]] | None = None,
     ) -> None:
         self.stats = stats if stats is not None else make_stats()
         self.connections = connections if connections is not None else []
+        self.alerts = alerts if alerts is not None else []
         self.stats_calls: list[str] = []
         self.conn_calls: list[str] = []
+        self.alert_calls: list[tuple[str, float]] = []
 
     async def get_stats(self, device_id: str) -> NetworkStats:
         self.stats_calls.append(device_id)
@@ -68,6 +71,10 @@ class FakeNetworkService:
     async def get_connections(self, device_id: str) -> list[NetworkConnection]:
         self.conn_calls.append(device_id)
         return self.connections
+
+    def get_alerts(self, device_id: str, sample_ts: float) -> list[dict[str, Any]]:
+        self.alert_calls.append((device_id, sample_ts))
+        return self.alerts
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +97,26 @@ def test_stats_snapshot_fields() -> None:
         "active_connections": 2,
         "wifi_connected": True,
         "wifi_ssid": "MyWiFi",
+        "alerts": [],
     }
+
+
+def test_stats_includes_alerts_snapshot() -> None:
+    """响应内嵌活动告警快照，以 stats.ts 取快照（方案 24 §4.4）。"""
+    alert = {
+        "id": "rx_rate_kbps",
+        "value": 900.0,
+        "threshold": 800.0,
+        "direction": "above",
+        "since": 1726000000.0,
+        "notify": True,
+    }
+    fake = FakeNetworkService(alerts=[alert])
+    with override(get_network_service, fake):
+        body = make_client().get(f"/api/network/{DEV}/stats").json()
+
+    assert body["alerts"] == [alert]
+    assert fake.alert_calls == [(DEV, 1726000000.5)]
 
 
 def test_stats_wifi_disconnected() -> None:

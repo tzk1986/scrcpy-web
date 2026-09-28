@@ -61,7 +61,7 @@ async def get_stats(
         service: 网络监控服务（依赖注入）。
 
     返回：
-        JSON 对象，包含流量、速率、连接数、WiFi 状态。
+        JSON 对象，包含流量、速率、连接数、WiFi 状态与活动告警快照。
         ts 为最近一次采样时刻（采样间隔口径，非请求时刻）。
     """
     stats = await service.get_stats(device_id)
@@ -75,6 +75,7 @@ async def get_stats(
         "active_connections": stats.active_connections,
         "wifi_connected": stats.wifi_connected,
         "wifi_ssid": stats.wifi_ssid,
+        "alerts": service.get_alerts(device_id, stats.ts),
     }
 
 
