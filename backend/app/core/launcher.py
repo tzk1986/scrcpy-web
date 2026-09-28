@@ -88,6 +88,7 @@ def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
 
 
 _shutdown_handler: Callable[[], None] | None = None
+_shutdown_requested = False
 
 
 def register_shutdown_handler(handler: Callable[[], None] | None) -> None:
@@ -95,18 +96,33 @@ def register_shutdown_handler(handler: Callable[[], None] | None) -> None:
 
     进程内单例注册表：重复注册以最后一次为准（dev/frozen 各注册一次，
     互不叠加）；传 None 反注册（测试与 docker 直跑场景的诚实语义依赖此）。
+    每次注册/反注册同时重置停机请求标志——注册即视为新生命周期起点。
     """
-    global _shutdown_handler
+    global _shutdown_handler, _shutdown_requested
     _shutdown_handler = handler
+    _shutdown_requested = False
 
 
 def request_shutdown() -> bool:
-    """触发优雅停机；无回调注册（如 docker 直跑 uvicorn）时返回 False。"""
+    """触发优雅停机；无回调注册（如 docker 直跑 uvicorn）时返回 False。
+
+    受理时同时置停机请求标志：uvicorn 优雅停机会等待在途连接结束，
+    SSE 等无限流不自行收尾则停机永不完成（方案 23 T4 R2 打包复测暴露
+    "Waiting for connections to close" 挂死）——流式端点在空闲超时轮询
+    is_shutdown_requested() 据此优雅收尾。
+    """
+    global _shutdown_requested
     handler = _shutdown_handler
     if handler is None:
         return False
+    _shutdown_requested = True
     handler()
     return True
+
+
+def is_shutdown_requested() -> bool:
+    """是否已受理过优雅停机请求（长驻流式端点的收尾信号源）。"""
+    return _shutdown_requested
 
 
 def redirect_std_streams(log_file: Path) -> None:

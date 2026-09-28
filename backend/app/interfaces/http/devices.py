@@ -28,6 +28,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from app.application.device_service import DeviceService
 from app.core.exceptions import DeviceNotFoundError
+from app.core.launcher import is_shutdown_requested
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
 
@@ -104,18 +105,27 @@ async def device_events(service: DeviceService = Depends(get_device_service)) ->
     service.on_device_disconnected(on_disconnected)
 
     async def event_stream() -> AsyncIterator[str]:
-        """生成 SSE 事件流"""
+        """生成 SSE 事件流。
+
+        停机优雅收尾（方案 23 T4 R2）：无限流会挂死 uvicorn 优雅停机
+        （等待在途响应结束），故 get 空闲超时轮询停机标志，置位即正常
+        return——响应完整收尾、连接随之关闭。
+        """
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    if is_shutdown_requested():
+                        return
+                    continue
                 yield f"data: {json.dumps(event)}\n\n"
-        except asyncio.CancelledError:
-            # 客户端断开连接时清理回调
+        finally:
+            # 客户端断开或停机收尾：清理回调
             if on_connected in service._on_device_connected:
                 service._on_device_connected.remove(on_connected)
             if on_disconnected in service._on_device_disconnected:
                 service._on_device_disconnected.remove(on_disconnected)
-            raise
 
     return StreamingResponse(
         event_stream(),

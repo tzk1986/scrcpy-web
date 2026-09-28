@@ -376,3 +376,44 @@ async def test_events_stream_payload_and_cancel_cleanup(fake: FakeDeviceService)
         await stream.athrow(asyncio.CancelledError())
     assert fake._on_device_connected == []
     assert fake._on_device_disconnected == []
+
+
+async def test_events_stream_terminates_on_shutdown_requested(
+    fake: FakeDeviceService,
+) -> None:
+    """停机请求后 SSE 生成器优雅收尾（方案 23 T4 R2 缺陷回归）。
+
+    uvicorn 优雅停机会等待在途响应结束：无限 SSE 不自行返回则停机挂死
+    （打包复测实证 "Waiting for connections to close" 永不完成）。置位
+    停机标志后，生成器应在 get 空闲超时内 return，且回调照常清理。
+    """
+    from app.core import launcher
+
+    launcher.register_shutdown_handler(lambda: None)
+    try:
+        response = await devices_module.device_events(fake)  # type: ignore[arg-type]
+        stream = response.body_iterator
+        assert len(fake._on_device_connected) == 1
+
+        assert launcher.request_shutdown() is True
+        with pytest.raises(StopAsyncIteration):
+            await stream.__anext__()
+        assert fake._on_device_connected == []
+        assert fake._on_device_disconnected == []
+    finally:
+        launcher.register_shutdown_handler(None)
+
+
+async def test_events_stream_keeps_running_without_shutdown(
+    fake: FakeDeviceService,
+) -> None:
+    """未请求停机时生成器正常推事件（防过度修复：只收停机信号）。"""
+    from app.core import launcher
+
+    launcher.register_shutdown_handler(None)  # 确保停机标志为 False
+    response = await devices_module.device_events(fake)  # type: ignore[arg-type]
+    stream = response.body_iterator
+    await fake._on_device_connected[0](make_device())
+    line = await asyncio.wait_for(stream.__anext__(), timeout=1.0)
+    assert line.startswith("data: ")
+    assert json.loads(line.removeprefix("data: ").strip())["type"] == "connected"

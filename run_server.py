@@ -38,7 +38,18 @@ def _serve(server_app, host: str, port: int) -> None:
 
     from app.core import launcher
 
-    server = uvicorn.Server(uvicorn.Config(server_app, host=host, port=port, reload=False))
+    # timeout_graceful_shutdown 为兜底网：设备事件 SSE 已按停机标志优雅收尾
+    # （方案 23 T4 R2），其余长驻流（调试/性能页等）若仍在途，宽限 5s 后由
+    # uvicorn 强制取消，避免停机在 "Waiting for connections to close" 挂死。
+    server = uvicorn.Server(
+        uvicorn.Config(
+            server_app,
+            host=host,
+            port=port,
+            reload=False,
+            timeout_graceful_shutdown=5,
+        )
+    )
 
     def _trigger_shutdown() -> None:
         # uvicorn 无 request_* 公开停机方法；should_exit 是主循环轮询的优雅停机

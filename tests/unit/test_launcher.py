@@ -132,3 +132,27 @@ def test_shutdown_handler_register_and_request_roundtrip():
 def test_request_shutdown_without_handler_returns_false():
     launcher.register_shutdown_handler(None)
     assert launcher.request_shutdown() is False
+
+
+def test_request_shutdown_marks_flag_and_register_resets():
+    """停机请求标志（方案 23 T4 R2）：request 置位、注册/反注册重置。
+
+    SSE 等长驻流据此在空闲超时时优雅收尾，避免 uvicorn 优雅停机被
+    在途连接挂死。
+    """
+    launcher.register_shutdown_handler(None)
+    assert launcher.is_shutdown_requested() is False
+    launcher.register_shutdown_handler(lambda: None)
+    assert launcher.is_shutdown_requested() is False  # 注册视为新生命周期起点
+    try:
+        assert launcher.request_shutdown() is True
+        assert launcher.is_shutdown_requested() is True
+    finally:
+        launcher.register_shutdown_handler(None)
+    assert launcher.is_shutdown_requested() is False  # 反注册同样重置
+
+
+def test_request_shutdown_without_handler_leaves_flag_unset():
+    launcher.register_shutdown_handler(None)
+    assert launcher.request_shutdown() is False
+    assert launcher.is_shutdown_requested() is False  # 未受理不得置位
