@@ -26,6 +26,23 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 
+def _serve(server_app, host: str, port: int) -> None:
+    """以可被在线端点优雅停止的方式跑 uvicorn（dev 与 frozen 共用）。
+
+    uvicorn.run 内部即 Config + Server.run，此处显式持有 Server 实例并
+    注册 request_shutdown（仅置 should_exit 标志，当前响应写完后停机，
+    同时触发 FastAPI lifespan 关闭清理）。导入放函数内：frozen 下必须先
+    接管标准流再加载任何 app 子模块（见 main 开头注释），不破坏该顺序。
+    """
+    import uvicorn
+
+    from app.core import launcher
+
+    server = uvicorn.Server(uvicorn.Config(server_app, host=host, port=port, reload=False))
+    launcher.register_shutdown_handler(server.request_shutdown)
+    server.run()
+
+
 def main() -> int:
     frozen = bool(getattr(sys, "frozen", False))
     if frozen:
@@ -45,8 +62,9 @@ def main() -> int:
     srv = settings().server
 
     if not frozen:
-        # 开发模式：行为与原版 run_server.py 一致
-        uvicorn.run(app, host=srv.host, port=srv.port, reload=False)
+        # 开发模式：行为与原版一致（reload=False），仅改为显式持有
+        # Server 实例并注册退出回调，支持 UI 退出按钮优雅停机（方案 23 T2）
+        _serve(app, srv.host, srv.port)
         return 0
 
     import threading
@@ -68,7 +86,7 @@ def main() -> int:
     launcher.write_runtime_port(app_base_dir() / "data" / "port.txt", port)
 
     server_thread = threading.Thread(
-        target=lambda: uvicorn.run(app, host=host, port=port, reload=False),
+        target=_serve, args=(app, host, port),
         daemon=True,
     )
     server_thread.start()

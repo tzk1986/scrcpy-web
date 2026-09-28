@@ -116,3 +116,19 @@ def test_single_instance_mutex_second_acquire_false():
 
 def test_fix_dll_search_path_noop_on_non_frozen():
     launcher.fix_dll_search_path()  # 不抛异常即可（pty 环境无 win32 断言）
+
+
+def test_shutdown_handler_register_and_request_roundtrip():
+    calls: list[bool] = []
+    launcher.register_shutdown_handler(lambda: calls.append(True))
+    try:
+        assert launcher.request_shutdown() is True
+        assert launcher.request_shutdown() is True  # 幂等：可重复触发
+        assert calls == [True, True]
+    finally:
+        launcher.register_shutdown_handler(None)
+
+
+def test_request_shutdown_without_handler_returns_false():
+    launcher.register_shutdown_handler(None)
+    assert launcher.request_shutdown() is False

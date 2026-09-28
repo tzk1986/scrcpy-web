@@ -4,7 +4,8 @@
 
 仅在 PyInstaller 冻结环境（sys.frozen）使用：文件日志重定向、
 SetDllDirectoryW 修复、单实例互斥、端口探测回退、就绪轮询后开浏览器。
-源码运行（dev）不经过本模块，行为保持不变。
+源码运行（dev）仅使用本模块的退出回调注册表（§23-T2），其余行为不经过
+本模块、保持不变。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import ctypes
 import socket
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 _SINGLE_INSTANCE_MUTEX = "OpenScrcpy-SingleInstance-Mutex"
@@ -83,6 +85,28 @@ def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
             except OSError:
                 continue
     raise RuntimeError(f"no available port from {start_port} to {start_port + attempts - 1}")
+
+
+_shutdown_handler: Callable[[], None] | None = None
+
+
+def register_shutdown_handler(handler: Callable[[], None] | None) -> None:
+    """登记优雅停机回调（run_server 启动时注册 uvicorn Server.request_shutdown）。
+
+    进程内单例注册表：重复注册以最后一次为准（dev/frozen 各注册一次，
+    互不叠加）；传 None 反注册（测试与 docker 直跑场景的诚实语义依赖此）。
+    """
+    global _shutdown_handler
+    _shutdown_handler = handler
+
+
+def request_shutdown() -> bool:
+    """触发优雅停机；无回调注册（如 docker 直跑 uvicorn）时返回 False。"""
+    handler = _shutdown_handler
+    if handler is None:
+        return False
+    handler()
+    return True
 
 
 def redirect_std_streams(log_file: Path) -> None:
