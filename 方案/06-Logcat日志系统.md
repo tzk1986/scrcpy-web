@@ -8,12 +8,12 @@
 
 - ✅ 后端 logcat 收集框架（DebugService._collect_logcat + threadtime 解析 + SQLite 持久化）
 - ✅ 前端日志展示组件（LogcatView：实时推送 + 自动滚动 + LIVE 指示器）
-- ⏳ 虚拟滚动：曾实现（2026-09-09，vue-virtual-scroller）后于 `5f2b92f` 移除，当前为 v-for 全量渲染（缓冲上限 5 万条）——已立项：方案 25（DynamicScroller 复用 + 自研 tokenizer），实施待排期（2026-09-29）
+- ✅ 虚拟滚动：DynamicScroller（vue-virtual-scroller 2.0.1）动态行高 + uid 键 + scrollToBottom 自动滚动；5 万条实测仅渲染视窗行（方案 25 实施，2026-09-29）
 - ✅ 日志缓冲上限 50000 条（FIFO，`frontend/src/stores/debug.ts:138-143`）
 - ✅ 实时过滤（服务端 level/tag 过滤 + 前端级别/搜索过滤）
 - ✅ 导出功能（JSON / CSV）
 - ✅ 智能精简（级别过滤 + 速率限制）与自动清理（按时间/容量）
-- ⏳ 日志语法高亮——可选增强（当前以级别着色替代）——已立项：方案 25（自研轻量 tokenizer，与虚拟滚动一并实施，2026-09-29）
+- ✅ 日志语法高亮：自研轻量 tokenizer（string/url/exception/timestamp/number/kw），逐 token 转义防 XSS（方案 25 实施，2026-09-29）
 
 > 下文「实现步骤」中的 ⏳ 为方案编写时的规划标记（历史保留），实际完成状态以本节与 `进度追踪.md` 为准。
 
@@ -111,7 +111,7 @@ async def export_logs(
 
 **问题**：5 万条日志直接渲染会卡顿
 
-**方案**：使用 `vue-virtual-scroller`
+**已实现（方案 25，2026-09-29）**：DynamicScroller 动态行高（弃用固定行高的 RecycleScroller）+ uid 键 + scrollToBottom 自动滚动；消息以自研 tokenizer 高亮（utils/logcatHighlight.ts）。下方示例为历史设计稿（`type` 字段协议已随 5f2b92f 演进），以实际实现为准。
 
 ```vue
 <template>
@@ -388,15 +388,15 @@ function highlightMessage(message: string): string {
 
 ## 验收标准
 
-- ⏳ 虚拟滚动流畅（5 万条不卡顿）——曾实现后移除，当前全量渲染，见状态节订正
+- ✅ 虚拟滚动流畅（5 万条真机实测，DOM 视窗行数 < 300，2026-09-29）
 - ✅ 实时日志推送（WS log / log_batch 断线续传）
 - ✅ 多级过滤（服务端 level/tag；前端级别 + 搜索）
 - ✅ 导出为 CSV/JSON
-- ⏳ 日志语法高亮（未实现，当前以级别着色替代）
+- ✅ 日志语法高亮（tokenizer 单测全绿 + 真机彩色渲染目验，2026-09-29）
 
 ## 交付物
 
-- ✅ LogcatView 组件（当前全量渲染；虚拟滚动已移除，见状态节）
+- ✅ LogcatView 组件（DynamicScroller 虚拟滚动 + 消息语法高亮，2026-09-29）
 - ✅ 实时更新逻辑
 - ✅ 导出 API
 - ⏳ 日志高亮（未实现，记为可选增强）
