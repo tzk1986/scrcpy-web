@@ -399,7 +399,7 @@ function highlightMessage(message: string): string {
 - ✅ LogcatView 组件（DynamicScroller 虚拟滚动 + 消息语法高亮，2026-09-29）
 - ✅ 实时更新逻辑
 - ✅ 导出 API
-- ⏳ 日志高亮（未实现，记为可选增强）
+- ✅ 日志语法高亮（utils/logcatHighlight.ts tokenizer，2026-09-29）
 
 ## 参考
 
