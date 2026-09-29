@@ -7,24 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-29（pre-release 首发）
+
 ### Added
-- 项目脚手架搭建
-- 后端分层架构（Domain/Application/Infrastructure/Interface）
-- 配置管理系统（YAML + Pydantic）
-- 依赖注入框架
-- 结构化日志（structlog）
-- 设备管理基础功能
-- 调试会话持久化框架
-- Logcat 日志收集
-- 远程 Shell 基础框架
-- 前端 Vue 3 + TypeScript 项目
-- 调试面板基础组件
+- 多设备管理：连接/断开、SSE 实时监听、可达性预检（不可达 21.2s→1.55s）
+- 视频流：H.264 + WebCodecs 低延迟投屏、自适应码率、断流自愈与回退守卫
+- 调试会话：SQLite 持久化、断线续传、并发锁
+- Logcat：实时流/分级过滤/导出、DynamicScroller 虚拟滚动（5 万条实测）、自研语法高亮
+- 远程 Shell：xterm.js + ConPTY、命令历史/Tab 补全/彩色输出/断线重连/终端 resize
+- 性能/网络监控：实时图表、阈值告警、采样数据持久化与 CSV/JSON 导出
+- 前端调试面板：5 标签页、可停靠/拖拽、快捷键、命令面板、响应式布局
+- Windows 绿色版（解压即用，19.0MiB zip）：随包 adb、UI 退出 + stop.bat 兜底、单开模式
+- 质量体系：CI 三 job 全绿、覆盖率门禁（后端 92.35%、前端 95.4%）、AI 独立审查机制
+- 浏览器 E2E（Playwright）与部署/用户/API/架构文档
 
 ### Changed
-- 优化方案文档结构
-- 建立进度追踪机制
+- 项目文档结构化：模块方案体系 + 进度追踪日志（38 次更新）
 
-## [0.1.0] - 2026-09-08
+## [0.0.1] - 2026-09-08（初始脚手架，历史条目）
 
 ### Added
 - Initial project setup
