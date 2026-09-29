@@ -14,8 +14,9 @@ async function focusOf(shell: (c: string) => Promise<string>): Promise<string> {
   return m ? m[1] : out.trim()
 }
 
-// 设备可能忽略 user_rotation（RK3288 定制 ROM 实测 settings 可写但 SurfaceOrientation
-// 不变）→ 以真实屏幕方向生效为准探测，不支持则恢复原状并返回 false
+// 部分设备忽略 user_rotation（settings 可写但 SurfaceOrientation 不变）→
+// 以真实屏幕方向生效为准探测；无论结果如何 finally 都还原横屏，
+// 保证测试主体测得横屏基准尺寸后再显式旋转
 async function rotationSupported(shell: (c: string) => Promise<string>): Promise<boolean> {
   await shell('settings put system accelerometer_rotation 0; settings put system user_rotation 1')
   try {
@@ -26,8 +27,12 @@ async function rotationSupported(shell: (c: string) => Promise<string>): Promise
     }
     return false
   } finally {
-    if (!/SurfaceOrientation:\s*[123]/.test(await shell('dumpsys input | grep -m1 SurfaceOrientation'))) {
-      await shell('settings put system user_rotation 0; settings put system accelerometer_rotation 1')
+    await shell('settings put system user_rotation 0').catch(() => {})
+    // 等待方向实际回 0，避免页面加载时设备仍处于旋转过渡态
+    for (let i = 0; i < 10; i++) {
+      const out = await shell('dumpsys input | grep -m1 SurfaceOrientation').catch(() => '')
+      if (/SurfaceOrientation:\s*0/.test(out)) break
+      await new Promise((r) => setTimeout(r, 500))
     }
   }
 }
@@ -41,11 +46,18 @@ test.describe('坐标映射与横竖屏（需设备）', () => {
       await page.goto(`/device/${encodeURIComponent(device!.id)}`)
       await expect(page.locator('.stat-item.streaming')).toBeVisible({ timeout: 30_000 })
 
+      // scrcpy 编码尺寸向下取整到 8 的倍数（如 1366→1360），canvas 反映的是
+      // config 消息中的编码流尺寸而非物理分辨率，比较前需同样取整
+      const round8 = (v: number): number => v - (v % 8)
       const [dw, dh] = device!.resolution
       const before = await canvasPixelSize(page)
-      expect([before, [...before].reverse() as [number, number]]).toContainEqual([dw, dh])
+      expect([before, [...before].reverse() as [number, number]]).toContainEqual([
+        round8(dw),
+        round8(dh),
+      ])
 
-      // user_rotation 已在探测时置 1：等待 config 消息驱动 canvas 尺寸交换
+      // 显式旋转到竖屏：等待 config 消息驱动 canvas 尺寸交换
+      await shell('settings put system user_rotation 1')
       const [w0, h0] = before
       await expect
         .poll(() => canvasPixelSize(page), { timeout: 20_000 })
