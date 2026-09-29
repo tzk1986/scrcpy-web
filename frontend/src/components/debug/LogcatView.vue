@@ -9,6 +9,7 @@
     - 日志级别过滤（V/D/I/W/E/F）
     - 关键词搜索（匹配 Tag 或 Message，不区分大小写）
     - 实时日志推送（通过 WebSocket）
+    - 虚拟滚动（DynamicScroller 动态行高，缓冲上限 5 万条）
     - 自动滚动：新日志时自动滚动到底部
     - 点击日志复制到剪贴板
     - 导出、清理、清空
@@ -108,26 +109,39 @@
       ⏸ 日志录制已暂停，当前显示 {{ debugStore.logs.length }} 条历史日志
     </div>
 
-    <div class="log-list" ref="logListRef">
-      <div class="log-entries">
-        <div
-          v-for="item in filteredLogs"
-          :key="item.ts"
-          :class="['log-entry', `level-${item.level.toLowerCase()}`]"
-          @click="copyLog(item)"
-          :title="'点击复制'"
+    <DynamicScroller
+      ref="scrollerRef"
+      class="log-list"
+      :items="scrollerItems"
+      :min-item-size="22"
+      key-field="uid"
+    >
+      <template #default="{ item, index, active }">
+        <DynamicScrollerItem
+          :item="item"
+          :active="active"
+          :index="index"
+          :size-dependencies="[item.message]"
         >
-          <span class="timestamp">{{ formatTime(item.ts) }}</span>
-          <span class="level">{{ item.level }}</span>
-          <span class="tag" :title="item.tag">{{ item.tag }}</span>
-          <span class="message">{{ item.message }}</span>
-        </div>
-        <div v-if="filteredLogs.length === 0" class="empty-state">
+          <div
+            :class="['log-entry', `level-${item.level.toLowerCase()}`]"
+            @click="copyLog(item)"
+            :title="'点击复制'"
+          >
+            <span class="timestamp">{{ formatTime(item.ts) }}</span>
+            <span class="level">{{ item.level }}</span>
+            <span class="tag" :title="item.tag">{{ item.tag }}</span>
+            <span class="message">{{ item.message }}</span>
+          </div>
+        </DynamicScrollerItem>
+      </template>
+      <template #empty>
+        <div class="empty-state">
           <span v-if="!debugStore.isRecording">已暂停录制，无新日志</span>
           <span v-else>▶ 开始</span>
         </div>
-      </div>
-    </div>
+      </template>
+    </DynamicScroller>
 
     <div v-if="debugStore.wsConnected && debugStore.isRecording" class="status-indicator live">
       LIVE
@@ -138,6 +152,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
+import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
+import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useDebugStore } from '@/stores/debug'
 import { api } from '@/services/api'
 
@@ -151,8 +167,8 @@ const filterLevel = ref<string | null>(null)
 const searchInput = ref('')
 /** 实际生效的搜索关键词（防抖后）。 */
 const filterSearch = ref<string | null>(null)
-/** 日志列表容器 DOM 引用。 */
-const logListRef = ref<HTMLElement>()
+/** DynamicScroller 实例（暴露 scrollToBottom）。 */
+const scrollerRef = ref<{ scrollToBottom: () => void } | null>(null)
 /** 是否自动滚动到底部。 */
 const autoScroll = ref(true)
 /** 数据库统计信息。 */
@@ -194,6 +210,11 @@ const filteredLogs = computed(() => {
   return logs.filter((l) => l.level === level)
 })
 
+/** 虚拟滚动条目：LogEntry + 稳定 uid（seq 缺失时以 ts-index 兜底，键不得重复）。 */
+const scrollerItems = computed(() =>
+  filteredLogs.value.map((l, i) => ({ ...l, uid: String(l.seq ?? `${l.ts}-${i}`) })),
+)
+
 // 挂载时不发起任何网络请求（实施项 5）：isRecording=false，
 // 开启录制时才连接 WS、拉历史并发起后端采集
 onMounted(() => {
@@ -215,11 +236,11 @@ watch(searchInput, (val) => {
 })
 
 // 监听日志变化，自动滚动到底部
-// nextTick 确保 Vue 完成 v-for DOM 更新后再计算 scrollHeight
+// nextTick 确保 DOM 更新后再触发 scrollToBottom
 watch(() => debugStore.logs.length, async () => {
   if (autoScroll.value) {
     await nextTick()
-    scrollToBottom()
+    scrollerRef.value?.scrollToBottom()
   }
 })
 
@@ -231,7 +252,7 @@ watch(() => debugStore.isRecording, async (recording) => {
     await debugStore.fetchLogs()
     if (autoScroll.value) {
       await nextTick()
-      scrollToBottom()
+      scrollerRef.value?.scrollToBottom()
     }
     await loadDbStats()
   } else {
@@ -316,13 +337,6 @@ async function runCleanup() {
     console.error('Failed to run cleanup:', e)
   } finally {
     cleaning.value = false
-  }
-}
-
-/** 滚动到底部。调用方需确保已在 nextTick 之后（DOM 已更新）。 */
-function scrollToBottom() {
-  if (logListRef.value) {
-    logListRef.value.scrollTop = logListRef.value.scrollHeight
   }
 }
 
@@ -419,11 +433,6 @@ function formatTime(ts: number) {
   overflow-y: auto;
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 12px;
-}
-
-.log-entries {
-  display: flex;
-  flex-direction: column;
 }
 
 .log-entry {

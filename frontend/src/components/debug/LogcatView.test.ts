@@ -152,6 +152,42 @@ function elStubs() {
   }
 }
 
+// ===== vue-virtual-scroller 轻量 stub（断言滚动调用与条目映射，不做真实虚拟化） =====
+
+const scrollerCalls = vi.hoisted(() => ({ scrollToBottom: vi.fn() }))
+
+const DynamicScrollerStub = defineComponent({
+  name: 'DynamicScroller',
+  props: { items: { type: Array, default: () => [] } },
+  setup(props, { slots, expose }) {
+    expose({ scrollToBottom: scrollerCalls.scrollToBottom })
+    return () => {
+      const items = props.items as Array<Record<string, unknown>>
+      // 关键：items 为空时渲染 #empty slot，否则既有 .empty-state 用例（:316 已暂停提示 / :323 ▶ 开始）失败
+      return h(
+        'div',
+        { class: 'dynamic-scroller' },
+        items.length
+          ? items.map((item, index) => slots.default?.({ item, index, active: true }))
+          : slots.empty?.(),
+      )
+    }
+  },
+})
+
+const DynamicScrollerItemStub = defineComponent({
+  name: 'DynamicScrollerItem',
+  props: {
+    item: { type: Object, required: true },
+    active: Boolean,
+    index: Number,
+    sizeDependencies: { type: Array, default: null },
+  },
+  setup(_, { slots }) {
+    return () => h('div', { class: 'dynamic-scroller-item' }, slots.default?.())
+  },
+})
+
 import LogcatView from './LogcatView.vue'
 import { useDebugStore, type LogEntry } from '@/stores/debug'
 
@@ -171,7 +207,14 @@ function makeLogs(): LogEntry[] {
 function mountView() {
   return shallowMount(LogcatView, {
     props: { deviceId: 'dev1' },
-    global: { plugins: [pinia], stubs: elStubs() },
+    global: {
+      plugins: [pinia],
+      stubs: {
+        ...elStubs(),
+        DynamicScroller: DynamicScrollerStub,
+        DynamicScrollerItem: DynamicScrollerItemStub,
+      },
+    },
   })
 }
 
@@ -196,6 +239,7 @@ beforeEach(() => {
   elMessage.error.mockClear()
   elMessage.warning.mockClear()
   clipboard.writeText.mockClear()
+  scrollerCalls.scrollToBottom.mockClear()
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard })
 })
 
@@ -479,23 +523,36 @@ describe('LogcatView', () => {
     expect(elMessage.warning).not.toHaveBeenCalled()
   })
 
-  it('自动滚动：新日志滚到底部，关闭开关后不再滚动', async () => {
+  it('自动滚动：新日志触发 scrollToBottom，关闭开关后不再滚动', async () => {
     const store = useDebugStore()
     const wrapper = mountView()
     await flushPromises()
-    const list = wrapper.find('.log-list').element as HTMLElement
-    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 777 })
+    scrollerCalls.scrollToBottom.mockClear()
 
     store.logs = makeLogs()
     await flushPromises()
-    expect(list.scrollTop).toBe(777)
+    expect(scrollerCalls.scrollToBottom).toHaveBeenCalledTimes(1)
 
     // 关闭自动滚动
     wrapper.findComponent(ElSwitch).vm.$emit('update:modelValue', false)
     await nextTick()
-    list.scrollTop = 0
+    scrollerCalls.scrollToBottom.mockClear()
     store.logs.push(makeLogs()[0])
     await flushPromises()
-    expect(list.scrollTop).toBe(0)
+    expect(scrollerCalls.scrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('scrollerItems：有 seq 用 seq，无 seq 回退 ts-index', async () => {
+    const store = useDebugStore()
+    store.logs = [
+      { ts: 100, level: 'I', pid: 1, tid: 1, tag: 'T', message: 'a', seq: 7 },
+      { ts: 200, level: 'I', pid: 1, tid: 1, tag: 'T', message: 'b' },
+    ]
+    const wrapper = mountView()
+    await flushPromises()
+
+    const scroller = wrapper.findComponent(DynamicScrollerStub)
+    const items = scroller.props('items') as Array<{ uid: string }>
+    expect(items.map((i) => i.uid)).toEqual(['7', '200-1'])
   })
 })
