@@ -554,6 +554,7 @@ describe('LogcatView', () => {
     const scroller = wrapper.findComponent(DynamicScrollerStub)
     const items = scroller.props('items') as Array<{ uid: string }>
     expect(items.map((i) => i.uid)).toEqual(['7', '200-1'])
+    expect(scroller.attributes('key-field')).toBe('uid')
   })
 
   it('消息高亮：异常类名/数字/关键字渲染为 hl-* span', async () => {
