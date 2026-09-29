@@ -10,6 +10,7 @@
     - 关键词搜索（匹配 Tag 或 Message，不区分大小写）
     - 实时日志推送（通过 WebSocket）
     - 虚拟滚动（DynamicScroller 动态行高，缓冲上限 5 万条）
+    - 消息语法高亮（string/url/exception/timestamp/number/kw，自研 tokenizer）
     - 自动滚动：新日志时自动滚动到底部
     - 点击日志复制到剪贴板
     - 导出、清理、清空
@@ -131,7 +132,7 @@
             <span class="timestamp">{{ formatTime(item.ts) }}</span>
             <span class="level">{{ item.level }}</span>
             <span class="tag" :title="item.tag">{{ item.tag }}</span>
-            <span class="message">{{ item.message }}</span>
+            <span class="message" v-html="highlightMessage(item)"></span>
           </div>
         </DynamicScrollerItem>
       </template>
@@ -156,6 +157,7 @@ import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useDebugStore } from '@/stores/debug'
 import { api } from '@/services/api'
+import { highlightLogcatMessage } from '@/utils/logcatHighlight'
 
 /** 目标设备 ID（从父组件传入）。 */
 defineProps<{ deviceId: string }>()
@@ -338,6 +340,11 @@ async function runCleanup() {
   } finally {
     cleaning.value = false
   }
+}
+
+/** 消息高亮 HTML（tokenize + 缓存 + 转义），v-html 渲染。 */
+function highlightMessage(item: { message: string }) {
+  return highlightLogcatMessage(item.message)
 }
 
 /** 复制日志条目到剪贴板。 */
@@ -523,4 +530,12 @@ function formatTime(ts: number) {
   color: #909399;
   cursor: help;
 }
+
+/* 消息语法高亮（方案 25）：与级别列色系错开 */
+.message :deep(.hl-string) { color: #a31515; }
+.message :deep(.hl-url) { color: #1a73e8; text-decoration: underline; }
+.message :deep(.hl-exception) { color: #c7254e; font-weight: bold; }
+.message :deep(.hl-timestamp) { color: #8a8a8a; }
+.message :deep(.hl-number) { color: #098658; }
+.message :deep(.hl-kw) { color: #7b5bcd; font-style: italic; }
 </style>

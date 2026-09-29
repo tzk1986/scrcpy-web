@@ -555,4 +555,39 @@ describe('LogcatView', () => {
     const items = scroller.props('items') as Array<{ uid: string }>
     expect(items.map((i) => i.uid)).toEqual(['7', '200-1'])
   })
+
+  it('消息高亮：异常类名/数字/关键字渲染为 hl-* span', async () => {
+    const store = useDebugStore()
+    store.logs = [
+      {
+        ts: 1700000000,
+        level: 'E',
+        pid: 1,
+        tid: 1,
+        tag: 'Crash',
+        message: 'FATAL at com.example.foo.MyCustomError count 42',
+      },
+    ]
+    const wrapper = mountView()
+    await flushPromises()
+
+    const msg = wrapper.find('.message')
+    expect(msg.find('.hl-exception').text()).toBe('com.example.foo.MyCustomError')
+    expect(msg.find('.hl-number').text()).toBe('42')
+    expect(msg.find('.hl-kw').text()).toBe('at')
+    expect(msg.text()).toContain('count')
+  })
+
+  it('消息高亮：恶意 HTML 全量转义（XSS 防护）', async () => {
+    const store = useDebugStore()
+    store.logs = [
+      { ts: 1700000000, level: 'I', pid: 1, tid: 1, tag: 'T', message: '<img src=x onerror=alert(1)>' },
+    ]
+    const wrapper = mountView()
+    await flushPromises()
+
+    const msg = wrapper.find('.message')
+    expect(msg.find('img').exists()).toBe(false)
+    expect(msg.html()).toContain('&lt;img')
+  })
 })
