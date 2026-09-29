@@ -12,6 +12,7 @@
         { "op": "filter", "level": "E" }      — 设置过滤条件
         { "op": "exec", "command": "ls" }     — 执行 shell 命令（流式输出）
         { "op": "input", "data": "<base64>" } — 发送原始按键到设备 shell（PTY 模式）
+        { "op": "resize", "cols": N, "rows": M } — 调整设备 PTY 窗口大小（正整数）
         { "op": "unsubscribe" }               — 取消订阅
 
     服务端 → 客户端：
@@ -35,6 +36,7 @@ PTY 模式 input 操作：
 当前状态：
     - exec 命令已实现（流式输出，使用 InteractiveShell.execute）
     - input 操作已实现（PTY 模式透传，后台读取器转发输出）
+    - resize 操作已实现（ConPTY set_size；管道降级 no-op）
     - subscribe: 已实现，实时推送日志 + shell 输出
     - filter: 已实现，服务端过滤
 """
@@ -167,6 +169,28 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                     await websocket.send_json({
                         "type": "error",
                         "message": f"Failed to send input: {e}"
+                    })
+
+            elif op == "resize":
+                # 终端 resize：cols/rows 必须为正整数（pywinpty set_size 约束）
+                cols = data.get("cols")
+                rows = data.get("rows")
+                valid = all(
+                    isinstance(v, int) and not isinstance(v, bool) and v > 0
+                    for v in (cols, rows)
+                )
+                if not valid:
+                    await _safe_send_json(websocket, {
+                        "type": "error",
+                        "message": "resize requires positive integer cols/rows",
+                    })
+                    continue
+                try:
+                    await debug_service.resize_shell(session_id, cols, rows)
+                except Exception as e:
+                    await _safe_send_json(websocket, {
+                        "type": "error",
+                        "message": f"Failed to resize shell: {e}",
                     })
 
             elif op == "unsubscribe":

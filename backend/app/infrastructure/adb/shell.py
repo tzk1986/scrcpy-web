@@ -20,7 +20,7 @@
   - 持久化 shell 会话（cd/su 状态保持）
   - 完整终端功能（Ctrl+C、Tab、↑↓ 历史、readline）
   - 交互式命令支持（top、vi、less）
-  - 窗口大小固定 80x24（与设备 PTY 对齐）
+  - 窗口初始 80x24，resize() 可调（ConPTY 路径；管道降级 no-op）
 
 技术细节：
   - 使用 `adb shell -tt` 强制分配 PTY（即使 stdin 不是 TTY）
@@ -315,6 +315,28 @@ class InteractiveShell:
             assert self._proc is not None and self._proc.stdin is not None
             self._proc.stdin.write(data)
             await self._proc.stdin.drain()
+
+    async def resize(self, cols: int, rows: int) -> None:
+        """
+        调整设备 PTY 窗口大小。
+
+        ConPTY 路径：ConPtyProcess 暴露 set_size(cols, rows)，委托底层
+        pywinpty PTY 调整伪控制台尺寸。管道路径（asyncio.subprocess.Process）
+        无 PTY 尺寸概念，优雅降级为 no-op（不抛异常）。
+
+        参数：
+            cols: 列数（正整数）。
+            rows: 行数（正整数）。
+        """
+        proc = self._proc
+        if proc is None or proc.returncode is not None:
+            return
+        set_size = getattr(proc, "set_size", None)
+        if set_size is None:
+            logger.debug("shell_resize_skipped_pipe", device=self._device_id)
+            return
+        set_size(cols, rows)
+        logger.info("shell_resized", device=self._device_id, cols=cols, rows=rows)
 
     async def get_output(self) -> str | None:
         """

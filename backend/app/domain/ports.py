@@ -171,6 +171,19 @@ class ShellSession(Protocol):
         """
         ...
 
+    async def resize(self, cols: int, rows: int) -> None:
+        """
+        调整设备 PTY 窗口大小。
+
+        ConPTY 路径委托底层伪控制台调整尺寸；管道路径无 PTY 尺寸概念，
+        优雅降级为 no-op（不抛异常）。
+
+        参数：
+            cols: 列数（正整数）。
+            rows: 行数（正整数）。
+        """
+        ...
+
     async def get_output(self) -> str | None:
         """
         从输出队列获取一行输出（阻塞）。

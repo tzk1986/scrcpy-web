@@ -67,6 +67,10 @@ class FakeShell:
         self._stop_error = stop_error
         self.executed = []
         self.stopped = 0
+        self.resizes = []
+
+    async def resize(self, cols, rows):
+        self.resizes.append((cols, rows))
 
     async def execute(self, cmd):
         self.executed.append(cmd)
@@ -611,6 +615,31 @@ async def test_get_or_create_shell_missing_session_raises():
     svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
     with pytest.raises(SessionNotFoundError):
         await svc.get_or_create_shell("nope")
+
+
+async def test_resize_shell_forwards_dims_to_live_shell():
+    shell = FakeShell(alive=True)
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo())
+    session = make_session()
+    svc.sessions[session.id] = session
+    svc.shell_sessions[session.id] = shell
+
+    await svc.resize_shell(session.id, 120, 40)
+    assert shell.resizes == [(120, 40)]
+
+
+async def test_resize_shell_noop_when_shell_missing():
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    await svc.resize_shell("nope", 120, 40)  # 不应抛出
+
+
+async def test_resize_shell_noop_when_shell_dead():
+    shell = FakeShell(alive=False)
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo())
+    svc.shell_sessions["s1"] = shell
+
+    await svc.resize_shell("s1", 120, 40)
+    assert shell.resizes == []
 
 
 # ---------------------------------------------------------------------------

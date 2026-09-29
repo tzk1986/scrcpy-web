@@ -124,6 +124,10 @@ class ConPtyProcess:
         es = self.pty.get_exitstatus()
         return es if es is not None else -1
 
+    def set_size(self, cols: int, rows: int) -> None:
+        """调整伪控制台尺寸（pywinpty 要求 cols/rows 为正整数）。"""
+        self.pty.set_size(cols, rows)
+
     async def wait(self) -> int:
         while self.pty.isalive():
             await asyncio.sleep(0.05)

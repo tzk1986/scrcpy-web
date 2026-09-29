@@ -597,6 +597,22 @@ class DebugService:
 
         return shell
 
+    async def resize_shell(self, session_id: str, cols: int, rows: int) -> None:
+        """
+        调整指定会话的交互式 shell 窗口大小。
+
+        shell 不存在或已退出时静默 no-op（resize 是高频 UI 事件，
+        不应因竞态抛错）。
+
+        参数：
+            session_id: 活跃的调试会话。
+            cols: 列数（正整数）。
+            rows: 行数（正整数）。
+        """
+        shell = self.shell_sessions.get(session_id)
+        if shell is not None and shell.is_alive:
+            await shell.resize(cols, rows)
+
     def _start_output_forwarding(self, session_id: str, shell: ShellSession) -> None:
         """
         启动 shell 输出转发任务。

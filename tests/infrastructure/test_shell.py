@@ -304,6 +304,69 @@ class TestExecute:
 
 
 # ---------------------------------------------------------------------------
+# resize：ConPTY set_size / 管道降级 no-op
+# ---------------------------------------------------------------------------
+
+class _ConPtyLikeProc:
+    """ConPTY 路径 proc 替身：带 set_size（匹配 ConPtyProcess 接口）。"""
+
+    def __init__(self, returncode=None):
+        self.returncode = returncode
+        self.set_size_calls = []
+
+    def set_size(self, cols: int, rows: int) -> None:
+        self.set_size_calls.append((cols, rows))
+
+
+class _PipeLikeProc:
+    """管道路径 proc 替身：无 set_size 属性（匹配 asyncio.subprocess.Process）。"""
+
+    def __init__(self, returncode=None):
+        self.returncode = returncode
+
+
+class TestConPtySetSize:
+    """ConPtyProcess.set_size 委托给底层 pywinpty PTY.set_size(cols, rows)。
+
+    ConPtyProcess 为纯适配器，唯一职责是委托，故用 mock pty 断言委托契约；
+    跨平台可运行（不触发真实 spawn）。
+    """
+
+    def test_set_size_delegates_to_pty(self):
+        from app.infrastructure.adb.winpty import ConPtyProcess
+
+        fake_pty = MagicMock()
+        proc = ConPtyProcess(fake_pty)
+        proc.set_size(120, 40)
+        fake_pty.set_size.assert_called_once_with(120, 40)
+
+
+class TestResize:
+    async def test_conpty_proc_set_size_called_with_dims(self):
+        shell = InteractiveShell()
+        proc = _ConPtyLikeProc()
+        shell._proc = proc
+        await shell.resize(120, 40)
+        assert proc.set_size_calls == [(120, 40)]
+
+    async def test_pipe_proc_is_noop(self):
+        shell = InteractiveShell()
+        shell._proc = _PipeLikeProc()
+        await shell.resize(120, 40)  # 不应抛出
+
+    async def test_no_proc_is_noop(self):
+        shell = InteractiveShell()
+        await shell.resize(120, 40)  # 不应抛出
+
+    async def test_dead_proc_does_not_resize(self):
+        shell = InteractiveShell()
+        proc = _ConPtyLikeProc(returncode=0)
+        shell._proc = proc
+        await shell.resize(120, 40)
+        assert proc.set_size_calls == []
+
+
+# ---------------------------------------------------------------------------
 # send_input
 # ---------------------------------------------------------------------------
 

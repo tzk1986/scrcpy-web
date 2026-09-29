@@ -25,6 +25,10 @@ class FakeDebugService:
         self.unsubscribed = 0
         self.forwarding_stopped = 0
         self.generators_closed = 0
+        self.resizes = []
+
+    async def resize_shell(self, session_id, cols, rows):
+        self.resizes.append((session_id, cols, rows))
 
     async def _exec_shell_stream_raw(self, session_id, cmd):
         try:
@@ -123,3 +127,36 @@ async def test_normal_disconnect_runs_cleanup():
 
     assert svc.unsubscribed == 1
     assert svc.forwarding_stopped == 1
+
+
+async def test_resize_op_forwards_dims():
+    """op=resize 携带正整数 cols/rows：转发到 resize_shell，清理照常。"""
+    svc = FakeDebugService()
+    ws = FakeWebSocket([{"op": "resize", "cols": 120, "rows": 40}])
+
+    await debug_stream(ws, "s1", svc)
+
+    assert svc.resizes == [("s1", 120, 40)]
+    assert svc.unsubscribed == 1
+
+
+async def test_resize_op_rejects_non_positive_dims():
+    """op=resize 携带非正数：不调用 resize_shell，回 error。"""
+    svc = FakeDebugService()
+    ws = FakeWebSocket([{"op": "resize", "cols": 0, "rows": 40}])
+
+    await debug_stream(ws, "s1", svc)
+
+    assert svc.resizes == []
+    assert any(m.get("type") == "error" for m in ws.sent)
+
+
+async def test_resize_op_rejects_non_int_dims():
+    """op=resize 携带非整数（含缺失/字符串/浮点）：不调用 resize_shell。"""
+    for bad in ({"op": "resize", "cols": "120", "rows": 40},
+                {"op": "resize", "cols": 1.5, "rows": 40},
+                {"op": "resize", "rows": 40}):
+        svc = FakeDebugService()
+        ws = FakeWebSocket([bad])
+        await debug_stream(ws, "s1", svc)
+        assert svc.resizes == [], f"非整数尺寸应被拒绝: {bad}"
