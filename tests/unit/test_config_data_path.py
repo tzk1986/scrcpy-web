@@ -69,7 +69,10 @@ def test_get_settings_applies_normalization():
     assert Path(get_settings().database.path) == REPO_ROOT / "data" / "debug.sqlite"
 
 
-def test_db_path_env_overrides_yaml(monkeypatch):
-    # docker-compose 等容器部署依赖 DB_PATH 覆盖 yaml 的 database.path
-    monkeypatch.setenv("DB_PATH", r"C:\fromEnv\prod.sqlite")
-    assert get_settings().database.path == r"C:\fromEnv\prod.sqlite"
+def test_db_path_env_overrides_yaml(monkeypatch, tmp_path):
+    # docker-compose 等容器部署依赖 DB_PATH 覆盖 yaml 的 database.path。
+    # 夹具须用平台自适应绝对路径：Windows 盘符字面量（C:\...）在 POSIX 上
+    # 不以 / 开头，会被判为相对路径锚定到基目录（CI ubuntu runner 实证）
+    env_path = tmp_path / "fromEnv" / "prod.sqlite"
+    monkeypatch.setenv("DB_PATH", str(env_path))
+    assert get_settings().database.path == str(env_path)
