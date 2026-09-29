@@ -483,6 +483,16 @@ describe('debug store - 命令与过滤', () => {
     expect(sentOps().at(-1)).toEqual({ op: 'input', data: btoa('\n') })
   })
 
+  it('sendResize 未连接时静默不发送；已连接时发送 resize op', async () => {
+    const store = useDebugStore()
+    store.sendResize(120, 40)
+    expect(h.MockWebSocketService.instances).toHaveLength(0)
+
+    const connected = await connectStore(false)
+    connected.sendResize(120, 40)
+    expect(sentOps().at(-1)).toEqual({ op: 'resize', cols: 120, rows: 40 })
+  })
+
   it('setFilter 未连接仅更新本地状态，已连接同步 filter 消息', async () => {
     const store = useDebugStore()
     store.setFilter('W', 'T')

@@ -26,8 +26,12 @@ const h = vi.hoisted(() => {
     dispose = vi.fn()
     onKey = vi.fn()
     onData = vi.fn()
+    onResize = vi.fn()
+    cols = 80
+    rows = 24
     keyHandler: ((e: { key: string; domEvent: { preventDefault(): void; stopPropagation(): void } }) => void) | null = null
     dataHandler: ((data: string) => void) | null = null
+    resizeHandler: ((d: { cols: number; rows: number }) => void) | null = null
 
     constructor(options: Record<string, unknown>) {
       this.options = options
@@ -36,6 +40,9 @@ const h = vi.hoisted(() => {
       })
       this.onData.mockImplementation((cb: typeof this.dataHandler) => {
         this.dataHandler = cb
+      })
+      this.onResize.mockImplementation((cb: typeof this.resizeHandler) => {
+        this.resizeHandler = cb
       })
       MockTerminal.instances.push(this)
     }
@@ -169,5 +176,39 @@ describe('ShellView', () => {
     // 终端普通按键透传
     term.dataHandler!('a')
     expect(sendSpy).toHaveBeenLastCalledWith('a')
+  })
+
+  it('终端 resize 同步后端：挂载后发送初始尺寸，onResize 触发时发送新尺寸', async () => {
+    const store = useDebugStore()
+    vi.spyOn(store, 'sendInput').mockImplementation(() => {})
+    const resizeSpy = vi.spyOn(store, 'sendResize').mockImplementation(() => {})
+    await mountView()
+    const term = h.MockTerminal.instances[0]
+
+    // 初始尺寸同步（connectWebSocket 之后按当前 term 尺寸发送一次）
+    expect(resizeSpy).toHaveBeenCalledWith(term.cols, term.rows)
+
+    // onResize 已注册；触发时按新尺寸同步
+    expect(term.resizeHandler).not.toBeNull()
+    term.resizeHandler!({ cols: 120, rows: 40 })
+    expect(resizeSpy).toHaveBeenLastCalledWith(120, 40)
+  })
+
+  it('窗口 resize 事件触发 fit 重新适配容器', async () => {
+    const store = useDebugStore()
+    vi.spyOn(store, 'sendInput').mockImplementation(() => {})
+    vi.spyOn(store, 'sendResize').mockImplementation(() => {})
+    const wrapper = await mountView()
+    const addon = h.MockFitAddon.instances[0]
+    addon.fit.mockClear()
+
+    window.dispatchEvent(new Event('resize'))
+    expect(addon.fit).toHaveBeenCalled()
+
+    // 卸载后监听器移除，不再触发 fit
+    wrapper.unmount()
+    addon.fit.mockClear()
+    window.dispatchEvent(new Event('resize'))
+    expect(addon.fit).not.toHaveBeenCalled()
   })
 })

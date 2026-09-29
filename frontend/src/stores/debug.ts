@@ -288,6 +288,21 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   /**
+   * 发送终端 resize 操作（PTY 模式）。
+   *
+   * 终端尺寸变化（fit 触发 onResize）时同步到后端，后端调整设备 PTY 窗口。
+   * 未连接时静默忽略（resize 是高频 UI 事件，不告警刷屏）。
+   *
+   * 参数：
+   *   cols: 列数（正整数）。
+   *   rows: 行数（正整数）。
+   */
+  function sendResize(cols: number, rows: number) {
+    if (!debugWs || !wsConnected.value) return
+    debugWs.send({ op: 'resize', cols, rows })
+  }
+
+  /**
    * 设置 shell 输出处理器（PTY 模式）。
    *
    * 当收到 shell_stream 消息时，调用此处理器将输出写入终端。
@@ -427,6 +442,7 @@ export const useDebugStore = defineStore('debug', () => {
     setFilter,
     setRecording,
     sendInput,
+    sendResize,
     setShellOutputHandler,
   }
 })

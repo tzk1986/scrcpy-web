@@ -8,11 +8,12 @@
     - 混合模式：xterm.js 完整终端 + 底部命令输入框
     - xterm.js 支持：Tab 补全、交互式命令（top/vi）、复制
     - 输入框支持：快捷命令发送、命令历史（↑↓）
-    - 窗口大小固定 80x24（与设备 PTY 对齐）
+    - 窗口自适应容器，尺寸变化同步到设备 PTY（resize）
 
   技术栈：
-    - xterm.js：终端模拟器（固定 80x24）
+    - xterm.js：终端模拟器（初始 80x24，fit 后随容器变化）
     - xterm-addon-fit：自适应容器大小
+    - ResizeObserver + window resize：容器/窗口变化时重新 fit 并同步后端
 
   数据流：
     输入框 → WebSocket (input) → 后端 → adb stdin → 设备 PTY
@@ -58,6 +59,17 @@ const terminalRef = ref<HTMLElement>()
 let term: Terminal | null = null
 /** 终端自适应插件。 */
 let fitAddon: FitAddon | null = null
+/** 容器尺寸观察器（停靠面板拖拽时重新 fit）。 */
+let resizeObserver: ResizeObserver | null = null
+
+/**
+ * 容器/窗口尺寸变化处理：重新 fit 终端。
+ * fit 改变 term 尺寸会触发 onResize → sendResize 同步到设备 PTY；
+ * 尺寸未变化时 xterm 不触发 onResize，无冗余消息。
+ */
+function handleContainerResize() {
+  fitAddon?.fit()
+}
 
 /** 命令输入框引用。 */
 const inputRef = ref<HTMLInputElement>()
@@ -123,19 +135,20 @@ function sendTab() {
 
 /**
  * 组件挂载时初始化终端：
- *   1. 创建 Terminal 实例（固定 80x24）
+ *   1. 创建 Terminal 实例（初始 80x24）
  *   2. 加载 FitAddon 并适配容器大小
  *   3. 显示欢迎信息
  *   4. 连接 WebSocket
- *   5. 注册键盘输入处理器（完全透传模式）
- *   6. 拦截 Tab 键（防止浏览器焦点切换）
- *   7. 设置 shell 输出处理器（接收设备输出）
- *   8. 聚焦输入框
+ *   5. 注册 onResize（尺寸变化同步后端）并发送初始尺寸
+ *   6. 注册容器/窗口 resize 监听（ResizeObserver + window）
+ *   7. 注册键盘输入处理器（完全透传模式，拦截 Tab 防焦点切换）
+ *   8. 设置 shell 输出处理器（接收设备输出）
+ *   9. 聚焦输入框
  */
 onMounted(async () => {
   if (!terminalRef.value) return
 
-  // 创建 xterm.js 实例（固定 80x24，与设备 PTY 对齐）
+  // 创建 xterm.js 实例（初始 80x24，随后 fit 到容器并经 resize 同步设备 PTY）
   term = new Terminal({
     cols: 80,
     rows: 24,
@@ -156,7 +169,7 @@ onMounted(async () => {
 
   // 显示欢迎信息
   term.writeln('OpenScrcpy Shell (PTY Mode)')
-  term.writeln('Terminal: 80x24')
+  term.writeln(`Terminal: ${term.cols}x${term.rows}`)
   term.writeln('Features: Tab completion, interactive commands, copy/paste')
   term.writeln('Use input box below for quick commands, or type directly in terminal')
   term.writeln('')
@@ -168,6 +181,21 @@ onMounted(async () => {
 
   // 连接 WebSocket（subscribe 会触发后端发送初始 prompt）
   await debugStore.connectWebSocket()
+
+  // 终端尺寸变化（fit 触发）→ 同步到后端调整设备 PTY 窗口
+  term.onResize(({ cols, rows }) => {
+    debugStore.sendResize(cols, rows)
+  })
+  // 初始尺寸同步：首次 fit() 发生在 WS 连接前，onResize 事件已错过
+  debugStore.sendResize(term.cols, term.rows)
+
+  // 容器/窗口尺寸变化 → 重新 fit（触发 onResize → sendResize）。
+  // ResizeObserver 覆盖停靠面板拖拽；window resize 覆盖浏览器窗口缩放。
+  window.addEventListener('resize', handleContainerResize)
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(handleContainerResize)
+    resizeObserver.observe(terminalRef.value)
+  }
 
   // Tab 键：onKey 拦截阻止 xterm.js 本地渲染，直接发送到设备
   term.onKey((e) => {
@@ -200,8 +228,11 @@ onMounted(async () => {
   inputRef.value?.focus()
 })
 
-/** 组件卸载时销毁终端实例。 */
+/** 组件卸载时移除监听器、断开观察器并销毁终端实例。 */
 onUnmounted(() => {
+  window.removeEventListener('resize', handleContainerResize)
+  resizeObserver?.disconnect()
+  resizeObserver = null
   term?.dispose()
 })
 </script>
