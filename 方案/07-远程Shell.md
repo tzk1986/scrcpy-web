@@ -12,6 +12,10 @@
 - ✅ 流式输出
 - ✅ 命令历史
 - ✅ Tab 补全（混合输入模式：输入框 + 终端双通道，Tab 透传设备 shell 原生 readline，方案 12 已落地）
+- ✅ 彩色输出（设备侧 `-tt` 强制 PTY + 输出原样透传 + xterm.js 原生 ANSI 渲染，2026-09-29 走查核验）
+- ✅ 断线重连（05 断线续传机制 + WS 意外断线自动重连并按 seq 补发；会话服务端持久）
+- ⏳ 终端 resize——唯一遗留缺口：方案已设计完整链路（后端 `resize_shell` + WS `{"type":"resize"}` +
+  前端 FitAddon 联动，见本文 L88/L151/L199/L291），当前仅初始 80x24（2026-09-29 走查确认）
 
 > 下文「实现步骤」中的 ⏳ 为方案编写时的规划标记（历史保留），实际完成状态以本节与 `进度追踪.md` 为准。
 
@@ -374,18 +378,18 @@ echo -e "\x1b[31mRed Text\x1b[0m"
 
 ## 验收标准
 
-- ⏳ PTY 伪终端正常工作
-- ⏳ 支持彩色输出
-- ⏳ 支持终端 resize
-- ⏳ 命令历史记录
-- ⏳ 断线自动重连
+- ✅ PTY 伪终端正常工作（ConPTY + `adb shell -tt`，2026-09-17 真机冒烟）
+- ✅ 支持彩色输出（原样透传 + xterm.js 原生渲染，2026-09-29 走查核验）
+- ⏳ 支持终端 resize——未实现（方案已设计，见状态节；2026-09-29 走查确认）
+- ✅ 命令历史记录（上/下箭头，最多 100 条）
+- ✅ 断线自动重连（05 断线续传 + WS 自动重连补发）
 
 ## 交付物
 
-- ⏳ PTYShell 实现（Linux/Mac）
-- ⏳ WebSocket shell 端点
-- ⏳ ShellView 组件（xterm.js）
-- ⏳ 自动重连逻辑
+- ✅ InteractiveShell 实现（Windows 走 ConPTY；无 ConPTY 时管道降级——原方案的 PTYShell 名称未采用）
+- ✅ WebSocket shell 端点（`/ws/debug/{session_id}` 的 `exec`/`input` op）
+- ✅ ShellView 组件（xterm.js）
+- ✅ 自动重连逻辑（05 断线续传 + debug store WS 重连，2026-09-29 走查核验）
 
 ## 风险与应对
 
