@@ -70,8 +70,8 @@
 | D3 | 高亮范围仅 message 列 | 时间戳/级别/tag/pid 已有列级着色；只对消息正文做结构高亮 |
 | D4 | tokenize 原始文本 → 逐 token 转义 | 先切 token 再对每段 `escapeHtml`，保证 XSS 安全的同时不破坏引号串等 token 的可识别性（先转义后切会让引号串变成 `&quot;` 无法匹配） |
 | D5 | 性能护栏：长度上限 + 结果缓存 | 消息 > 2000 字符不 tokenize（整体转义原色渲染）；tokenize 结果（HTML 字符串）缓存 Map，5000 条 FIFO 淘汰——复合性：虚拟滚动下仅视窗内行才渲染，tokenize 请求天然受限 |
-| D6 | 自动滚动改 `scrollToItem(末条)` | DynamicScroller 缓冲高度下 `scrollHeight` 是估算值，`scrollTop = scrollHeight` 不可靠；以条目索引滚底对标旧行为 |
-| D7 | 条目 ID：`uid = seq ?? \`${ts}-${i}\`` | DynamicScroller 要求条目带 id（`idProp`，默认 `id`）；`LogEntry.seq` 为可选字段（TS 类型上），映射成稳定 uid 兜底 |
+| D6 | 自动滚动改 `scrollToBottom()` | DynamicScroller 缓冲高度下 `scrollHeight` 是估算值，`scrollTop = scrollHeight` 不可靠；改用组件暴露的 `scrollToBottom()` API 滚底对标旧行为（2.0.1 已提供，无需索引自算） |
+| D7 | 条目 ID：`uid = seq ?? \`${ts}-${i}\`` | DynamicScroller 以 `keyField`（默认 `id`）作条目键，键值不得重复；`LogEntry.seq` 为可选字段（TS 类型上），映射成稳定 uid 兜底 |
 | D8 | 交互零变化 | 过滤/搜索/导出/清理/点击复制/录制开关/LIVE 指示器/暂停横幅全部沿用，仅列表渲染层替换 |
 
 ## 3. 虚拟滚动设计
@@ -79,21 +79,20 @@
 ### 3.1 组件结构（在现有模板上做最小替换）
 
 ```vue
-<!-- 替换 log-list 内 v-for 区块 -->
+<!-- 替换 log-list 内 v-for 区块（API 已按 2.0.1 实际 d.ts 核实：key-field / :index / #empty） -->
 <DynamicScroller
   ref="scrollerRef"
   class="log-list"
   :items="scrollerItems"
   :min-item-size="22"
-  id-prop="uid"
   key-field="uid"
 >
-  <template v-slot="{ item, index, active }">
+  <template #default="{ item, index, active }">
     <DynamicScrollerItem
       :item="item"
       :active="active"
+      :index="index"
       :size-dependencies="[item.message]"
-      :data-index="index"
     >
       <div class="log-entry" :class="`level-${item.level.toLowerCase()}`"
            @click="copyLog(item)" :title="'点击复制'">
@@ -103,6 +102,12 @@
         <span class="message" v-html="highlightMessage(item)"></span>
       </div>
     </DynamicScrollerItem>
+  </template>
+  <template #empty>
+    <div class="empty-state">
+      <span v-if="!debugStore.isRecording">已暂停录制，无新日志</span>
+      <span v-else>▶ 开始</span>
+    </div>
   </template>
 </DynamicScroller>
 ```
@@ -120,7 +125,7 @@
 watch(() => debugStore.logs.length, async () => {
   if (!autoScroll.value) return
   await nextTick()
-  scrollerRef.value?.scrollToItem(scrollerItems.value.length - 1)
+  scrollerRef.value?.scrollToBottom()
 })
 ```
 
@@ -134,7 +139,7 @@ watch(() => debugStore.logs.length, async () => {
 |------|----------|------|
 | `string` | `"…"` 双引号串（含转义 `\"`） | `#a31515` |
 | `url` | `http(s)://…` 至空白/引号/括号止 | `#1a73e8` + 下划线 |
-| `exception` | Java 包名级异常/错误类：`([a-z][a-z0-9_$]*\.)+[A-Z][A-Za-z0-9_$]*(Exception|Error)` | `#c7254e` 加粗 |
+| `exception` | Java 包名限定的异常/错误类：`(?:[a-z][a-z0-9_$]*\.)+(?:[A-Z][A-Za-z0-9_$]*(?:Exception\|Error)\|Exception\|Error)\b`（裸 `java.lang.Exception` 亦命中） | `#c7254e` 加粗 |
 | `timestamp` | `HH:MM:SS(.mmm)`（消息正文内的时刻，区别于列级时间戳） | `#8a8a8a` |
 | `number` | 整数/小数/科学计数（可带负号，单边词边界） | `#098658` |
 | `kw` | `at`、`Caused by`（独立词） | `#7b5bcd` 斜体 |
@@ -154,7 +159,7 @@ export type TokenType = 'string' | 'url' | 'exception' | 'timestamp' | 'number' 
 const RULES: { type: TokenType; re: RegExp }[] = [
   { type: 'string',    re: /"(?:[^"\\]|\\.)*"/y },
   { type: 'url',       re: /https?:\/\/[^\s"'<>()]+/y },
-  { type: 'exception', re: /(?:[a-z][a-z0-9_$]*\.)+[A-Z][A-Za-z0-9_$]*(?:Exception|Error)/y },
+  { type: 'exception', re: /(?:[a-z][a-z0-9_$]*\.)+(?:[A-Z][A-Za-z0-9_$]*(?:Exception|Error)|Exception|Error)\b/y },
   { type: 'timestamp', re: /\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?/y },
   { type: 'number',    re: /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y },
   { type: 'kw',        re: /\b(?:Caused by|at)\b/y },
@@ -190,8 +195,8 @@ CSS：`.hl-*` 着色类定义于 `LogcatView.vue` `<style>`（与第 4.1 节配�
 - 纯文本：tokenize 产出单个 default 段；highlight 后文本相等（无包裹 span）
 - string：`"hello world"` / 含转义引号 `"a\"b"` 各一例
 - url：`http://example.com:8080/path?a=1` 整段为 url token（数字不被 number 规则拆散）
-- exception：`java.lang.NullPointerException`、`com.example.foo.MyCustomError` 命中；
-  `myException`（无包前缀）不命中
+- exception：`java.lang.NullPointerException`、`com.example.foo.MyCustomError`、`java.lang.Exception`
+  （裸 Exception 类）命中；`myException`（无包前缀）不命中
 - timestamp：`12:34:56.789` 命中；列级以外的普通数字不误判（`123:456` 不命中）
 - number：`-3.14e2`；引号串内数字不拆（string 优先）
 - kw：`at com.foo.Bar` 中 `at` 命中、`attach` 不命中；`Caused by: java.io.IOException` 中 kw 与 exception 各归其位
@@ -207,7 +212,7 @@ CSS：`.hl-*` 着色类定义于 `LogcatView.vue` `<style>`（与第 4.1 节配�
 - 既有行为测试全量保留（挂载零请求 / 录制开关 / 过滤 / 搜索防抖 / 复制 / 导出 / 清理 / 自动滚动）
 - 新增断言：
   - `scrollerItems` 含 `uid`（有 seq 用 seq；无 seq 回退 `ts-index`）
-  - 日志追加且 autoScroll 开 → `scrollToItem(末条索引)` 被调；autoScroll 关 → 不调
+  - 日志追加且 autoScroll 开 → scroller 的 `scrollToBottom()` 被调；autoScroll 关 → 不调
   - 消息渲染为 `v-html` 高亮输出（journal 含 exception 类名时出现 `hl-exception` span）
 
 ### 5.3 门禁
