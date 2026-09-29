@@ -47,7 +47,7 @@ def _fake_loader(config: dict):
 
 
 def _base_config(**app_overrides) -> dict:
-    app = {"name": "OpenScrcpy", "version": "0.1.0"}
+    app = {"name": "OpenScrcpy", "version": "0.7.0"}
     app.update(app_overrides)
     return {"app": app, "server": {"host": "0.0.0.0", "port": 8765}}
 

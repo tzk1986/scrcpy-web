@@ -86,7 +86,7 @@ ConPTY/pywinpty、scrcpy.exe、ProactorEventLoop 等 Windows 专属组件）。�
 | Week 5-6 | 远程 Shell | [07-远程Shell.md](方案/07-远程Shell.md) | ✅ 100%（ConPTY + 历史 + Tab 补全 + 彩色输出 + 终端 resize 全链路真机验证） |
 | Week 5-6 | 性能监控 | [08-性能监控.md](方案/08-性能监控.md) | ✅ 100%（含网络监控 + 阈值告警（方案 24）） |
 | Week 7-8 | 前端调试面板 | [09-前端调试面板.md](方案/09-前端调试面板.md) | ✅ 100%（5 标签页 + 停靠/快捷键/命令面板/响应式） |
-| Week 7-8 | 集成测试与部署 | [10-集成测试与部署.md](方案/10-集成测试与部署.md) | ✅ 100%（CI 三 job 全绿；exe 已实施（方案 15/23）；pre-release v0.1.0 首发（2026-09-29）；Docker/E2E-CI 已决策例外） |
+| Week 7-8 | 集成测试与部署 | [10-集成测试与部署.md](方案/10-集成测试与部署.md) | ✅ 100%（CI 三 job 全绿；exe 已实施（方案 15/23）；pre-release v0.7.0 首发（2026-09-29）；Docker/E2E-CI 已决策例外） |
 
 专项方案：
 
@@ -269,8 +269,8 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 **项目状态**：🚧 积极开发中
 
-**最新版本**：v0.1.0
+**最新版本**：v0.7.0
 
-**最新进展**：2026-09-29（pre-release v0.1.0 首发：方案 25 Logcat 达 100% 并 5 万条真机验证；Windows 绿色版 zip 19.0MiB 经 .25 真机全链路验证后发布 GitHub Release）
+**最新进展**：2026-09-29（pre-release v0.7.0 首发：方案 25 Logcat 达 100% 并 5 万条真机验证；Windows 绿色版 zip 19.0MiB 经 .25 真机全链路验证后发布 GitHub Release）
 
 **下一步**：绿色版试用反馈收集；Phase 2 规划（网络抓包等）
