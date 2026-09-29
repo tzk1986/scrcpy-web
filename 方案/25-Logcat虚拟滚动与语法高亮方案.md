@@ -195,7 +195,7 @@ CSS：`.hl-*` 着色类定义于 `LogcatView.vue` `<style>`（与第 4.1 节配�
 - timestamp：`12:34:56.789` 命中；列级以外的普通数字不误判（`123:456` 不命中）
 - number：`-3.14e2`；引号串内数字不拆（string 优先）
 - kw：`at com.foo.Bar` 中 `at` 命中、`attach` 不命中；`Caused by: java.io.IOException` 中 kw 与 exception 各归其位
-- 优先级：`"http://x"` 整体 string；`http://x/"a"` url 在前整段 url
+- 优先级：`"http://x"` 整体 string；`http://x/"a"` 中 url 段止于引号（`http://x/` 归 url、`"a"` 归 string）
 - XSS：`<script>alert(1)</script>` → highlight 输出不含 `<script`，`<` 全为 `&lt;`
 - 长度上限：2001 字符消息返回纯转义文本、不 tokenize
 - 缓存：同一 message 两次调用返回同一 HTML 字符串（等价即可）
