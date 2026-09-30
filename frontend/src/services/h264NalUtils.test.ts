@@ -1,15 +1,32 @@
 import { describe, expect, it } from 'vitest'
 import {
   extractNalus,
-  hasKeyFrame,
-  nalusToAvcc,
   shouldDropFrame,
+  scanFrame,
+  frameToAvcc,
   MAX_DECODE_QUEUE,
 } from './h264NalUtils'
 
 /** 构造 4 字节起始码 + NAL 头 + 指定长度载荷的 NALU */
 function nalu(type: number, len = 2): Uint8Array {
   return new Uint8Array([0, 0, 0, 1, type, ...new Array(len).fill(0xab)])
+}
+
+/** 参照实现：extractNalus + 4B 大端长度前缀组装（旧管线语义，作对拍 oracle） */
+function refAvcc(data: Uint8Array): Uint8Array {
+  const payloads = extractNalus(data).map(n => n.data)
+  let total = 0
+  for (const p of payloads) total += 4 + p.length
+  const buf = new Uint8Array(total)
+  const view = new DataView(buf.buffer)
+  let off = 0
+  for (const p of payloads) {
+    view.setUint32(off, p.length)
+    off += 4
+    buf.set(p, off)
+    off += p.length
+  }
+  return buf
 }
 
 describe('extractNalus', () => {
@@ -93,37 +110,79 @@ describe('extractNalus', () => {
   })
 })
 
-describe('hasKeyFrame', () => {
-  it('含 IDR 返回 true', () => {
-    const nalus = extractNalus(new Uint8Array([...nalu(7), ...nalu(5)]))
-    expect(hasKeyFrame(nalus)).toBe(true)
+describe('scanFrame', () => {
+  it('载荷区间与 extractNalus 逐字节一致（SEI + 多 slice + 3/4 码混合）', () => {
+    const sei = new Uint8Array([0, 0, 1, 0x06, 0xaa, 0xbb])          // 3 字节码 SEI
+    const idr = new Uint8Array([0, 0, 0, 1, 0x65, 0x11, 0x22, 0x33]) // 4 字节码 IDR
+    const slice = new Uint8Array([0, 0, 0, 1, 0x41, 0x44, 0x55])     // 4 字节码第二 slice
+    const data = new Uint8Array([...sei, ...idr, ...slice])
+
+    const frame = scanFrame(data)
+    const ref = extractNalus(data).map(n => Array.from(n.data))
+
+    expect(frame.nalus.map(n =>
+      Array.from(data.subarray(n.offset, n.offset + n.length)),
+    )).toEqual(ref)
   })
 
-  it('仅 SPS/PPS/slice 返回 false', () => {
-    const nalus = extractNalus(new Uint8Array([...nalu(7), ...nalu(8), ...nalu(1)]))
-    expect(hasKeyFrame(nalus)).toBe(false)
+  it('isKey：含 IDR 为 true，仅 SPS/slice 为 false', () => {
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x65, 0x01])).isKey).toBe(true)
+    expect(scanFrame(new Uint8Array([0, 0, 1, 0x41, 0x01])).isKey).toBe(false)
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x67, 0x01])).isKey).toBe(false)
   })
 
-  it('空列表返回 false', () => {
-    expect(hasKeyFrame([])).toBe(false)
+  it('空输入与无起始码：无 NALU、isKey=false、AVCC 为空', () => {
+    const empty = scanFrame(new Uint8Array(0))
+    expect(empty.nalus).toHaveLength(0)
+    expect(empty.isKey).toBe(false)
+    expect(frameToAvcc(new Uint8Array(0), empty).byteLength).toBe(0)
+
+    const garbage = new Uint8Array([0x67, 0x42, 0x00, 0x1e])
+    expect(scanFrame(garbage).nalus).toHaveLength(0)
+    expect(frameToAvcc(garbage, scanFrame(garbage)).byteLength).toBe(0)
+  })
+
+  it('尾部残缺起始码（00 00）归入尾 NALU', () => {
+    const a = nalu(7)
+    const data = new Uint8Array([...a, 0, 0])
+    const frame = scanFrame(data)
+    expect(frame.nalus).toEqual([{ offset: 4, length: data.length - 4 }])
+  })
+
+  it('两起始码相邻（空 NALU）按边界切分，空载荷不参与 isKey 判定', () => {
+    const data = new Uint8Array([0, 0, 0, 1, 0, 0, 0, 1, 0x65, 0x42])
+    const frame = scanFrame(data)
+    expect(frame.nalus).toHaveLength(2)
+    expect(frame.nalus[0]).toEqual({ offset: 4, length: 0 })
+    expect(frame.nalus[1]).toEqual({ offset: 8, length: 2 })
+    expect(frame.isKey).toBe(true)
   })
 })
 
-describe('nalusToAvcc', () => {
+describe('frameToAvcc', () => {
+  it('与旧管线（extractNalus + 4B 长度前缀组装）逐字节一致', () => {
+    const sei = new Uint8Array([0, 0, 1, 0x06, 0xaa, 0xbb])   // 3 字节码 SEI
+    const idr = nalu(5, 3)                                    // 4 字节码 IDR
+    const slice = new Uint8Array([0, 0, 0, 1, 0x41, 0x33, 0x44]) // 多 slice
+    for (const data of [
+      new Uint8Array([...sei, ...idr]),
+      new Uint8Array([...idr, ...slice]),
+      new Uint8Array([...sei, ...idr, ...slice]),
+    ]) {
+      expect(new Uint8Array(frameToAvcc(data, scanFrame(data)))).toEqual(refAvcc(data))
+    }
+  })
+
   it('每个 NALU 加 4 字节 big-endian 长度前缀', () => {
     const b = new Uint8Array([0, 0, 1, 0x68, 0xce])
-    const nalus = extractNalus(new Uint8Array([...nalu(7, 3), ...b]))
-    const avcc = new Uint8Array(nalusToAvcc(nalus))
+    const data = new Uint8Array([...nalu(7, 3), ...b])
+    const avcc = new Uint8Array(frameToAvcc(data, scanFrame(data)))
     const view = new DataView(avcc.buffer)
     expect(view.getUint32(0)).toBe(4)      // 0x67 头 + 3 字节载荷
     expect(avcc[4] & 0x1f).toBe(7)
     expect(view.getUint32(8)).toBe(2)      // 0x68 头 + 0xce
     expect(avcc[12] & 0x1f).toBe(8)
     expect(avcc.byteLength).toBe(14)
-  })
-
-  it('空列表返回空 buffer', () => {
-    expect(nalusToAvcc([]).byteLength).toBe(0)
   })
 })
 

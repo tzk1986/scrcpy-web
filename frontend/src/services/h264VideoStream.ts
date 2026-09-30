@@ -26,8 +26,8 @@
 import type { WebSocketService } from './websocket'
 import {
   extractNalus,
-  hasKeyFrame,
-  nalusToAvcc,
+  scanFrame,
+  frameToAvcc,
   shouldDropFrame,
   MAX_DECODE_QUEUE,
 } from './h264NalUtils'
@@ -417,26 +417,25 @@ export class H264VideoStream {
 
     this._frameCount++
 
-    // 单遍扫描：一次提取产出 NALU 列表，AVCC 转换与关键帧判定共用
-    const nalus = extractNalus(data)
-    const isKey = hasKeyFrame(nalus)
+    // 零拷贝单遍扫描（方案 26）：扫描与关键帧判定合一，AVCC 组装单次分配
+    const scan = scanFrame(data)
 
     if (this._frameCount <= 5) {
       console.log('[H264] Frame', this._frameCount, ':',
         'raw size:', data.length,
-        'isKeyFrame:', isKey,
-        'NALUs:', nalus.map(n => `type=${n.data[0] & 0x1f},len=${n.data.length}`))
+        'isKeyFrame:', scan.isKey,
+        'NALUs:', scan.nalus.map(n => `type=${data[n.offset] & 0x1f},len=${n.length}`))
     }
 
     // 解码队列积压：丢 delta 帧保关键帧（保 key 理由见 h264NalUtils.shouldDropFrame）
-    if (shouldDropFrame(this.decoder.decodeQueueSize, isKey)) {
+    if (shouldDropFrame(this.decoder.decodeQueueSize, scan.isKey)) {
       this._droppedFrames++
       return
     }
 
     // 积压跨越一个 IDR 仍超阈值：重建解码器，以当前关键帧恢复
     // （对应 ws-scrcpy「I 帧到达时清空积压帧跳新帧」的做法）
-    if (isKey && this.decoder.decodeQueueSize >= MAX_DECODE_QUEUE) {
+    if (scan.isKey && this.decoder.decodeQueueSize >= MAX_DECODE_QUEUE) {
       console.warn('[H264] Decode queue overflow across IDR, rebuilding decoder. queue:',
         this.decoder.decodeQueueSize)
       if (this._lastCodec && this._lastAvccDesc) {
@@ -445,10 +444,10 @@ export class H264VideoStream {
     }
 
     // 将 Annex B 帧转换为 AVCC 格式
-    const avccData = nalusToAvcc(nalus)
+    const avccData = frameToAvcc(data, scan)
 
     const chunk = new EncodedVideoChunk({
-      type: isKey ? 'key' : 'delta',
+      type: scan.isKey ? 'key' : 'delta',
       timestamp: 0,  // 服务端未提供 PTS，用 0 让解码器自动处理
       data: avccData,
     })

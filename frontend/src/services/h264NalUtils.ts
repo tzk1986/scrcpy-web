@@ -58,25 +58,67 @@ export function extractNalus(data: Uint8Array): H264Nalu[] {
   return nalus
 }
 
-/** 判断 NALU 列表是否含 IDR 关键帧（NAL 类型 5） */
-export function hasKeyFrame(nalus: H264Nalu[]): boolean {
-  for (const nalu of nalus) {
-    if (nalu.data.length > 0 && (nalu.data[0] & 0x1f) === 5) return true
-  }
-  return false
+/** 单帧 NALU 载荷区间（offset/length 为去起始码载荷的半开区间下标） */
+export interface FrameNaluPos {
+  offset: number
+  length: number
+}
+
+/** 单帧零拷贝扫描结果：NALU 载荷区间列表 + 关键帧判定 */
+export interface FrameScan {
+  nalus: FrameNaluPos[]
+  isKey: boolean
 }
 
 /**
- * 将 NALU 列表转换为 AVCC 格式：
- * Annex B: [start_code] NALU [start_code] NALU ...
- * AVCC:    [4-byte big-endian length] NALU [4-byte length] NALU ...
+ * 零拷贝单遍扫描单帧（一整 AU）：产出 NALU 载荷区间与关键帧判定，
+ * 边界语义与 extractNalus 逐字节一致（3 字节码优先于 4 字节码，
+ * 码位后跳到载荷起点）。帧包边界即帧边界（方案 17/26），不做跨包
+ * 缓冲。isKey 判定与 hasKeyFrame 一致（空载荷跳过）。
  */
-export function nalusToAvcc(nalus: H264Nalu[]): ArrayBuffer {
-  if (nalus.length === 0) return new ArrayBuffer(0)
+export function scanFrame(data: Uint8Array): FrameScan {
+  const nalus: FrameNaluPos[] = []
+  const len = data.length
+  let codeStart = -1  // 当前 NALU 起始码位置（-1 = 尚未找到）
+  let dataStart = -1  // 当前 NALU 载荷起始位置
+  let isKey = false
 
+  let i = 0
+  while (i < len) {
+    const is3 = i + 2 < len && data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1
+    const is4 = !is3 && i + 3 < len &&
+      data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1
+    if (is3 || is4) {
+      if (codeStart >= 0) {
+        const length = i - dataStart
+        nalus.push({ offset: dataStart, length })
+        if (length > 0 && (data[dataStart] & 0x1f) === 5) isKey = true
+      }
+      codeStart = i
+      dataStart = i + (is4 ? 4 : 3)
+      i = dataStart
+    } else {
+      i++
+    }
+  }
+
+  // 尾部 NALU（无下一边界）
+  if (codeStart >= 0) {
+    const length = len - dataStart
+    nalus.push({ offset: dataStart, length })
+    if (length > 0 && (data[dataStart] & 0x1f) === 5) isKey = true
+  }
+  return { nalus, isKey }
+}
+
+/**
+ * 单次分配组装 AVCC：按 scanFrame 结果加 4 字节 big-endian 长度前缀
+ * 并直拷载荷（subarray 零拷贝视图 + bytes.set 单次写入）。
+ */
+export function frameToAvcc(data: Uint8Array, frame: FrameScan): ArrayBuffer {
   let totalSize = 0
-  for (const nalu of nalus) {
-    totalSize += 4 + nalu.data.length
+  for (const n of frame.nalus) {
+    totalSize += 4 + n.length
   }
 
   const buffer = new ArrayBuffer(totalSize)
@@ -84,11 +126,11 @@ export function nalusToAvcc(nalus: H264Nalu[]): ArrayBuffer {
   const bytes = new Uint8Array(buffer)
   let offset = 0
 
-  for (const nalu of nalus) {
-    view.setUint32(offset, nalu.data.length)
+  for (const n of frame.nalus) {
+    view.setUint32(offset, n.length)
     offset += 4
-    bytes.set(nalu.data, offset)
-    offset += nalu.data.length
+    bytes.set(data.subarray(n.offset, n.offset + n.length), offset)
+    offset += n.length
   }
 
   return buffer
