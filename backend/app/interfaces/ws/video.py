@@ -46,7 +46,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 
 from app.application.stream_service import StreamService
 from app.deps import get_stream_service
-from app.scrcpy.h264_parser import H264Parser
+from app.scrcpy.h264_parser import H264Parser, scan_packet_nalus
 from app.scrcpy.au_aggregator import aggregate_aus
 from app.scrcpy.constants import NALU_TYPE_SPS, NALU_TYPE_PPS
 from app.core.logging import get_logger
@@ -115,6 +115,27 @@ async def video_stream(
     # 启动输入处理任务
     input_task = asyncio.create_task(handle_input())
 
+    # SPS/PPS 拦截（config 下发）：包协议罕见路径与兜底模式共用。
+    # 终审 Minor #3：SPS 分支只做变化检测，实际发送统一由 PPS 分支配对，
+    # 一条 config 携带新 SPS+新 PPS（避免携带旧 PPS 的错配 config）
+    async def intercept_nalu(nalu: bytes) -> None:
+        nonlocal sps_data, pps_data, config_sent
+        nalu_type = parser.get_nalu_type(nalu)
+        if nalu_type == NALU_TYPE_SPS:
+            if config_sent and sps_data != nalu:
+                config_sent = False
+            sps_data = nalu
+            logger.info("sps_received", device=device_id, nalu_size=len(nalu))
+        elif nalu_type == NALU_TYPE_PPS:
+            if config_sent and pps_data != nalu:
+                config_sent = False
+            pps_data = nalu
+            logger.info("pps_received", device=device_id, nalu_size=len(nalu))
+            if sps_data and pps_data and not config_sent:
+                await _send_config(websocket, sps_data, pps_data, stream_service, device_id)
+                config_sent = True
+                logger.info("config_sent", device=device_id)
+
     try:
         # 发送视频流
         frame_count = 0
@@ -141,53 +162,55 @@ async def video_stream(
                 logger.info("video_chunk_progress", device=device_id,
                            chunk_count=chunk_count, frame_count=frame_count)
 
-            nalus = parser.feed(chunk)
-
-            # SPS/PPS 拦截用于 config 下发，不随帧流转发；
-            # 其余 NALU：包头协议按包合并 / 兜底模式启发式聚帧后整 AU 发送
-            forward_nalus: list[bytes] = []
-            for nalu in nalus:
-                nalu_type = parser.get_nalu_type(nalu)
-
-                if nalu_type == NALU_TYPE_SPS:
-                    if config_sent and sps_data != nalu:
-                        # 编码参数变化（卡死自愈/复位后重编）：重置标志。
-                        # 终审 Minor #3：此处不发送 config——SPS-only 变化时
-                        # 立即重发会携带旧 PPS，造成客户端解码参数错配；
-                        # 实际发送统一在 PPS 分支，等新/配对 PPS 到达后
-                        # 以完整新组合（新 SPS + 新 PPS）下发一次。
-                        config_sent = False
-                    sps_data = nalu
-                    logger.info("sps_received", device=device_id, nalu_size=len(nalu))
-
-                elif nalu_type == NALU_TYPE_PPS:
-                    if config_sent and pps_data != nalu:
-                        config_sent = False
-                    pps_data = nalu
-                    logger.info("pps_received", device=device_id, nalu_size=len(nalu))
-                    if sps_data and pps_data and not config_sent:
-                        await _send_config(websocket, sps_data, pps_data, stream_service, device_id)
-                        config_sent = True
-                        logger.info("config_sent", device=device_id)
-
-                else:
-                    forward_nalus.append(nalu)
-
             if packet_mode:
-                # 包头协议：本 chunk 即完整包（= 一个 AU），包内 NALU
-                # 合并单 AU 发送（多 slice 编码器也不会被误切）
-                if forward_nalus and config_sent:
-                    au = b''.join(forward_nalus)
-                    await websocket.send_bytes(au)
+                # 包头协议：一包 = 一完整 AU（方案 26 快路径）。常态媒体包
+                # 零拷贝整包直通（无 parser extend/切片/join 三次整帧拷贝，
+                # 无跨包滞后）；仅含 SPS/PPS 的包（config/编码参数变化/
+                # RESET 重发）走边界扫描拦截下发，同包 VCL 合并为单条 AU
+                ranges = scan_packet_nalus(chunk)
+                has_config = any(
+                    ntype in (NALU_TYPE_SPS, NALU_TYPE_PPS)
+                    for _, _, ntype in ranges
+                )
+                if has_config:
+                    for start, end, ntype in ranges:
+                        if ntype in (NALU_TYPE_SPS, NALU_TYPE_PPS):
+                            await intercept_nalu(chunk[start:end])
+                    vcl = b"".join(
+                        chunk[start:end]
+                        for start, end, ntype in ranges
+                        if ntype not in (NALU_TYPE_SPS, NALU_TYPE_PPS)
+                    )
+                    if vcl and config_sent:
+                        await websocket.send_bytes(vcl)
+                        frame_count += 1
+                        if frame_count <= 5:
+                            logger.info("video_frame_sent", device=device_id,
+                                       frame_count=frame_count,
+                                       au_size=len(vcl))
+                    elif vcl and frame_count == 0:
+                        logger.info("frame_before_config", device=device_id,
+                                    au_size=len(vcl))
+                elif config_sent and ranges:
+                    await websocket.send_bytes(chunk)
                     frame_count += 1
                     if frame_count <= 5:
                         logger.info("video_frame_sent", device=device_id,
                                    frame_count=frame_count,
-                                   au_size=len(au))
-                elif forward_nalus and frame_count == 0:
+                                   au_size=len(chunk))
+                elif ranges and frame_count == 0:
                     logger.info("frame_before_config", device=device_id,
-                                au_size=len(forward_nalus[0]))
+                                au_size=len(chunk))
                 continue
+
+            # 兜底模式（raw_stream）：H264Parser 提取 NALU + 启发式聚帧
+            forward_nalus: list[bytes] = []
+            for nalu in parser.feed(chunk):
+                nalu_type = parser.get_nalu_type(nalu)
+                if nalu_type in (NALU_TYPE_SPS, NALU_TYPE_PPS):
+                    await intercept_nalu(nalu)
+                else:
+                    forward_nalus.append(nalu)
 
             aus, pending_aus = aggregate_aus(forward_nalus, pending_aus)
             for au in aus:

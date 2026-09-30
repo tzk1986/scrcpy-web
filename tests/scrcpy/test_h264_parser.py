@@ -19,7 +19,7 @@ import random
 
 import pytest
 
-from app.scrcpy.h264_parser import H264Parser
+from app.scrcpy.h264_parser import H264Parser, scan_packet_nalus
 from app.scrcpy.constants import (
     NALU_TYPE_IDR,
     NALU_TYPE_SPS,
@@ -546,3 +546,83 @@ class TestLargeFrameAcrossChunks:
         for i in range(0, len(data), size):
             nalus.extend(parser.feed(data[i:i + size]))
         return nalus
+
+
+# ---------------------------------------------------------------------------
+# scan_packet_nalus：包协议模式零拷贝 NALU 边界扫描（方案 26）
+# ---------------------------------------------------------------------------
+
+class TestScanPacketNalus:
+    """包协议模式下，一包 = 一完整 AU：chunk 内所有 NALU 均以「下一起始码
+    或 chunk 结尾」为闭合边界。返回 (start, end, nalu_type) 列表，仅读
+    不拷贝；边界语义与 H264Parser.feed 一致（3 字节码优先 + 回看修正）。
+    载荷为空的 NALU（连续起始码）type 为 -1。"""
+
+    def test_single_idr_range(self):
+        idr = b"\x00\x00\x01\x65IDR"
+        assert scan_packet_nalus(idr) == [(0, len(idr), 5)]
+
+    def test_media_frame_two_nalus(self):
+        idr = b"\x00\x00\x01\x65IDR"
+        p = b"\x00\x00\x01\x41P01"
+        data = idr + p
+        assert scan_packet_nalus(data) == [(0, len(idr), 5), (len(idr), len(data), 1)]
+
+    def test_config_packet_sps_pps(self):
+        sps = b"\x00\x00\x00\x01\x67xyz"
+        pps = b"\x00\x00\x01\x68uv"
+        data = sps + pps
+        assert scan_packet_nalus(data) == [(0, len(sps), 7), (len(sps), len(data), 8)]
+
+    def test_sei_prefix(self):
+        sei = b"\x00\x00\x00\x01\x06SEI"
+        idr = b"\x00\x00\x01\x65IDR"
+        data = sei + idr
+        assert scan_packet_nalus(data) == [(0, len(sei), 6), (len(sei), len(data), 5)]
+
+    def test_empty_and_garbage(self):
+        assert scan_packet_nalus(b"") == []
+        assert scan_packet_nalus(b"\x67\x42junk-no-start-code") == []
+
+    def test_consecutive_start_codes_empty_nalu(self):
+        """连续起始码：中间载荷为空的 NALU type 为 -1，不误吞后续 NALU。"""
+        data = b"\x00\x00\x00\x01" + b"\x00\x00\x00\x01\x65X"
+        assert scan_packet_nalus(data) == [(0, 4, -1), (4, len(data), 5)]
+
+    def test_ranges_match_parser_feed(self):
+        """整包扫描切片与 parser.feed 逐字节一致（chunk 结尾闭合末 NALU）。"""
+        n1 = b"\x00\x00\x00\x01\x65AAA"
+        n2 = b"\x00\x00\x01\x41BBBB"
+        n3 = b"\x00\x00\x00\x01\x06CC"
+        data = n1 + n2 + n3
+        parser = H264Parser()
+        fed = parser.feed(data)
+        assert len(fed) == 2  # 末 NALU 无后继起始码，feed 滞后不产出
+        ranges = scan_packet_nalus(data)
+        assert len(ranges) == 3
+        assert data[ranges[0][0]:ranges[0][1]] == fed[0]
+        assert data[ranges[1][0]:ranges[1][1]] == fed[1]
+        assert data[ranges[2][0]:ranges[2][1]] == n3
+
+    def test_lookback_payload_trailing_zeros(self):
+        """NALU 数据尾 2 个 0x00 + 4 字节起始码（6 连续 0）：
+        回看修正后第二个起始码完整（与 TestLookbackCorrection 语义一致）。"""
+        data = b"\x00\x00\x01\x67\x00\x00" + b"\x00\x00\x00\x01\x68\x02"
+        ranges = scan_packet_nalus(data)
+        assert ranges == [(0, 6, 7), (6, len(data), 8)]
+        assert data[ranges[1][0]:ranges[1][1]] == b"\x00\x00\x00\x01\x68\x02"
+
+    def test_random_stream_slices_match_reference(self):
+        """随机流对拍：scan_packet_nalus 的每个 NALU 切片与 ReferenceParser
+        逐字节一致（对拍端补尾部起始码闭合末 NALU 以强制全量产出）。
+        随机载荷含伪起始码/scramble 场景，两算法均确定性同切。"""
+        rng = random.Random(20260930)
+        for _ in range(200):
+            data = TestDifferentialParity._make_random_stream(rng)
+            ranges = scan_packet_nalus(data)
+            sliced = [data[s:e] for s, e, _ in ranges]
+            ref = ReferenceParser()
+            ref_out = ref.feed(data + b"\x00\x00\x00\x01")
+            assert len(sliced) == len(ref_out)
+            for expected, actual in zip(ref_out, sliced):
+                assert expected == actual

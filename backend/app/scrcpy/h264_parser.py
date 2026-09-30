@@ -49,6 +49,49 @@ from .constants import (
 logger = get_logger(__name__)
 
 
+def scan_packet_nalus(data: bytes) -> list[tuple[int, int, int]]:
+    """
+    包协议模式零拷贝 NALU 边界扫描（方案 26）。
+
+    12B 包头协议下一包 = 一完整 AU：chunk 内每个 NALU 均以
+    「下一起始码或 chunk 结尾」为闭合边界，无跨包滞后。返回
+    (start, end, nalu_type) 列表，仅读不拷贝；载荷为空的 NALU
+    （连续起始码）type 为 -1。起始码识别与 H264Parser.feed 一致
+    （3 字节码优先 + 回看吸收 4 字节码头字节），保证边界零漂移。
+
+    参数：
+        data: 一个完整协议包载荷（Annex B）。
+
+    返回：
+        (start, end, nalu_type) 列表，start/end 为半开区间下标。
+    """
+    n = len(data)
+    ranges: list[tuple[int, int, int]] = []
+
+    def append(start: int, end: int) -> None:
+        # NAL 头紧随起始码：4 字节码在 start+4，3 字节码在 start+3；
+        # 两者由起始码第三字节区分（0x01 vs 0x00）
+        header = start + 4 if data[start + 2] == 0x00 else start + 3
+        ntype = data[header] & 0x1F if header < end else -1
+        ranges.append((start, end, ntype))
+
+    prev_start = -1
+    pos = 0
+    while True:
+        idx = data.find(b"\x00\x00\x01", pos)
+        if idx < 0:
+            break
+        if idx >= 1 and data[idx - 1] == 0x00:
+            idx -= 1
+        if prev_start >= 0:
+            append(prev_start, idx)
+        prev_start = idx
+        pos = idx + 3
+    if prev_start >= 0:
+        append(prev_start, n)
+    return ranges
+
+
 class H264Parser:
     """
     H264 NALU 解析器。
