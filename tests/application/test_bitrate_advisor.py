@@ -184,6 +184,92 @@ class TestDowngradeReview:
         assert a.decide(39.0) == 4_000_000   # 回弹 4M
 
 
+class TestCooldownEscalation:
+    """方案 30：无效降档回弹后冷静期按退化序列递增，有效降档/升档复位。"""
+
+    def test_repeated_rebounds_escalate_cooldown(self):
+        a = BitrateAdvisor(make_cfg())
+        # 循环 1：降档（t=9）+ 回弹（t=39）→ 冷静 600s 至 t=639
+        feed(a, 0.0, 3.74, 8)
+        assert a.decide(9.0) == 2_000_000
+        feed(a, 20.0, 3.74, 8)
+        assert a.decide(39.0) == 4_000_000
+        feed(a, 100.0, 3.74, 8)
+        assert a.decide(109.0) is None
+        # 循环 2：t=649 降档、t=679 回弹 → 冷静 1200s 至 t=1879
+        feed(a, 640.0, 3.74, 8)
+        assert a.decide(649.0) == 2_000_000
+        feed(a, 660.0, 3.74, 8)
+        assert a.decide(679.0) == 4_000_000
+        feed(a, 1800.0, 3.74, 8)
+        assert a.decide(1809.0) is None
+        # 循环 3：t=1889 降档、t=1919 回弹 → 冷静 2400s 至 t=4319
+        feed(a, 1880.0, 3.74, 8)
+        assert a.decide(1889.0) == 2_000_000
+        feed(a, 1900.0, 3.74, 8)
+        assert a.decide(1919.0) == 4_000_000
+        feed(a, 4300.0, 3.74, 8)
+        assert a.decide(4309.0) is None
+        # 循环 4：t=4329 降档、t=4359 回弹 → 封顶 3600s 至 t=7959
+        feed(a, 4320.0, 3.74, 8)
+        assert a.decide(4329.0) == 2_000_000
+        feed(a, 4340.0, 3.74, 8)
+        assert a.decide(4359.0) == 4_000_000
+        feed(a, 7900.0, 3.74, 8)
+        assert a.decide(7909.0) is None
+        # 循环 5：t=7969 降档、t=7999 回弹 → 仍封顶 3600（不再翻倍）
+        feed(a, 7960.0, 3.74, 8)
+        assert a.decide(7969.0) == 2_000_000
+        feed(a, 7980.0, 3.74, 8)
+        assert a.decide(7999.0) == 4_000_000
+        feed(a, 11500.0, 3.74, 8)
+        assert a.decide(11509.0) is None
+
+    def test_effective_downgrade_resets_escalation(self):
+        a = BitrateAdvisor(make_cfg())
+        # 循环 1：降档+回弹（计数 1）
+        feed(a, 0.0, 3.74, 8)
+        assert a.decide(9.0) == 2_000_000
+        feed(a, 20.0, 3.74, 8)
+        assert a.decide(39.0) == 4_000_000
+        # 第 2 次降档后 fps 显著改善 → 复核判有效：保留档位并复位计数
+        feed(a, 640.0, 3.74, 8)
+        assert a.decide(649.0) == 2_000_000
+        feed(a, 660.0, 30, 8)
+        assert a.decide(679.0) is None   # 有效：保留 2M
+        # 下一轮降档+回弹的冷静期回到 600s（若未复位为 1200s 会在 t=1349 被禁）
+        feed(a, 700.0, 3.74, 8)
+        assert a.decide(709.0) == 1_000_000
+        feed(a, 720.0, 3.74, 8)
+        assert a.decide(739.0) == 2_000_000
+        feed(a, 1340.0, 3.74, 8)
+        assert a.decide(1349.0) == 1_000_000
+
+    def test_upgrade_resets_escalation(self):
+        a = BitrateAdvisor(make_cfg())
+        # 循环 1：降档+回弹（计数 1）
+        feed(a, 0.0, 3.74, 8)
+        assert a.decide(9.0) == 2_000_000
+        feed(a, 20.0, 3.74, 8)
+        assert a.decide(39.0) == 4_000_000
+        # 降档后升档回起始档（t=789）→ 计数复位
+        feed(a, 640.0, 3.74, 8)
+        assert a.decide(649.0) == 2_000_000
+        feed(a, 660.0, 30, 8)
+        assert a.decide(679.0) is None   # 升档冷却未满
+        feed(a, 780.0, 30, 8)
+        assert a.decide(789.0) == 4_000_000
+        # 下一轮降档+回弹的冷静期回到 600s
+        feed(a, 830.0, 3.74, 8)
+        assert a.decide(839.0) == 2_000_000
+        feed(a, 850.0, 3.74, 8)
+        assert a.decide(869.0) == 4_000_000
+        feed(a, 1420.0, 3.74, 8)
+        assert a.decide(1429.0) is None
+        feed(a, 1470.0, 3.74, 8)
+        assert a.decide(1479.0) == 2_000_000
+
+
 class TestNoActionWhenHealthy:
     def test_good_fps_never_switches(self):
         a = BitrateAdvisor(make_cfg())

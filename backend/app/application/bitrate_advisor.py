@@ -51,6 +51,7 @@ class AdvisorConfig:
     up_extra_s: float = 90.0     # 升档在 min_interval 之外额外冷却
     bad_improve_ratio: float = 0.5  # 降档复核：bad_new ≤ bad_old×此值判有效
     cooldown_s: float = 600.0    # 无效降档回弹后的冷静期（期间禁止自动降档）
+    cooldown_max_s: float = 3600.0  # 方案 30：冷静期递增序列封顶
 
 
 class BitrateAdvisor:
@@ -74,6 +75,7 @@ class BitrateAdvisor:
         self._down_baseline: int | None = None   # 最近一次降档前窗口坏样本数
         self._down_from_idx: int | None = None   # 最近一次降档前档位下标
         self._cooldown_until: float | None = None  # 无效回弹后的冷静期截止
+        self._rebound_count = 0  # 方案 30：无效降档回弹次数（冷静期递增序列下标）
 
     @property
     def current_bps(self) -> int:
@@ -104,15 +106,23 @@ class BitrateAdvisor:
         if self._down_baseline is not None:
             assert self._down_from_idx is not None
             if bad <= self._down_baseline * cfg.bad_improve_ratio:
-                # 有效：坏样本显著下降，保留新档，复核状态复位
+                # 有效：坏样本显著下降（拥塞真实存在），保留新档，
+                # 复位复核状态与冷静期递增计数（探测纪律回初始）
                 self._down_baseline = None
                 self._down_from_idx = None
+                self._rebound_count = 0
             else:
-                # 无效：回弹至降档前档位 + 冷静期防横跳
+                # 无效：回弹至降档前档位 + 冷静期防横跳。
+                # 方案 30：冷静期随回弹次数递增（600→1200→2400→3600 封顶），
+                # 把「反复无效降档」的实验结论转化为更长的探测周期。
                 self._idx = self._down_from_idx
                 self._down_baseline = None
                 self._down_from_idx = None
-                self._cooldown_until = now + cfg.cooldown_s
+                self._rebound_count += 1
+                self._cooldown_until = now + min(
+                    cfg.cooldown_s * (2 ** (self._rebound_count - 1)),
+                    cfg.cooldown_max_s,
+                )
                 self._last_switch = now
                 self._samples.clear()
                 return self.current_bps
@@ -131,6 +141,8 @@ class BitrateAdvisor:
             and self._last_switch is not None
             and now - self._last_switch >= cfg.min_interval_s + cfg.up_extra_s
         ):
+            # 升档回起始档 = 连接恢复全速，冷静期递增计数复位（方案 30）
+            self._rebound_count = 0
             return self._switch(self._idx - 1, now)
         return None
 
