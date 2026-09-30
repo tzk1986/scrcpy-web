@@ -153,7 +153,7 @@ class TestPushServerBakRestore:
     async def test_bak_valid_restores_without_push(
         self, mock_device_id, manager_with_jar
     ):
-        """bak 存在且大小吻合 → 仅 mv 恢复，不 push。"""
+        """bak 存在且大小吻合 → 仅 cp 恢复（bak 常驻不消耗），不 push。"""
         seq = [self._ls_bak_ok(5), self._proc(0)]
         with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
             success = await manager_with_jar.push_server(mock_device_id)
@@ -162,7 +162,7 @@ class TestPushServerBakRestore:
         assert exec_mock.call_count == 2
         argv = self._argv_list(exec_mock)
         assert not any("push" in a for a in argv)
-        assert "mv" in argv[1]
+        assert "cp" in argv[1]
 
     @pytest.mark.asyncio
     async def test_bak_missing_falls_back_to_push_and_cp(
@@ -199,10 +199,10 @@ class TestPushServerBakRestore:
         assert "cp" in argv[2]
 
     @pytest.mark.asyncio
-    async def test_bak_mv_failure_falls_back_to_push(
+    async def test_bak_restore_failure_falls_back_to_push(
         self, mock_device_id, manager_with_jar
     ):
-        """mv 恢复失败 → 回退 push（D3）。"""
+        """cp 恢复失败 → 回退 push（D3）。"""
         seq = [
             self._ls_bak_ok(5),
             self._proc(1, err=b"mv: permission denied"),

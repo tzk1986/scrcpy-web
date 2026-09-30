@@ -176,8 +176,9 @@ class ServerManager:
         """
         尝试从 .bak 恢复主 JAR（D1）。
 
-        仅当 .bak 存在且大小与本地 JAR 吻合时执行 mv；任何失败或校验不符
-        均返回 False，由调用方回退完整 push（D3）。
+        仅当 .bak 存在且大小与本地 JAR 吻合时执行 cp；任何失败或校验不符
+        均返回 False，由调用方回退完整 push（D3）。cp 而非 mv：恢复后的主
+        JAR 会再次被退出中的 server 自删（E002），bak 必须常驻供下次恢复。
 
         参数：
             device_id: 设备的 ADB 序列号。
@@ -207,7 +208,7 @@ class ServerManager:
 
             process = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell",
-                "mv", SCRCPY_SERVER_BAK_PATH, SCRCPY_SERVER_REMOTE_PATH,
+                "cp", SCRCPY_SERVER_BAK_PATH, SCRCPY_SERVER_REMOTE_PATH,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
