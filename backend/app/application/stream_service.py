@@ -181,6 +181,9 @@ class StreamService:
                             return_when=asyncio.FIRST_COMPLETED,
                         )
                         if frame_task in done:
+                            # loser 必须取消，否则 Event.wait 逐帧泄漏 pending
+                            # Task（P0-1：1 小时会话≈10.8 万）；已 done 时 no-op
+                            event_task.cancel()
                             try:
                                 frame = frame_task.result()
                             except StopAsyncIteration:
