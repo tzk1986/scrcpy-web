@@ -137,12 +137,16 @@ export function frameToAvcc(data: Uint8Array, frame: FrameScan): ArrayBuffer {
 }
 
 /**
- * 解码队列积压丢帧判定。
+ * 解码队列积压丢帧触发判定（方案 31：触发「追赶」状态）。
  *
  * Web 端丢弃的是解码输入帧：丢 key 帧会导致后续 delta 全部花屏直至
  * 下一个 IDR（设备端 I 帧间隔 10s），因此只丢 delta 帧、key 帧永不丢。
  * 与 scrcpy 官方桌面端「丢已解码帧」无需保 key 的策略差异的原因
  * 见 方案/17-推流流畅度优化.md 实施项 2。
+ *
+ * 注意：返回 true 不等于本次丢弃后恢复水位判定——一旦触发，调用方
+ * （H264VideoStream）进入追赶态，锁定丢弃所有 delta 直到下一 IDR，
+ * 因为被丢帧未提交、后续 delta 的参考链已断（方案 31 §2.1）。
  */
 export function shouldDropFrame(queueSize: number, isKey: boolean): boolean {
   return !isKey && queueSize >= MAX_DECODE_QUEUE

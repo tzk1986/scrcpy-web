@@ -7,6 +7,7 @@
  *   - start/stop/suspend/resume 生命周期与 getter
  *   - config / restarting / error 消息处理与全部错误分支
  *   - 二进制帧：丢帧、关键帧重建解码器、AVCC 转换、decode 异常吞掉
+ *   - 追赶状态机（丢到下一 IDR + 催帧）与 warn 限速（方案 31）
  *   - 解码器 output/error 回调与 canvas 绘制、streaming 状态流转
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
@@ -592,6 +593,165 @@ describe('二进制帧处理', () => {
     expect(errorSpy).toHaveBeenCalled()
     expect(stream.state).toBe('configuring')
     expect(stream.stats.frameCount).toBe(1)
+  })
+})
+
+describe('追赶状态机（方案 31）', () => {
+  it('delta 积压触发追赶：丢弃并恰催帧一次', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    dec.decodeQueueSize = 2
+
+    ws.handler!(DELTA_FRAME)
+
+    expect(dec.decode).not.toHaveBeenCalled()
+    expect(stream.stats.droppedFrames).toBe(1)
+    expect(ws.sent).toEqual([{ op: 'request_keyframe' }])
+  })
+
+  it('追赶中队列回落仍丢弃 delta（锁定至下一 IDR，与水位行为的关键差异）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    dec.decodeQueueSize = 2
+    ws.handler!(DELTA_FRAME) // 触发追赶
+
+    dec.decodeQueueSize = 0 // 队列回落：现状会恢复提交，追赶态必须继续丢
+    ws.handler!(DELTA_FRAME)
+
+    expect(dec.decode).not.toHaveBeenCalled()
+    expect(stream.stats.droppedFrames).toBe(2)
+  })
+
+  it('追赶中丢弃不重复催帧', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    dec.decodeQueueSize = 2
+    ws.handler!(DELTA_FRAME)
+
+    dec.decodeQueueSize = 0
+    ws.handler!(DELTA_FRAME)
+    ws.handler!(DELTA_FRAME)
+
+    expect(ws.sent).toEqual([{ op: 'request_keyframe' }])
+  })
+
+  it('追赶中 IDR 到达：提交 IDR、退出追赶，后续 delta 恢复提交', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    dec.decodeQueueSize = 2
+    ws.handler!(DELTA_FRAME) // 触发追赶
+
+    dec.decodeQueueSize = 0
+    ws.handler!(DELTA_FRAME) // 追赶中：仍丢
+    ws.handler!(KEY_FRAME) // IDR 自包含：唯一干净恢复点
+    expect(dec.decode).toHaveBeenCalledTimes(1)
+
+    ws.handler!(DELTA_FRAME) // 已退出追赶：正常提交
+    expect(dec.decode).toHaveBeenCalledTimes(2)
+  })
+
+  it('追赶中 IDR 且队列仍积压：走既有重建保护', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    dec.decodeQueueSize = 2
+    ws.handler!(DELTA_FRAME) // 触发追赶
+
+    ws.handler!(KEY_FRAME) // 队列未回落 + IDR
+
+    expect(FakeVideoDecoder.instances).toHaveLength(2)
+    expect(dec.state).toBe('closed')
+    const rebuilt = FakeVideoDecoder.instances.at(-1)!
+    expect(rebuilt.decode).toHaveBeenCalledTimes(1)
+  })
+
+  it('config 重发（initDecoder）后追赶状态复位', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    dec.decodeQueueSize = 2
+    ws.handler!(DELTA_FRAME) // 触发追赶
+
+    ws.handler!(CONFIG_MSG) // 重建解码器：复位点
+    const rebuilt = FakeVideoDecoder.instances.at(-1)!
+    expect(FakeVideoDecoder.instances).toHaveLength(2)
+
+    ws.handler!(DELTA_FRAME) // 复位后：非追赶态正常提交
+    expect(rebuilt.decode).toHaveBeenCalledTimes(1)
+  })
+
+  it('suspend/resume 重建后追赶状态复位', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    dec.decodeQueueSize = 2
+    ws.handler!(DELTA_FRAME) // 触发追赶
+
+    stream.suspend()
+    stream.resume()
+    const rebuilt = FakeVideoDecoder.instances.at(-1)!
+
+    ws.handler!(DELTA_FRAME) // 复位后正常提交
+    expect(rebuilt.decode).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('warn 限速（方案 31）', () => {
+  const countWarns = (needle: string) =>
+    warnSpy.mock.calls.filter(c => String(c[0]).includes(needle)).length
+
+  it('解码器未就绪连续多帧：warn 仅 1 次', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    ws.handler!(KEY_FRAME)
+    ws.handler!(KEY_FRAME)
+    ws.handler!(KEY_FRAME)
+
+    expect(countWarns('decoder not ready')).toBe(1)
+  })
+
+  it('恢复 configured 后再未就绪：再 warn 1 次', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    ws.handler!(KEY_FRAME) // 未就绪：warn #1
+    expect(countWarns('decoder not ready')).toBe(1)
+
+    ws.handler!(CONFIG_MSG) // 恢复 configured：重置限速标志
+    FakeVideoDecoder.instances.at(-1)!.state = 'closed' // 解码器再次失效
+
+    ws.handler!(KEY_FRAME) // 再未就绪：warn #2
+    ws.handler!(KEY_FRAME) // 限速：静默
+    expect(countWarns('decoder not ready')).toBe(2)
+  })
+
+  it('尺寸错配连续多帧：warn 仅 1 次；恢复匹配后重置', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    const bad = {
+      displayWidth: 320, displayHeight: 240, close: vi.fn(),
+    } as unknown as VideoFrame
+    const good = {
+      displayWidth: 640, displayHeight: 480, close: vi.fn(),
+    } as unknown as VideoFrame
+
+    dec.init.output(bad)
+    dec.init.output(bad)
+    dec.init.output(bad)
+    expect(countWarns('Frame size mismatch')).toBe(1)
+
+    dec.init.output(good) // 恢复匹配：重置
+    dec.init.output(bad) // 再次错配：warn #2
+    dec.init.output(bad) // 限速：静默
+    expect(countWarns('Frame size mismatch')).toBe(2)
   })
 })
 

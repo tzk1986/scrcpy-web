@@ -80,6 +80,12 @@ export class H264VideoStream {
   // 截图回退期间进入 suspend：保留 ws 消息处理器、只计数不解码，
   // 作为「码流是否恢复」的探测器；resume() 退出
   private _suspended = false
+  // 追赶状态（方案 31）：丢帧后参考链已断，锁定丢弃 delta 直到下一 IDR
+  // （自包含的干净恢复点），期间请求服务端催发 IDR 缩短恢复窗口
+  private _awaitingIdr = false
+  // warn 限速（方案 31）：未就绪/尺寸错配为状态性问题，仅在进入异常态时 warn 一次
+  private _notReadyWarned = false
+  private _sizeMismatchWarned = false
   private _probeFrameCount = 0
   private _probeLastFrameTime = 0
   // 最近一次 config 的解析结果（suspend 期间新到的 config 暂存于此，resume 时复用）
@@ -410,8 +416,12 @@ export class H264VideoStream {
     }
 
     if (!this.decoder || this.decoder.state !== 'configured') {
-      console.warn('[H264] Frame dropped: decoder not ready, state:', this.decoder?.state,
-        'decoder exists:', !!this.decoder)
+      // 状态性问题：进入未就绪态后仅首次 warn，避免长窗口每帧风暴（方案 31）
+      if (!this._notReadyWarned) {
+        this._notReadyWarned = true
+        console.warn('[H264] Frame dropped: decoder not ready, state:', this.decoder?.state,
+          'decoder exists:', !!this.decoder)
+      }
       return
     }
 
@@ -427,9 +437,22 @@ export class H264VideoStream {
         'NALUs:', scan.nalus.map(n => `type=${data[n.offset] & 0x1f},len=${n.length}`))
     }
 
-    // 解码队列积压：丢 delta 帧保关键帧（保 key 理由见 h264NalUtils.shouldDropFrame）
-    if (shouldDropFrame(this.decoder.decodeQueueSize, scan.isKey)) {
+    // 丢帧策略（方案 31）：
+    // - 正常态：队列积压丢 delta 并进入追赶——被丢帧未提交，后续 delta 的
+    //   参考链已断，若沿水位反复起停会花屏闪动
+    // - 追赶态：所有 delta 一律丢弃（不判水位），直到 IDR 到达（自包含，
+    //   是参考链唯一干净恢复点）
+    if (this._awaitingIdr) {
+      if (!scan.isKey) {
+        this._droppedFrames++
+        return
+      }
+      this._awaitingIdr = false
+    } else if (shouldDropFrame(this.decoder.decodeQueueSize, scan.isKey)) {
       this._droppedFrames++
+      this._awaitingIdr = true
+      // 催 IDR：把恢复窗口从设备 IDR 间隔（10-57s）压缩到催帧往返（≤~1s）
+      this.ws.send({ op: 'request_keyframe' })
       return
     }
 
@@ -463,6 +486,10 @@ export class H264VideoStream {
 
   /** 初始化 VideoDecoder */
   private initDecoder(codec: string, description: ArrayBuffer, width: number, height: number) {
+    // 每条重建路径（config 重发 / resume / IDR 重建）都回到干净初始态：
+    // 新解码器不含旧参考链，追赶锁定随之解除（方案 31）
+    this._awaitingIdr = false
+
     // 关闭旧的解码器
     if (this.decoder) {
       try {
@@ -489,10 +516,16 @@ export class H264VideoStream {
         // 若帧尺寸与 canvas 不同（异常情况），仅记录警告，不改变 canvas（保持坐标映射正确）。
         if (this.canvas.width !== frame.displayWidth ||
             this.canvas.height !== frame.displayHeight) {
-          console.warn('[H264] Frame size mismatch with canvas!',
-            'canvas:', this.canvas.width, 'x', this.canvas.height,
-            'frame:', frame.displayWidth, 'x', frame.displayHeight,
-            '- click mapping may be inaccurate')
+          // 状态性问题：错配期间仅首次 warn；恢复匹配后重置（方案 31）
+          if (!this._sizeMismatchWarned) {
+            this._sizeMismatchWarned = true
+            console.warn('[H264] Frame size mismatch with canvas!',
+              'canvas:', this.canvas.width, 'x', this.canvas.height,
+              'frame:', frame.displayWidth, 'x', frame.displayHeight,
+              '- click mapping may be inaccurate')
+          }
+        } else {
+          this._sizeMismatchWarned = false
         }
         ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height)
         frame.close()
@@ -524,6 +557,9 @@ export class H264VideoStream {
         this._hardwareAcceleration ? `(hardwareAcceleration: ${this._hardwareAcceleration})` : '')
       if (this.decoder.state !== 'configured') {
         this.setError(`VideoDecoder configure failed, state: ${this.decoder.state}`)
+      } else {
+        // 恢复 configured：未就绪 warn 限速复位（方案 31）
+        this._notReadyWarned = false
       }
     } catch (e) {
       console.error('[H264] VideoDecoder configure threw exception:', e)
