@@ -55,6 +55,8 @@ export class VideoStream {
   private _debounceTimer: number | null = null
   private _inFlight = false
   private _pendingRefresh = false
+  /** 方案 29：raw 链路不可用（校验失败/后端回退 PNG）后降级记忆，不再试 raw */
+  private _rawUnsupported = false
 
   /**
    * @param deviceId - 设备 ADB 序列号
@@ -208,18 +210,74 @@ export class VideoStream {
   /** 获取并渲染一帧 */
   private async captureFrame() {
     try {
-      const blob = await api.screenshot(this.deviceId)
-      this.renderBlob(blob)
+      if (this._rawUnsupported) {
+        // 降级记忆置位后：直接走既有 PNG 路径，不再试 raw
+        const blob = await api.screenshot(this.deviceId)
+        this.renderBlob(blob)
+        this._countFrame()
+        return
+      }
 
-      this._frameCount++
-      this._fpsCounter++
-      this._lastFrameTime = Date.now()
-      this._error = null
+      const { blob, format } = await api.screenshotRaw(this.deviceId)
+      if (format === 'raw-rgba') {
+        if (!(await this.renderRawFrame(blob))) {
+          // 帧校验失败：丢弃该帧（不渲染不计数），置降级记忆，下周期起走 PNG
+          this._rawUnsupported = true
+          return
+        }
+        this._countFrame()
+        return
+      }
+      // 后端已回退 PNG（如设备无 gzip）：既有渲染路径，并记住不再试 raw
+      this.renderBlob(blob)
+      this._rawUnsupported = true
+      this._countFrame()
     } catch (e) {
       this._error = (e as Error).message
       this._state = 'error'
       this.onStateChange?.(this._state)
     }
+  }
+
+  /** 帧渲染成功后的统计计数与错误清除 */
+  private _countFrame() {
+    this._frameCount++
+    this._fpsCounter++
+    this._lastFrameTime = Date.now()
+    this._error = null
+  }
+
+  /**
+   * 解析并渲染 raw RGBA 帧（方案 29）。
+   * screencap 帧头（LE uint32 序列）：w/h/fmt（+ 可选 colorspace），
+   * 头长按 `byteLength - w*h*4 ∈ {12,16}` 反推（A11=16B / A7.1=12B 双态）。
+   * 校验失败（fmt≠1 / 头长不符 / 尺寸越界）返回 false，不猜测式适配。
+   */
+  private async renderRawFrame(blob: Blob): Promise<boolean> {
+    const buf = await blob.arrayBuffer()
+    if (buf.byteLength < 12) return false
+
+    const dv = new DataView(buf)
+    const width = dv.getUint32(0, true)
+    const height = dv.getUint32(4, true)
+    const fmt = dv.getUint32(8, true)
+    const headerSize = buf.byteLength - width * height * 4
+    if (headerSize !== 12 && headerSize !== 16) return false
+    if (fmt !== 1) return false
+    if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return false
+
+    const ctx = this.canvas.getContext('2d')
+    if (ctx) {
+      if (this.canvas.width !== width || this.canvas.height !== height) {
+        this.canvas.width = width
+        this.canvas.height = height
+        // 设置 CSS aspect-ratio 保持显示比例
+        this.canvas.style.aspectRatio = `${width} / ${height}`
+      }
+      const pixels = new Uint8ClampedArray(buf, headerSize, width * height * 4)
+      ctx.putImageData(new ImageData(pixels, width, height), 0, 0)
+    }
+    return true
   }
 
   /**
