@@ -49,6 +49,9 @@ from .constants import (
 
 logger = get_logger(__name__)
 
+# 方案 28 D1：主 JAR 会被退出中的 server 自删（E002），bak 常驻设备端用于快速恢复
+SCRCPY_SERVER_BAK_PATH = SCRCPY_SERVER_REMOTE_PATH + ".bak"
+
 
 class ServerManager:
     """
@@ -111,8 +114,19 @@ class ServerManager:
             True 表示推送成功，False 表示失败。
 
         实现：
-            adb push <local_path> /data/local/tmp/scrcpy-server.jar
+            1. 优先从 .bak 恢复（大小校验通过则 mv，~0.1s，恒定）
+            2. 无 bak / 校验失败 / mv 失败 → adb push（D3 回退）
+            3. push 成功后 cp 刷新 .bak（cp 失败不阻塞）
         """
+        # D1：bak 常驻设备端，主 JAR 被 server 退出自删后可 mv 秒级恢复，
+        # 只有首次部署 / JAR 升级 / bak 损坏 / 设备重启清 tmp 才真正 push。
+        try:
+            expected_size = self._jar_path.stat().st_size
+        except OSError:
+            expected_size = None
+        if await self._bak_restore(device_id, expected_size):
+            return True
+
         logger.info(
             "pushing_scrcpy_server",
             device=device_id,
@@ -148,6 +162,7 @@ class ServerManager:
             # 导致验证误报失败。adb push 的返回码已足够可靠。
 
             logger.info("scrcpy_server_pushed", device=device_id)
+            await self._backup_jar(device_id)
             return True
 
         except asyncio.TimeoutError:
@@ -156,6 +171,82 @@ class ServerManager:
         except Exception as e:
             logger.error("push_server_error", device=device_id, error=str(e))
             return False
+
+    async def _bak_restore(self, device_id: str, expected_size: int | None) -> bool:
+        """
+        尝试从 .bak 恢复主 JAR（D1）。
+
+        仅当 .bak 存在且大小与本地 JAR 吻合时执行 mv；任何失败或校验不符
+        均返回 False，由调用方回退完整 push（D3）。
+
+        参数：
+            device_id: 设备的 ADB 序列号。
+            expected_size: 本地 JAR 字节数；None（本地 jar 缺失）时直接不恢复。
+
+        返回：
+            True 表示已从 bak 恢复，False 表示需要 push。
+        """
+        if expected_size is None:
+            return False
+        try:
+            process = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "shell",
+                "ls", "-l", SCRCPY_SERVER_BAK_PATH,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+
+            stdout, _ = await asyncio.wait_for(
+                process.communicate(),
+                timeout=ADB_TIMEOUT_SECONDS
+            )
+
+            if process.returncode != 0 or str(expected_size) not in stdout.decode():
+                return False
+
+            process = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "shell",
+                "mv", SCRCPY_SERVER_BAK_PATH, SCRCPY_SERVER_REMOTE_PATH,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+
+            _, _ = await asyncio.wait_for(
+                process.communicate(),
+                timeout=ADB_TIMEOUT_SECONDS
+            )
+
+            logger.info("scrcpy_server_restored_from_bak", device=device_id)
+            return process.returncode == 0
+
+        except Exception as e:
+            logger.debug("bak_restore_error", device=device_id, error=str(e))
+            return False
+
+    async def _backup_jar(self, device_id: str) -> None:
+        """
+        cp 主 JAR → .bak 备用（D1 供应侧）。
+
+        失败不阻塞：下次 push 仍会重试 cp，语义无损。
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "shell",
+                "cp", SCRCPY_SERVER_REMOTE_PATH, SCRCPY_SERVER_BAK_PATH,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+
+            _, _ = await asyncio.wait_for(
+                process.communicate(),
+                timeout=ADB_TIMEOUT_SECONDS
+            )
+
+        except Exception as e:
+            logger.debug("bak_refresh_error", device=device_id, error=str(e))
 
     async def _server_exists(self, device_id: str) -> bool:
         """

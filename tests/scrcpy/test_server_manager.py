@@ -108,6 +108,150 @@ class TestPushServer:
 
 
 # ---------------------------------------------------------------------------
+# push_server bak 化测试（方案 28 D1+D3）
+# ---------------------------------------------------------------------------
+
+class TestPushServerBakRestore:
+    """push_server 优先从 .bak 恢复主 JAR（D1+D3）"""
+
+    @staticmethod
+    def _proc(rc: int, out: bytes = b"", err: bytes = b"") -> MagicMock:
+        """构造 mock subprocess：returncode 与 communicate 输出可定制。"""
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.returncode = rc
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(out, err))
+        mock_proc.wait = AsyncMock()
+        mock_proc.kill = MagicMock()
+        mock_proc.terminate = MagicMock()
+        return mock_proc
+
+    @staticmethod
+    def _argv_list(exec_mock) -> list[tuple]:
+        return [c.args for c in exec_mock.call_args_list]
+
+    @staticmethod
+    def _ls_bak_ok(size: int) -> MagicMock:
+        out = (
+            f"-rw-r--r-- 1 shell shell {size} 2026-09-30 12:00 "
+            f"/data/local/tmp/scrcpy-server.jar.bak"
+        ).encode()
+        return TestPushServerBakRestore._proc(0, out=out)
+
+    @pytest.fixture
+    def manager_with_jar(self, tmp_path) -> ServerManager:
+        """ServerManager 指向 5 字节假 jar（跨平台越过本地 jar 守卫）。"""
+        jar = tmp_path / "scrcpy-server.jar"
+        jar.write_bytes(b"dummy")
+        manager = ServerManager()
+        manager._jar_path = jar
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_bak_valid_restores_without_push(
+        self, mock_device_id, manager_with_jar
+    ):
+        """bak 存在且大小吻合 → 仅 mv 恢复，不 push。"""
+        seq = [self._ls_bak_ok(5), self._proc(0)]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_count == 2
+        argv = self._argv_list(exec_mock)
+        assert not any("push" in a for a in argv)
+        assert "mv" in argv[1]
+
+    @pytest.mark.asyncio
+    async def test_bak_missing_falls_back_to_push_and_cp(
+        self, mock_device_id, manager_with_jar
+    ):
+        """bak 缺失 → push + cp 刷新 bak。"""
+        seq = [
+            self._proc(1, err=b"ls: scrcpy-server.jar.bak: No such file or directory"),
+            self._proc(0),
+            self._proc(0),
+        ]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_count == 3
+        argv = self._argv_list(exec_mock)
+        assert any("push" in a for a in argv)
+        assert "cp" in argv[2]
+
+    @pytest.mark.asyncio
+    async def test_bak_size_mismatch_pushes_and_refreshes(
+        self, mock_device_id, manager_with_jar
+    ):
+        """bak 大小不符 → push + cp（覆盖损坏 bak）。"""
+        seq = [self._ls_bak_ok(999), self._proc(0), self._proc(0)]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_count == 3
+        argv = self._argv_list(exec_mock)
+        assert any("push" in a for a in argv)
+        assert "cp" in argv[2]
+
+    @pytest.mark.asyncio
+    async def test_bak_mv_failure_falls_back_to_push(
+        self, mock_device_id, manager_with_jar
+    ):
+        """mv 恢复失败 → 回退 push（D3）。"""
+        seq = [
+            self._ls_bak_ok(5),
+            self._proc(1, err=b"mv: permission denied"),
+            self._proc(0),
+            self._proc(0),
+        ]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_count == 4
+        argv = self._argv_list(exec_mock)
+        assert any("push" in a for a in argv)
+
+    @pytest.mark.asyncio
+    async def test_push_failure_returns_false_without_cp(
+        self, mock_device_id, manager_with_jar
+    ):
+        """push 失败 → 返回 False（既有无异常语义），且不 cp。"""
+        seq = [
+            self._proc(1, err=b"ls: scrcpy-server.jar.bak: No such file or directory"),
+            self._proc(1, err=b"adb: error: failed to copy"),
+        ]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is False
+        assert exec_mock.call_count == 2
+        argv = self._argv_list(exec_mock)
+        assert not any("cp" in a for a in argv)
+
+    @pytest.mark.asyncio
+    async def test_cp_failure_does_not_block_success(
+        self, mock_device_id, manager_with_jar
+    ):
+        """push 成功后 cp 失败不阻塞（下次仍走 push 而已）。"""
+        seq = [
+            self._proc(1, err=b"ls: scrcpy-server.jar.bak: No such file or directory"),
+            self._proc(0),
+            self._proc(1, err=b"cp: bad path"),
+        ]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_count == 3
+
+
+# ---------------------------------------------------------------------------
 # 确保 server 就绪测试
 # ---------------------------------------------------------------------------
 
