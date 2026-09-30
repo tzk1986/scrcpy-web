@@ -278,15 +278,15 @@ async def drive_start(
     opts: EncoderOpts | None = None,
     push_ok: bool = True,
     probe=None,
-) -> list[bytes]:
-    """驱动 start() 至自然结束（含 stop 清理），返回 yield 出的全部载荷。
+) -> list[tuple[int, bytes]]:
+    """驱动 start() 至自然结束（含 stop 清理），返回 yield 出的全部 (pts, 载荷)。
 
     probe：每次 yield 后回调一次（stop 会复位分辨率等状态，需在流运行中取样）。
     """
     encoder._server_manager.push_server = AsyncMock(return_value=push_ok)
     if conn is None:
         conn = ConnectionHarness(make_reader(video_data, eof=eof))
-    chunks: list[bytes] = []
+    chunks: list[tuple[int, bytes]] = []
     with patch("asyncio.create_subprocess_exec", new=harness), \
             patch("asyncio.open_connection", new=conn):
         async for chunk in encoder.start(DEVICE_ID, opts or EncoderOpts()):
@@ -413,7 +413,7 @@ async def test_control_connection_failure_is_non_fatal():
         probe=lambda enc: seen.append(enc.resolution),
     )
 
-    assert chunks == [payload]
+    assert chunks == [(0, payload)]
     assert seen == [(1080, 1920)]  # 分辨率仍随 session 更新（与有无控制通道无关）
     assert encoder._control_writer is None
     assert encoder._control_sender is None  # 无控制通道 → session 后也建不了发送器
@@ -455,7 +455,10 @@ async def test_server_command_normalizes_opts(bit_rate, expected):
 # ---------------------------------------------------------------------------
 
 async def test_full_flow_yields_packets_and_updates_resolution():
-    """完整流：session 更新分辨率 → config/媒体包按序 yield → 收尾清理。"""
+    """完整流：session 更新分辨率 → config/媒体包按序 yield (pts, 载荷) → 收尾清理。
+
+    方案 32：队列元素携带设备 PTS（µs）；config 包 PTS 域为 0 原值透传。
+    """
     encoder = ScrcpyEncoder()
     sps = b"\x00\x00\x00\x01g" + b"\x00" * 8
     key = b"\x00\x00\x00\x01e" + b"\xaa" * 16
@@ -464,8 +467,8 @@ async def test_full_flow_yields_packets_and_updates_resolution():
         make_handshake()
         + make_session(1080, 1920)
         + make_frame_header(SC_PACKET_FLAG_CONFIG, len(sps)) + sps
-        + make_frame_header(SC_PACKET_FLAG_KEY_FRAME, len(key)) + key
-        + make_frame_header(0, len(delta)) + delta
+        + make_frame_header(SC_PACKET_FLAG_KEY_FRAME | 33_333, len(key)) + key
+        + make_frame_header(66_666, len(delta)) + delta
     )
     # 前两行供启动探测消费（第二行命中 Device: 即 break），第三行留给后台日志任务
     stderr = FakeStderr(
@@ -483,7 +486,7 @@ async def test_full_flow_yields_packets_and_updates_resolution():
         probe=lambda enc: seen.append((enc.resolution, enc._control_sender)),
     )
 
-    assert chunks == [sps, key, delta]          # 一包一 yield，顺序保持
+    assert chunks == [(0, sps), (33_333, key), (66_666, delta)]  # 一包一 yield，PTS 透传
     assert seen[0][0] == (1080, 1920)           # session 包先于首个媒体包处理
     assert isinstance(seen[0][1], ControlSender)
     assert seen[0][1].resolution == (1080, 1920)
@@ -515,7 +518,7 @@ async def test_early_exit_cancels_blocked_read_task():
             patch("asyncio.open_connection", new=conn):
         agen = encoder.start(DEVICE_ID, EncoderOpts())
         first = await agen.__anext__()
-        assert first == payload
+        assert first == (0, payload)
         encoder._running = False  # 模拟停止：读任务在 finally 中被取消
         with pytest.raises(StopAsyncIteration):
             await agen.__anext__()
@@ -577,7 +580,7 @@ async def test_raw_fallback_mode(monkeypatch, wm_output, wm_error, expected_res)
     cmd = harness.server_cmd()
     assert "raw_stream=true" in cmd
     assert "send_frame_meta=false" in cmd
-    assert chunks == [raw_chunk]  # 裸流按块 yield，不做切包
+    assert chunks == [(0, raw_chunk)]  # 裸流按块 yield，无 PTS 可言（置 0），不做切包
     assert seen[0][0] == expected_res
     if expected_res != (0, 0):
         assert seen[0][1] is not None
@@ -993,7 +996,7 @@ async def test_idle_keepalive_sends_reset_video(monkeypatch):
     conn = ConnectionHarness(make_reader(stream, eof=False))  # 1 帧后视频流永久静默
 
     encoder._server_manager.push_server = AsyncMock(return_value=True)
-    received: list[bytes] = []
+    received: list[tuple[int, bytes]] = []
 
     async def consume() -> None:
         # 消费端始终挂起在 __anext__ 上（真实调用方 StreamService 即如此），
@@ -1057,7 +1060,7 @@ async def test_stall_probe_raises_after_reset(monkeypatch):
             patch("asyncio.open_connection", new=conn):
         agen = encoder.start(DEVICE_ID, EncoderOpts())
         first = await asyncio.wait_for(agen.__anext__(), timeout=2.0)
-        assert first == payload
+        assert first == (0, payload)
         # 首帧后 0.2s（发 RESET）+ 0.2s（探针）量级内抛 EncoderStalledError，2s 超时兜底
         t0 = time.monotonic()
         with pytest.raises(EncoderStalledError):
@@ -1104,7 +1107,7 @@ async def test_idle_keepalive_retries_after_send_failure(monkeypatch):
         conn.control_writer.written.extend(data)
 
     encoder._server_manager.push_server = AsyncMock(return_value=True)
-    received: list[bytes] = []
+    received: list[tuple[int, bytes]] = []
 
     async def consume() -> None:
         async for chunk in encoder.start(DEVICE_ID, EncoderOpts()):
@@ -1192,7 +1195,7 @@ async def test_backpressure_clears_backlog_skips_to_keyframe_and_requests_idr(mo
             patch("asyncio.open_connection", new=conn):
         agen = encoder.start(DEVICE_ID, EncoderOpts())
         try:
-            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == (0, delta)
             _fill_queue(conn, p)
             assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
             # 第 101 包 put 超时 → 清积压 + 进入等待关键帧 + 节流请求 IDR
@@ -1209,7 +1212,7 @@ async def test_backpressure_clears_backlog_skips_to_keyframe_and_requests_idr(mo
             _feed(conn, key, SC_PACKET_FLAG_KEY_FRAME)
             assert await wait_until(lambda: encoder._data_queue.qsize() == 1)
             assert encoder._awaiting_keyframe is False
-            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == key
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == (0, key)
         finally:
             _drain_queue(encoder)  # 修复前满队列 put(None) 死锁，先排空再收尾
             await agen.aclose()
@@ -1229,12 +1232,12 @@ async def test_config_put_timeout_clears_backlog_and_enqueues_config(monkeypatch
             patch("asyncio.open_connection", new=conn):
         agen = encoder.start(DEVICE_ID, EncoderOpts())
         try:
-            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == (0, delta)
             _fill_queue(conn, p)
             assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
             _feed(conn, sps, SC_PACKET_FLAG_CONFIG)
             assert await wait_until(lambda: encoder._data_queue.qsize() == 1)
-            assert encoder._data_queue.get_nowait() == sps
+            assert encoder._data_queue.get_nowait() == (0, sps)
             assert await wait_until(
                 lambda: bytes(conn.control_writer.written) == b"\x11")
             assert encoder._awaiting_keyframe is False
@@ -1254,7 +1257,7 @@ async def test_stream_end_with_full_queue_sets_sentinel_without_blocking(monkeyp
             patch("asyncio.open_connection", new=conn):
         agen = encoder.start(DEVICE_ID, EncoderOpts())
         try:
-            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == (0, delta)
             _fill_queue(conn, p)
             assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
             conn.video_reader.feed_eof()  # 设备断开
@@ -1280,13 +1283,13 @@ async def test_backpressure_key_overflow_reenqueues_key_without_idr_request(monk
             patch("asyncio.open_connection", new=conn):
         agen = encoder.start(DEVICE_ID, EncoderOpts())
         try:
-            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == (0, delta)
             _fill_queue(conn, p)
             assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
             _feed(conn, key, SC_PACKET_FLAG_KEY_FRAME)
             # 等溢出清理完成（清积压 + 关键帧直投）再消费，此时队列恰为 1
             assert await wait_until(lambda: encoder._data_queue.qsize() == 1)
-            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == key
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == (0, key)
             assert encoder._data_queue.qsize() == 0
             assert encoder._awaiting_keyframe is False
             assert bytes(conn.control_writer.written) == b""  # 未请求 IDR

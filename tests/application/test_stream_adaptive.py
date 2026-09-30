@@ -34,7 +34,7 @@ class FakeEncoder:
         self.opts = opts
         while True:
             await asyncio.sleep(0.001)
-            yield b"f"
+            yield 0, b"f"
 
     async def stop(self):
         self.stop_called = True
@@ -157,7 +157,7 @@ class FakeIdleEncoder(FakeEncoder):
 
     async def start(self, device_id, opts):
         self.opts = opts
-        yield b"f0"
+        yield 0, b"f0"
         await self._never.wait()
 
 
@@ -212,7 +212,7 @@ async def test_stall_recovery_and_storm_guard(stream_settings, monkeypatch):
             self.n = StallOnly.created
 
         async def start(self, device_id, opts):
-            yield b"f"
+            yield 0, b"f"
             raise EncoderStalledError("stalled")
 
         async def stop(self):
@@ -226,7 +226,7 @@ async def test_stall_recovery_and_storm_guard(stream_settings, monkeypatch):
         async for f in gen:
             frames.append(f)
     # 首次 + 3 次防风暴窗口内重启 = 4 台编码器、4 个首帧，随后异常传播
-    assert frames == [b"f"] * 4
+    assert frames == [(0, b"f")] * 4
     assert StallOnly.created == 4
 
 
@@ -343,7 +343,7 @@ class BlockingStopEncoder:
 
     async def start(self, device_id, opts):
         self.opts = opts
-        yield b"f0"
+        yield 0, b"f0"
         await self._never.wait()
 
     async def stop(self):
@@ -368,7 +368,7 @@ async def test_old_stream_teardown_does_not_evict_new_stream(stream_settings):
     svc = StreamService(encoder_factory=BlockingStopEncoder)
 
     old_gen = svc.start_stream("dev1")
-    assert await old_gen.__anext__() == b"f0"
+    assert await old_gen.__anext__() == (0, b"f0")
     old_enc = svc.get_encoder("dev1")
     assert old_enc is not None and isinstance(old_enc, BlockingStopEncoder)
 
@@ -402,7 +402,7 @@ async def test_teardown_cleans_own_registry_entries(stream_settings):
     svc = StreamService(encoder_factory=BlockingStopEncoder)
 
     gen = svc.start_stream("dev1")
-    assert await gen.__anext__() == b"f0"
+    assert await gen.__anext__() == (0, b"f0")
     enc = svc.get_encoder("dev1")
     assert enc is not None
 

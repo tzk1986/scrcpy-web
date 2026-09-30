@@ -14,7 +14,8 @@
     服务端 → 客户端：
         - 初始配置：JSON {"type": "config", "width": 1080, "height": 1920, "codec": "avc1.42E01E"}
           （自适应码率重启后会重新下发一次 config，客户端应重建解码器）
-        - 视频帧：二进制消息（H.264 Annex B Access Unit，按帧聚合，带起始码）
+        - 视频帧：二进制消息 = [8B PTS 大端无符号][H.264 Annex B Access Unit]
+          （方案 32：PTS 为设备单调时钟 µs 原值透传；raw 兜底模式恒为 0）
         - 错误：JSON {"type": "error", "message": "..."}
         - 码率切换预告：JSON {"type": "restarting", "bit_rate": 2000000}
           （编码器即将重启，客户端应暂停回退 watchdog 宽限若干秒）
@@ -40,6 +41,7 @@ H.264 流处理：
 """
 
 import asyncio
+import struct
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
@@ -140,7 +142,7 @@ async def video_stream(
         # 发送视频流
         frame_count = 0
         chunk_count = 0
-        async for chunk in stream_service.start_stream(device_id):
+        async for pts, chunk in stream_service.start_stream(device_id):
             chunk_count += 1
 
             # 自适应码率重启：轮次变化时重置解析器，丢弃跨重启的半截 NALU，
@@ -182,7 +184,7 @@ async def video_stream(
                         if ntype not in (NALU_TYPE_SPS, NALU_TYPE_PPS)
                     )
                     if vcl and config_sent:
-                        await websocket.send_bytes(vcl)
+                        await websocket.send_bytes(struct.pack(">Q", pts) + vcl)
                         frame_count += 1
                         if frame_count <= 5:
                             logger.info("video_frame_sent", device=device_id,
@@ -192,7 +194,7 @@ async def video_stream(
                         logger.info("frame_before_config", device=device_id,
                                     au_size=len(vcl))
                 elif config_sent and ranges:
-                    await websocket.send_bytes(chunk)
+                    await websocket.send_bytes(struct.pack(">Q", pts) + chunk)
                     frame_count += 1
                     if frame_count <= 5:
                         logger.info("video_frame_sent", device=device_id,
@@ -215,7 +217,7 @@ async def video_stream(
             aus, pending_aus = aggregate_aus(forward_nalus, pending_aus)
             for au in aus:
                 if config_sent:
-                    await websocket.send_bytes(au)
+                    await websocket.send_bytes(struct.pack(">Q", pts) + au)
                     frame_count += 1
                     if frame_count <= 5:
                         logger.info("video_frame_sent", device=device_id,

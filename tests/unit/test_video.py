@@ -8,6 +8,7 @@
       同包多 NALU 合并、config 前 VCL 丢弃、config 后 SPS/PPS 不再入帧流、
       编码参数变化（SPS/PPS 与已下发不同）重发 config、
       config 透传 idle_reset_seconds（方案 19 实施项 1a）；
+    - PTS 透传（方案 32）：二进制消息 [8B PTS 大端][Annex B 载荷]；
     - epoch 变化：解析器重置并重新下发 config（跨重启半截 NALU 丢弃）；
     - 兜底模式：aggregate_aus 聚帧、跨 chunk 悬空前缀 pending 合并、
       config 前 AU 丢弃；
@@ -26,6 +27,7 @@ WebSocketDisconnect、restarting/error 的 send_json 失败被吞掉），
 
 import asyncio
 import json
+import struct
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -49,6 +51,11 @@ DEV = "unit-video-device"
 def nalu(header: int, tag: bytes) -> bytes:
     """构造 4 字节起始码的 NALU。"""
     return bytes([0, 0, 0, 1, header]) + tag
+
+
+def frame(pts: int, payload: bytes) -> bytes:
+    """WS 二进制消息线上格式：[8B PTS 大端无符号][Annex B AU 载荷]（方案 32）。"""
+    return struct.pack(">Q", pts) + payload
 
 
 SPS_AVC = nalu(0x67, b"\x42\xC0\x1E")   # → codec avc1.42C01E
@@ -95,7 +102,8 @@ class FakeStreamService:
     """StreamService 替身：按预设 chunk 序列产流，记录端点调用的方法与参数。
 
     参数：
-        chunks: 依次 yield 的完整包载荷（Annex B）。
+        chunks: 依次 yield 的 (pts, 完整包载荷) 元组；纯 bytes 归一为
+            (0, payload)（多数用例不关心 PTS，仅 PTS 透传用例显式传值）。
         packet_mode: use_packet_protocol() 返回值。
         encoder: get_encoder() 返回值（None 模拟无编码器）。
         fps_to_bitrate: report_client_fps 收到该 fps 时写入的待生效码率，
@@ -109,7 +117,7 @@ class FakeStreamService:
 
     def __init__(
         self,
-        chunks: Sequence[bytes],
+        chunks: Sequence[bytes | tuple[int, bytes]],
         *,
         packet_mode: bool = True,
         encoder: FakeEncoder | None = None,
@@ -162,13 +170,13 @@ class FakeStreamService:
     async def stop_stream(self, device_id: str) -> None:
         self.stop_calls.append(device_id)
 
-    async def start_stream(self, device_id: str) -> AsyncIterator[bytes]:
+    async def start_stream(self, device_id: str) -> AsyncIterator[tuple[int, bytes]]:
         for index, chunk in enumerate(self.chunks):
             if (index + 1) in self.epoch_after:
                 self.epoch = self.epoch_after[index + 1]
             if self.error_after is not None and index == self.error_after:
                 raise self.error
-            yield chunk
+            yield (0, chunk) if isinstance(chunk, bytes) else chunk
         if self.error_after is not None and self.error_after >= len(self.chunks):
             raise self.error
         if self.hold_until is not None:
@@ -301,10 +309,23 @@ def test_packet_mode_config_and_one_au_per_chunk(video_client):
             "description": (SPS_AVC + PPS_MAIN).hex(),
             "idle_reset_seconds": 5.0,
         }
-        assert recv_binary(session) == IDR_0   # config 包内 VCL 同包直发
-        assert recv_binary(session) == P_1     # chunk2 直通
-        assert recv_binary(session) == P_2     # chunk3 直通（修复前被滞后丢失）
+        assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
+        assert recv_binary(session) == frame(0, P_1)     # chunk2 直通
+        assert recv_binary(session) == frame(0, P_2)     # chunk3 直通（修复前被滞后丢失）
     assert wait_for(lambda: svc.stop_calls == [DEV])
+
+
+def test_packet_mode_forwards_device_pts(video_client):
+    """WS 二进制消息 = [8B PTS 大端][Annex B 载荷]（方案 32）：
+    config 拦截路径的 VCL 合并分支与直通分支均原值透传设备 PTS。"""
+    svc = FakeStreamService(
+        [(1_234_567, SPS_AVC + PPS_MAIN + IDR_A), (9_876_543, P_1)],
+        encoder=FakeEncoder(),
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(1_234_567, IDR_A)  # config 拦截分支
+        assert recv_binary(session) == frame(9_876_543, P_1)    # 直通分支
 
 
 def test_packet_mode_merges_nalus_and_intercepts_sps_pps(video_client):
@@ -323,17 +344,17 @@ def test_packet_mode_merges_nalus_and_intercepts_sps_pps(video_client):
     )
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["codec"] == "avc1.42C01E"
-        assert recv_binary(session) == IDR_A          # config 包内 VCL 同包直发
-        assert recv_binary(session) == IDR_B + P_A    # 多 slice 同包 → 单条消息
+        assert recv_binary(session) == frame(0, IDR_A)          # config 包内 VCL 同包直发
+        assert recv_binary(session) == frame(0, IDR_B + P_A)    # 多 slice 同包 → 单条消息
         resent = recv_json(session)                   # SPS/PPS 均变化 → PPS 分支配对重发
         assert resent["type"] == "config"
         assert resent["codec"] == "avc1.640028"
         assert resent["description"] == (SPS_HIGH + PPS_HIGH).hex()
         au = recv_binary(session)                     # 含 SPS+PPS 的包 → 只发 VCL
-        assert au == IDR_C
+        assert au == frame(0, IDR_C)
         assert SPS_HIGH not in au
         assert PPS_HIGH not in au
-        assert recv_binary(session) == P_C
+        assert recv_binary(session) == frame(0, P_C)
 
 
 def test_packet_mode_config_deferred_when_pps_precedes_sps(video_client):
@@ -351,9 +372,9 @@ def test_packet_mode_config_deferred_when_pps_precedes_sps(video_client):
         assert config["description"] == (SPS_AVC + PPS_MAIN).hex()
         # config 在 chunk2（P_1+PPS）处理期发送，同包 VCL P_1 即刻直发；
         # IDR_0 在 config 未就绪期间被丢弃
-        assert recv_binary(session) == P_1
-        assert recv_binary(session) == P_2
-        assert recv_binary(session) == P_4
+        assert recv_binary(session) == frame(0, P_1)
+        assert recv_binary(session) == frame(0, P_2)
+        assert recv_binary(session) == frame(0, P_4)
 
 
 def test_packet_mode_chunk_progress_logging(video_client):
@@ -365,9 +386,9 @@ def test_packet_mode_chunk_progress_logging(video_client):
     )
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["type"] == "config"
-        assert recv_binary(session) == IDR_0
+        assert recv_binary(session) == frame(0, IDR_0)
         rest = [recv_binary(session) for _ in range(99)]
-        assert rest == [nalu(0x41, b"P%03d" % i) for i in range(1, 100)]
+        assert rest == [frame(0, nalu(0x41, b"P%03d" % i)) for i in range(1, 100)]
     assert wait_for(lambda: svc.stop_calls == [DEV])
 
 
@@ -380,8 +401,8 @@ def test_packet_mode_drops_vcl_before_config(video_client):
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         # 首条消息必须是 config：若 IDR_X 被提前发送，这里会拿到二进制
         assert recv_json(session)["type"] == "config"
-        assert recv_binary(session) == IDR_Z   # IDR_X/IDR_Y 已被丢弃
-        assert recv_binary(session) == P_Z
+        assert recv_binary(session) == frame(0, IDR_Z)   # IDR_X/IDR_Y 已被丢弃
+        assert recv_binary(session) == frame(0, P_Z)
 
 
 def test_config_carries_idle_reset_and_sps_change_defers_resend(video_client):
@@ -396,7 +417,7 @@ def test_config_carries_idle_reset_and_sps_change_defers_resend(video_client):
         first = recv_json(session)
         assert first["type"] == "config"
         assert first["idle_reset_seconds"] == 5.0
-        assert recv_binary(session) == IDR_0   # config 包内 VCL 同包直发
+        assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
         # 第二条 config 必须直接是 SPS_HIGH+PPS_HIGH 的完整新组合
         # （旧行为会在此处先发一条 SPS_HIGH+PPS_MAIN 的错配 config）
         second = recv_json(session)
@@ -405,8 +426,8 @@ def test_config_carries_idle_reset_and_sps_change_defers_resend(video_client):
         assert second["description"] == (SPS_HIGH + PPS_HIGH).hex()
         # SPS-only 变化区间（config 未就绪窗口）的 P_A 被丢弃；
         # chunk3 中 config2 先于同包 VCL P_2 发出，随后 chunk4 的 P_C
-        assert recv_binary(session) == P_2
-        assert recv_binary(session) == P_C
+        assert recv_binary(session) == frame(0, P_2)
+        assert recv_binary(session) == frame(0, P_C)
 
 
 # ---------------------------------------------------------------------------
@@ -425,16 +446,16 @@ def test_epoch_change_resets_parser_and_resends_config(video_client):
         first = recv_json(session)
         assert first["type"] == "config"
         assert first["codec"] == "avc1.42C01E"
-        assert recv_binary(session) == IDR_1
+        assert recv_binary(session) == frame(0, IDR_1)
         # 直通无滞后：P_2 在 epoch 切换前已下发（修复前滞留缓冲区被重置吞掉）
-        assert recv_binary(session) == P_2
+        assert recv_binary(session) == frame(0, P_2)
 
         second = recv_json(session)
         assert second["type"] == "config"
         assert second["codec"] == "avc1.640028"
         assert second["description"] == (SPS_HIGH + PPS_HIGH).hex()
-        assert recv_binary(session) == IDR_3
-        assert recv_binary(session) == P_4
+        assert recv_binary(session) == frame(0, IDR_3)
+        assert recv_binary(session) == frame(0, P_4)
 
 
 # ---------------------------------------------------------------------------
@@ -450,8 +471,8 @@ def test_config_codec_falls_back_for_short_sps(video_client):
         assert config["codec"] == "avc1.42E01E"
         assert config["description"] == (short_sps + PPS_MAIN).hex()
         assert config["width"] == 1080
-        assert recv_binary(session) == IDR_0
-        assert recv_binary(session) == P_1
+        assert recv_binary(session) == frame(0, IDR_0)
+        assert recv_binary(session) == frame(0, P_1)
 
 
 def test_config_codec_from_three_byte_start_code_sps(video_client):
@@ -465,8 +486,8 @@ def test_config_codec_from_three_byte_start_code_sps(video_client):
         config = recv_json(session)
         assert config["codec"] == "avc1.42C01E"
         assert config["description"] == (sps3 + pps3).hex()
-        assert recv_binary(session) == idr3
-        assert recv_binary(session) == b"\x00\x00\x01\x41P006"
+        assert recv_binary(session) == frame(0, idr3)
+        assert recv_binary(session) == frame(0, b"\x00\x00\x01\x41P006")
 
 
 # ---------------------------------------------------------------------------
@@ -489,8 +510,8 @@ def test_fallback_mode_merges_pending_prefix_with_next_vcl(video_client):
     )
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["type"] == "config"
-        assert recv_binary(session) == SEI_A + SEI_B + IDR_A
-        assert recv_binary(session) == P_1
+        assert recv_binary(session) == frame(0, SEI_A + SEI_B + IDR_A)
+        assert recv_binary(session) == frame(0, P_1)
         # P_2 仍悬在 parser 缓冲区，未发送
 
 
@@ -505,8 +526,8 @@ def test_fallback_mode_drops_aus_before_config(video_client):
         config = recv_json(session)
         assert config["type"] == "config"
         # chunk2 产出 IDR_X、P_2 两个 AU，但 config 未发送 → 均被丢弃
-        assert recv_binary(session) == IDR_A   # chunk3 产出 IDR_A，config 已随同下发
-        assert recv_binary(session) == IDR_B
+        assert recv_binary(session) == frame(0, IDR_A)   # chunk3 产出 IDR_A，config 已随同下发
+        assert recv_binary(session) == frame(0, IDR_B)
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +546,7 @@ def test_input_touch_forwarded_and_restarting_notified(video_client):
     )
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["type"] == "config"
-        assert recv_binary(session) == IDR_0   # config 包内 VCL 同包直发
+        assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
         session.send_json({"action": "touch", "x": 1, "y": 2})
         # stats 是同步点：restarting 到达即证明 touch 已被输入任务处理
         session.send_json({"op": "stats", "fps": 25})
@@ -568,7 +589,7 @@ def test_input_ignored_without_encoder_and_stats_normalized(video_client):
         config = recv_json(session)
         assert config["width"] == 0        # 无编码器时宽高退化为 0
         assert config["height"] == 0
-        assert recv_binary(session) == IDR_0   # config 包内 VCL 同包直发
+        assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
         session.send_json({"action": "touch", "x": 9, "y": 9})   # 应被忽略
         session.send_json({"op": "stats", "fps": "abc"})         # 非法 → 0.0
         session.send_json({"op": "stats"})                       # 缺失 → 0.0
@@ -593,7 +614,7 @@ def test_input_handler_stops_on_unexpected_error(video_client):
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["type"] == "config"
         session.send_json({"op": "stats", "fps": 25})
-        assert recv_binary(session) == IDR_0   # 视频流不受输入任务崩溃影响
+        assert recv_binary(session) == frame(0, IDR_0)   # 视频流不受输入任务崩溃影响
     assert wait_for(lambda: svc.stop_calls == [DEV])
     assert svc.reported_fps == [(DEV, 25.0)]
 
@@ -612,7 +633,7 @@ def test_stream_error_notifies_client_and_stops_stream(video_client):
     )
     with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
         assert recv_json(session)["type"] == "config"
-        assert recv_binary(session) == IDR_0   # config 包内 VCL 同包直发
+        assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
         error = recv_json(session)
         assert error["type"] == "error"
         assert "编码器崩溃" in error["message"]
@@ -633,7 +654,7 @@ async def test_stream_ended_notified_after_normal_completion():
 
     assert ws.sent_json[-1] == {"type": "stream_ended"}
     assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
-    assert ws.sent_bytes == [IDR_0, P_1, P_2]  # 直通无滞后，全部下发
+    assert ws.sent_bytes == [frame(0, IDR_0), frame(0, P_1), frame(0, P_2)]  # 直通无滞后，全部下发
     assert svc.stop_calls == [DEV]
 
 
@@ -653,7 +674,7 @@ async def test_send_bytes_disconnect_breaks_stream():
     await video_stream(ws, DEV, svc)
 
     assert ws.accepted is True
-    assert ws.sent_bytes == [IDR_0, nalu(0x41, b"P002")]  # 第 3 条发送失败
+    assert ws.sent_bytes == [frame(0, IDR_0), frame(0, nalu(0x41, b"P002"))]  # 第 3 条发送失败
     assert [m["type"] for m in ws.sent_json] == ["config"]
     assert svc.stop_calls == [DEV]
 
@@ -697,7 +718,7 @@ async def test_input_handler_exits_on_client_disconnect():
     assert ws.disconnect_delivered is True
     assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
     assert svc.reported_fps == [(DEV, 25.0)]
-    assert ws.sent_bytes == [IDR_0, P_1]
+    assert ws.sent_bytes == [frame(0, IDR_0), frame(0, P_1)]
     assert svc.stop_calls == [DEV]
 
 
@@ -729,5 +750,5 @@ async def test_stream_ended_send_failure_is_swallowed():
 
     assert ws.json_attempts[-1] == {"type": "stream_ended"}
     assert [m["type"] for m in ws.sent_json] == ["config"]
-    assert ws.sent_bytes == [IDR_0, P_1, P_2]
+    assert ws.sent_bytes == [frame(0, IDR_0), frame(0, P_1), frame(0, P_2)]
     assert svc.stop_calls == [DEV]

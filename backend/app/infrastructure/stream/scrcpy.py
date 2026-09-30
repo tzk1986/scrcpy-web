@@ -96,7 +96,7 @@ class ScrcpyEncoder:
         self._server_manager = ServerManager()
         self._local_port = 27183
         self._socket_name: str = "scrcpy"  # 固定 socket 名称
-        self._data_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
+        self._data_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=100)
         self._awaiting_keyframe = False  # 反压丢包后等待 IDR（断链 P 帧不入队）
         self._last_idr_request_at = 0.0  # 反压 IDR 请求节流（1s 冷却）
 
@@ -105,9 +105,14 @@ class ScrcpyEncoder:
         """获取屏幕分辨率。"""
         return self._resolution
 
-    async def start(self, device_id: str, opts: EncoderOpts) -> AsyncIterator[bytes]:
+    async def start(
+        self, device_id: str, opts: EncoderOpts
+    ) -> AsyncIterator[tuple[int, bytes]]:
         """
-        启动 scrcpy-server 并 yield 原始 H.264 字节。
+        启动 scrcpy-server 并 yield (PTS, 原始 H.264 字节) 元组。
+
+        PTS 来自 12B 包头（设备单调时钟，µs，方案 32 透传）；raw 兜底
+        模式无包头信息，PTS 恒为 0。
 
         注意：max_size 强制设为 0（不缩放），保证视频帧尺寸 == 设备物理分辨率。
         这样前端 canvas 坐标（基于视频帧尺寸）== 设备坐标（scrcpy-server 需要），
@@ -403,7 +408,7 @@ class ScrcpyEncoder:
                             break
                         try:
                             await asyncio.wait_for(
-                                self._data_queue.put(chunk),
+                                self._data_queue.put((0, chunk)),
                                 timeout=1.0,
                             )
                         except asyncio.TimeoutError:
@@ -419,7 +424,7 @@ class ScrcpyEncoder:
                             # config 不丢（P0-3：修复前无限阻塞 put 卡死读循环）
                             try:
                                 await asyncio.wait_for(
-                                    self._data_queue.put(event.payload),
+                                    self._data_queue.put((event.pts, event.payload)),
                                     timeout=_QUEUE_FULL_PUT_TIMEOUT,
                                 )
                             except asyncio.TimeoutError:
@@ -427,7 +432,7 @@ class ScrcpyEncoder:
                                                device=device_id)
                                 self._drop_backlog()
                                 # 清积压后队列必空（单生产者），直投不会再满
-                                self._data_queue.put_nowait(event.payload)
+                                self._data_queue.put_nowait((event.pts, event.payload))
                                 await self._request_idr_throttled()
                         else:
                             if self._awaiting_keyframe and not event.is_key:
@@ -437,7 +442,7 @@ class ScrcpyEncoder:
                                 continue
                             try:
                                 await asyncio.wait_for(
-                                    self._data_queue.put(event.payload),
+                                    self._data_queue.put((event.pts, event.payload)),
                                     timeout=_QUEUE_FULL_PUT_TIMEOUT,
                                 )
                                 if event.is_key:
@@ -452,7 +457,7 @@ class ScrcpyEncoder:
                                                device=device_id, dropped=dropped)
                                 if event.is_key:
                                     self._awaiting_keyframe = False
-                                    self._data_queue.put_nowait(event.payload)
+                                    self._data_queue.put_nowait((event.pts, event.payload))
                                 else:
                                     self._awaiting_keyframe = True
                                     await self._request_idr_throttled()

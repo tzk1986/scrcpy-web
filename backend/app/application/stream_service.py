@@ -81,7 +81,7 @@ class StreamService:
         # 关键帧请求冷却（方案 19 实施项 3）：device → 最近一次实际发送时刻（1s 防抖）
         self._last_keyframe_at: dict[str, float] = {}
 
-    async def start_stream(self, device_id: str) -> AsyncIterator[bytes]:
+    async def start_stream(self, device_id: str) -> AsyncIterator[tuple[int, bytes]]:
         """
         为给定设备启动视频流。
 
@@ -105,7 +105,8 @@ class StreamService:
             device_id: 要流式传输的设备的 ADB 序列号。
 
         产出：
-            H.264 帧数据（原始字节）。
+            (PTS, H.264 帧字节)：PTS 为设备单调时钟 µs（方案 32 透传，
+            raw 兜底模式为 0），帧字节为 Annex B。
         """
         logger.info("starting_video_stream", device=device_id)
 

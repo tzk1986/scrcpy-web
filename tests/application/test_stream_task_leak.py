@@ -34,7 +34,7 @@ class FiniteEncoder:
 
     async def start(self, device_id, opts):
         for _ in range(5):
-            yield b"f"
+            yield 0, b"f"
 
     async def stop(self):
         self.stop_called = True
