@@ -160,6 +160,41 @@ describe('截屏与性能 API', () => {
     })
   })
 
+  it('screenshotRaw 带 format=raw 参数并解析 x-frame-format 头（方案 29）', async () => {
+    mockClient.get.mockResolvedValueOnce({
+      data: BLOB,
+      headers: { 'x-frame-format': 'raw-rgba' },
+    })
+    await expect(api.screenshotRaw('dev1')).resolves.toEqual({
+      blob: BLOB,
+      format: 'raw-rgba',
+    })
+    expect(mockClient.get).toHaveBeenCalledWith('/devices/dev1/screenshot', {
+      params: { format: 'raw' },
+      responseType: 'blob',
+    })
+  })
+
+  it('screenshotRaw 后端回退 png 头 → format 为 png', async () => {
+    mockClient.get.mockResolvedValueOnce({
+      data: BLOB,
+      headers: { 'x-frame-format': 'png' },
+    })
+    await expect(api.screenshotRaw('dev1')).resolves.toEqual({
+      blob: BLOB,
+      format: 'png',
+    })
+  })
+
+  it('screenshotRaw 响应头缺失 → 按 png 处理（防中间层吞头）', async () => {
+    // 真实 axios 响应必有 headers 对象；吞头场景 = headers 存在但自定义头缺席
+    mockClient.get.mockResolvedValueOnce({ data: BLOB, headers: {} })
+    await expect(api.screenshotRaw('dev1')).resolves.toEqual({
+      blob: BLOB,
+      format: 'png',
+    })
+  })
+
   it('getPerfMetrics 编码 deviceId 且 limit 默认 100', async () => {
     await api.getPerfMetrics('192.168.8.18:5555')
     expect(mockClient.get).toHaveBeenCalledWith('/perf/192.168.8.18%3A5555/metrics', {

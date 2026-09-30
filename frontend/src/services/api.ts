@@ -228,6 +228,24 @@ export const api = {
     return res.data as Blob
   },
 
+  /**
+   * 获取设备截屏（raw+gzip 换档链路，方案 29）。
+   * 对应：GET /api/devices/{deviceId}/screenshot?format=raw
+   * 后端以 X-Frame-Format 响应头标注帧格式：raw-rgba（设备端 raw 帧 +
+   * gzip 透传，浏览器透明解压）或 png（raw 链路失败时后端单请求回退）。
+   */
+  async screenshotRaw(deviceId: string): Promise<{
+    blob: Blob
+    format: 'raw-rgba' | 'png'
+  }> {
+    const res = await client.get(`/devices/${deviceId}/screenshot`, {
+      params: { format: 'raw' },
+      responseType: 'blob',
+    })
+    const format = res.headers['x-frame-format'] === 'raw-rgba' ? 'raw-rgba' : 'png'
+    return { blob: res.data as Blob, format }
+  },
+
   // ==================== 性能监控 API ====================
 
   /**
