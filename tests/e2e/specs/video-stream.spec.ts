@@ -9,7 +9,8 @@ export async function gotoDevicePage(page: Page, device: DeviceInfo) {
 }
 
 async function readFrameCount(page: Page): Promise<number> {
-  const text = await page.locator('.stat-item', { hasText: '帧:' }).innerText()
+  // 「丢帧:」stat 含「帧:」子串，hasText 子串匹配会双命中，锚定前缀
+  const text = await page.locator('.stat-item', { hasText: /^帧:/ }).innerText()
   return Number(text.replace(/\D/g, ''))
 }
 
@@ -37,7 +38,12 @@ test.describe('视频流（需设备）', () => {
       return { w: c.width, h: c.height }
     })
     const [dw, dh] = device!.resolution
-    expect([[dw, dh], [dh, dw]]).toContainEqual([dims.w, dims.h])
+    // max_size=0 契约：canvas 尺寸随 config 消息（编码器实际分辨率）；
+    // 全屏/状态栏隐藏时 ADB 上报分辨率可与编码器实际差数像素
+    // （.18 实测 1360 vs 1366），故 8px 容差 + 横竖转置兼容
+    const matchesPortrait = Math.abs(dims.w - dw) <= 8 && Math.abs(dims.h - dh) <= 8
+    const matchesLandscape = Math.abs(dims.w - dh) <= 8 && Math.abs(dims.h - dw) <= 8
+    expect(matchesPortrait || matchesLandscape).toBe(true)
   })
 
   test('canvas 像素非纯色（确有画面渲染）', async ({ page, device, shell }) => {
