@@ -271,3 +271,118 @@ describe('降级渲染（Image + ObjectURL）', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
   })
 })
+
+describe('输入事件驱动刷新（notifyInput，方案 27）', () => {
+  it('notifyInput 在 debounce 160ms 后主动截一张', async () => {
+    vi.useFakeTimers()
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+
+    await stream.start()
+    expect(screenshotMock).toHaveBeenCalledTimes(1) // 首帧
+
+    stream.notifyInput()
+    expect(screenshotMock).toHaveBeenCalledTimes(1) // debounce 未到期
+
+    await vi.advanceTimersByTimeAsync(160)
+    expect(screenshotMock).toHaveBeenCalledTimes(2) // 主动截一张
+
+    stream.stop()
+  })
+
+  it('160ms 窗口内连续输入合并为一次刷新', async () => {
+    vi.useFakeTimers()
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    await stream.start()
+
+    stream.notifyInput()
+    await vi.advanceTimersByTimeAsync(100)
+    stream.notifyInput()
+    await vi.advanceTimersByTimeAsync(100)
+    stream.notifyInput()
+    await vi.advanceTimersByTimeAsync(160) // 最后一次重置后 160ms
+
+    expect(screenshotMock).toHaveBeenCalledTimes(2) // 首帧 + 1 张合并刷新
+
+    // debounce 已消费：相位重置后下一周期帧在 1500ms 后，短推进无新帧
+    await vi.advanceTimersByTimeAsync(400)
+    expect(screenshotMock).toHaveBeenCalledTimes(2)
+
+    stream.stop()
+  })
+
+  it('截屏进行中收到输入：完成后立即补一张（单飞+尾部补帧）', async () => {
+    vi.useFakeTimers()
+    let release!: (v: Blob) => void
+    screenshotMock.mockReset().mockImplementation(
+      () => new Promise<Blob>(res => { release = res }),
+    )
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+
+    const startPromise = stream.start() // 首帧挂起（不 await）
+    await flush()
+
+    stream.notifyInput()
+    await vi.advanceTimersByTimeAsync(160)
+    // debounce 到期：首帧仍在途 → 标记 pending，不并发发第二张
+    expect(screenshotMock).toHaveBeenCalledTimes(1)
+
+    release(new Blob(['a'])) // 首帧完成 → pending 触发补帧
+    await flush()
+    expect(screenshotMock).toHaveBeenCalledTimes(2)
+
+    release(new Blob(['b'])) // 补帧完成 → 无 pending，停止
+    await flush()
+    expect(screenshotMock).toHaveBeenCalledTimes(2)
+
+    await startPromise
+    stream.stop()
+  })
+
+  it('事件截屏完成后轮询相位重新起算（原相位点不再截）', async () => {
+    vi.useFakeTimers()
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+
+    await stream.start() // t=0 首帧
+    await vi.advanceTimersByTimeAsync(1000) // 下一周期截原定 t=1500
+
+    stream.notifyInput()
+    await vi.advanceTimersByTimeAsync(160) // t=1160 事件截屏（第 2 张）
+    expect(screenshotMock).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(340) // t=1500：原相位点被重置，不截
+    expect(screenshotMock).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(1160) // t=2660 = 1160 + 1500 新相位
+    expect(screenshotMock).toHaveBeenCalledTimes(3)
+
+    stream.stop()
+  })
+
+  it('非 streaming 状态（idle/stopped）notifyInput 不触发截屏', async () => {
+    vi.useFakeTimers()
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+
+    stream.notifyInput() // idle
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(screenshotMock).not.toHaveBeenCalled()
+
+    await stream.start()
+    stream.stop()
+
+    stream.notifyInput() // stopped
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(screenshotMock).toHaveBeenCalledTimes(1) // 仅 start 首帧
+  })
+
+  it('stop 后 debounce 定时器被清理，不产生迟发截屏', async () => {
+    vi.useFakeTimers()
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    await stream.start()
+
+    stream.notifyInput()
+    stream.stop()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(screenshotMock).toHaveBeenCalledTimes(1) // 仅首帧
+  })
+})

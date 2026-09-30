@@ -50,6 +50,11 @@ export class VideoStream {
   private onStateChange?: (state: VideoStreamState) => void
   private onStatsUpdate?: (stats: VideoStreamStats) => void
   private _objectUrl: string | null = null
+  /** 输入事件驱动截屏（方案 27）：截屏链路 dedounce 窗口 + 单飞标志 + 尾部补帧 */
+  private readonly inputDebounceMs = 160
+  private _debounceTimer: number | null = null
+  private _inFlight = false
+  private _pendingRefresh = false
 
   /**
    * @param deviceId - 设备 ADB 序列号
@@ -111,13 +116,65 @@ export class VideoStream {
       this.onStatsUpdate?.(this.stats)
     }, 1000)
 
-    // 立即获取第一帧
-    await this.captureFrame()
+    // 立即获取第一帧（单飞入口）
+    await this.doCapture()
 
     // 启动周期性截屏
     this.timer = window.setInterval(() => {
       if (this._state === 'streaming') {
-        this.captureFrame()
+        this.captureNow()
+      }
+    }, this.refreshInterval)
+  }
+
+  /**
+   * 输入事件驱动的即时刷新（方案 27）。
+   * debounce 合并 160ms 窗口内的连续输入；截屏进行中只标记待补，
+   * 完成后自动补一张；刷新完成后周期轮询相位重新起算。
+   */
+  notifyInput(): void {
+    if (this._state !== 'streaming') return
+    if (this._debounceTimer !== null) {
+      clearTimeout(this._debounceTimer)
+    }
+    this._debounceTimer = window.setTimeout(() => {
+      this._debounceTimer = null
+      this.captureNow()
+    }, this.inputDebounceMs)
+  }
+
+  /** 截屏统一入口（单飞）：进行中不并发，只标记待补。 */
+  private captureNow(): void {
+    if (this._inFlight) {
+      this._pendingRefresh = true
+      return
+    }
+    void this.doCapture()
+  }
+
+  /** 截屏执行（含尾部补帧与相位重置）。 */
+  private async doCapture(): Promise<void> {
+    this._inFlight = true
+    try {
+      await this.captureFrame()
+    } finally {
+      this._inFlight = false
+      if (this._pendingRefresh) {
+        this._pendingRefresh = false
+        void this.doCapture()
+      } else if (this._state === 'streaming') {
+        this.restartPollingPhase()
+      }
+    }
+  }
+
+  /** 周期轮询相位重置：从最近一次截屏完成时刻重新起算。 */
+  private restartPollingPhase(): void {
+    if (this.timer === null) return
+    clearInterval(this.timer)
+    this.timer = window.setInterval(() => {
+      if (this._state === 'streaming') {
+        this.captureNow()
       }
     }, this.refreshInterval)
   }
@@ -128,6 +185,11 @@ export class VideoStream {
       clearInterval(this.timer)
       this.timer = null
     }
+    if (this._debounceTimer !== null) {
+      clearTimeout(this._debounceTimer)
+      this._debounceTimer = null
+    }
+    this._pendingRefresh = false
     if (this._fpsTimer !== null) {
       clearInterval(this._fpsTimer)
       this._fpsTimer = null
