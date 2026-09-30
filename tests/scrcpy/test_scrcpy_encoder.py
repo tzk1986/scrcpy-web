@@ -1125,3 +1125,213 @@ async def test_idle_keepalive_retries_after_send_failure(monkeypatch):
             encoder._running = False  # 下一个 tick 退出取帧循环 → 消费任务自然结束
             await task
     assert harness.server_process.terminate_called
+
+
+# ---------------------------------------------------------------------------
+# 反压恢复（P0-2/P0-3）
+# ---------------------------------------------------------------------------
+
+def _backpressure_encoder(monkeypatch):
+    """反压测试环境：packet 模式 + 关闭空闲保活（隔离反压路径，避免保活 0x11 干扰）
+    + 队列 put 超时缩至 0.05s。返回 (encoder, conn, harness, delta)。"""
+    import types
+
+    fake = types.SimpleNamespace(
+        stream=types.SimpleNamespace(idle_reset_seconds=0, raw_stream_fallback=False),
+        adb=types.SimpleNamespace(path="adb"),
+    )
+    monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
+    monkeypatch.setattr(
+        "app.infrastructure.stream.scrcpy._QUEUE_FULL_PUT_TIMEOUT", 0.05,
+        raising=False,
+    )
+
+    encoder = ScrcpyEncoder()
+    delta = b"\x00\x00\x00\x01a" + b"\xbb" * 8
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(delta)) + delta
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    return encoder, conn, harness, delta
+
+
+def _feed(conn, payload: bytes, flags: int = 0) -> None:
+    """向视频流喂一个媒体包（flags 0=P 帧，否则 SC_PACKET_FLAG_*）。"""
+    conn.video_reader.feed_data(make_frame_header(flags, len(payload)) + payload)
+
+
+def _fill_queue(conn, payload: bytes, n: int = 100) -> None:
+    """离线喂 n 个 P 帧包（消费端停摆时填满队列）。"""
+    for _ in range(n):
+        _feed(conn, payload)
+
+
+def _drain_queue(encoder: ScrcpyEncoder) -> None:
+    """收尾前排空队列：修复前 read_socket 在满队列上的 put(None) 会死锁，
+    排空后 aclose 的取消链路才能走完（P0-3 缺陷本身，修复后无碍）。"""
+    while not encoder._data_queue.empty():
+        encoder._data_queue.get_nowait()
+
+
+async def test_backpressure_clears_backlog_skips_to_keyframe_and_requests_idr(monkeypatch):
+    """P0-2：队列满丢包不再「只丢新包」——清积压（时延归零）+ 断链 P 帧不入队
+    + 节流发 RESET_VIDEO 催 IDR（服务端 0.1-0.4s 重发 SESSION/CONFIG）。
+
+    修复前：仅丢新包、积压保留 → P 帧依赖链断裂，前端花屏直到下个自然 IDR（~10s）。
+    """
+    encoder, conn, harness, delta = _backpressure_encoder(monkeypatch)
+    p = b"\x00\x00\x00\x01a" + b"\xcc" * 8
+    key = b"\x00\x00\x00\x01e" + b"\xaa" * 16
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        agen = encoder.start(DEVICE_ID, EncoderOpts())
+        try:
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            _fill_queue(conn, p)
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
+            # 第 101 包 put 超时 → 清积压 + 进入等待关键帧 + 节流请求 IDR
+            _feed(conn, p)
+            assert await wait_until(
+                lambda: bytes(conn.control_writer.written) == b"\x11")
+            assert encoder._data_queue.qsize() == 0
+            assert encoder._awaiting_keyframe is True
+            # 等待 IDR 期间的 P 帧静默丢弃（不入队）
+            _feed(conn, p)
+            await asyncio.sleep(0.15)
+            assert encoder._data_queue.qsize() == 0
+            # IDR 到达 → 退出等待态并入队，消费端取到关键帧
+            _feed(conn, key, SC_PACKET_FLAG_KEY_FRAME)
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 1)
+            assert encoder._awaiting_keyframe is False
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == key
+        finally:
+            _drain_queue(encoder)  # 修复前满队列 put(None) 死锁，先排空再收尾
+            await agen.aclose()
+    assert harness.server_process.terminate_called
+
+
+async def test_config_put_timeout_clears_backlog_and_enqueues_config(monkeypatch):
+    """P0-3：config 包（SPS/PPS，解码前提）put 超时 → 清积压腾位后必须保住 config。
+
+    修复前：队列满时无限阻塞读循环（心跳/关键帧请求一并停摆）。
+    """
+    encoder, conn, harness, delta = _backpressure_encoder(monkeypatch)
+    p = b"\x00\x00\x00\x01a" + b"\xcc" * 8
+    sps = b"\x00\x00\x00\x01g" + b"\x00" * 8
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        agen = encoder.start(DEVICE_ID, EncoderOpts())
+        try:
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            _fill_queue(conn, p)
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
+            _feed(conn, sps, SC_PACKET_FLAG_CONFIG)
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 1)
+            assert encoder._data_queue.get_nowait() == sps
+            assert await wait_until(
+                lambda: bytes(conn.control_writer.written) == b"\x11")
+            assert encoder._awaiting_keyframe is False
+        finally:
+            _drain_queue(encoder)  # 修复前满队列 put(None) 死锁，先排空再收尾
+            await agen.aclose()
+    assert harness.server_process.terminate_called
+
+
+async def test_stream_end_with_full_queue_sets_sentinel_without_blocking(monkeypatch):
+    """P0-3 同族：read_socket 收尾 put(None) 改为「清积压 + 哨兵直投」，
+    队列满时不再永久挂起（修复前读任务死锁在 put，消费端要等 tick 超时才停）。"""
+    encoder, conn, harness, delta = _backpressure_encoder(monkeypatch)
+    p = b"\x00\x00\x00\x01a" + b"\xcc" * 8
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        agen = encoder.start(DEVICE_ID, EncoderOpts())
+        try:
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            _fill_queue(conn, p)
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
+            conn.video_reader.feed_eof()  # 设备断开
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 1)
+            item = encoder._data_queue.get_nowait()
+            assert item is None  # 哨兵直投，旧积压已清
+            encoder._data_queue.put_nowait(None)  # 归还哨兵，驱动主循环退出
+            with pytest.raises(StopAsyncIteration):
+                await asyncio.wait_for(agen.__anext__(), timeout=2.0)
+        finally:
+            _drain_queue(encoder)  # 修复前满队列 put(None) 死锁，先排空再收尾
+            await agen.aclose()
+    assert harness.server_process.terminate_called
+
+
+async def test_backpressure_key_overflow_reenqueues_key_without_idr_request(monkeypatch):
+    """关键帧自身触发 put 超时 → 清积压后直接入队（解码从该 IDR 恢复），不发 RESET。"""
+    encoder, conn, harness, delta = _backpressure_encoder(monkeypatch)
+    p = b"\x00\x00\x00\x01a" + b"\xcc" * 8
+    key = b"\x00\x00\x00\x01e" + b"\xaa" * 16
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        agen = encoder.start(DEVICE_ID, EncoderOpts())
+        try:
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == delta
+            _fill_queue(conn, p)
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 100)
+            _feed(conn, key, SC_PACKET_FLAG_KEY_FRAME)
+            # 等溢出清理完成（清积压 + 关键帧直投）再消费，此时队列恰为 1
+            assert await wait_until(lambda: encoder._data_queue.qsize() == 1)
+            assert await asyncio.wait_for(agen.__anext__(), timeout=2.0) == key
+            assert encoder._data_queue.qsize() == 0
+            assert encoder._awaiting_keyframe is False
+            assert bytes(conn.control_writer.written) == b""  # 未请求 IDR
+        finally:
+            _drain_queue(encoder)  # 修复前满队列 put(None) 死锁，先排空再收尾
+            await agen.aclose()
+    assert harness.server_process.terminate_called
+
+
+async def test_request_idr_throttled_limits_to_once_per_window():
+    """反压 IDR 请求 1s 节流：窗口内重复调用只发一个 type=17，过期恢复。"""
+    encoder = ScrcpyEncoder()
+    writer = FakeWriter()
+    encoder._control_sender = ControlSender(writer, (1080, 1920))
+
+    await encoder._request_idr_throttled()
+    assert bytes(writer.written) == b"\x11"
+    await encoder._request_idr_throttled()  # 1s 窗口内 → 跳过
+    assert bytes(writer.written) == b"\x11"
+    encoder._last_idr_request_at = time.monotonic() - 2.0  # 窗口过期
+    await encoder._request_idr_throttled()
+    assert bytes(writer.written) == b"\x11\x11"
+
+
+async def test_request_idr_throttled_noop_without_control_channel():
+    """无控制通道（session 前/连接失败）→ no-op 且不占用节流窗口。"""
+    encoder = ScrcpyEncoder()
+    assert encoder._last_idr_request_at == 0.0
+
+    await encoder._request_idr_throttled()  # 不抛异常
+
+    assert encoder._last_idr_request_at == 0.0
+
+
+async def test_request_idr_throttled_swallows_send_failure():
+    """控制 socket 写失败 → 吞异常不杀读循环；窗口照计（重试速率仍受 1s 约束）。"""
+    encoder = ScrcpyEncoder()
+    writer = FakeWriter()
+
+    def broken_write(data: bytes) -> None:
+        raise RuntimeError("broken pipe")
+
+    writer.write = broken_write  # noqa: 不可调用的实例属性写入
+    encoder._control_sender = ControlSender(writer, (1080, 1920))
+
+    await encoder._request_idr_throttled()  # 不抛
+
+    assert encoder._last_idr_request_at > 0.0

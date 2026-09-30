@@ -64,6 +64,8 @@ from app.scrcpy.stream_protocol import (
 
 logger = get_logger(__name__)
 
+_QUEUE_FULL_PUT_TIMEOUT = 1.0  # 队列满时 put 超时（秒），反压恢复路径（P0-2/P0-3）
+
 
 class EncoderStalledError(RuntimeError):
     """编码器卡死：发出 RESET_VIDEO 探针后仍超过 idle_reset 秒无数据
@@ -95,6 +97,8 @@ class ScrcpyEncoder:
         self._local_port = 27183
         self._socket_name: str = "scrcpy"  # 固定 socket 名称
         self._data_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=100)
+        self._awaiting_keyframe = False  # 反压丢包后等待 IDR（断链 P 帧不入队）
+        self._last_idr_request_at = 0.0  # 反压 IDR 请求节流（1s 冷却）
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -411,19 +415,47 @@ class ScrcpyEncoder:
                         if isinstance(event, SessionEvent):
                             self._handle_session_event(device_id, event)
                         elif event.is_config:
-                            # config 包（SPS/PPS）是解码前提，宁可阻塞也不丢
-                            await self._data_queue.put(event.payload)
-                        else:
+                            # config 包（SPS/PPS）是解码前提：超时后清积压腾位，
+                            # config 不丢（P0-3：修复前无限阻塞 put 卡死读循环）
                             try:
                                 await asyncio.wait_for(
                                     self._data_queue.put(event.payload),
-                                    timeout=1.0,
+                                    timeout=_QUEUE_FULL_PUT_TIMEOUT,
                                 )
+                            except asyncio.TimeoutError:
+                                logger.warning("socket_queue_full_dropping_config",
+                                               device=device_id)
+                                self._drop_backlog()
+                                # 清积压后队列必空（单生产者），直投不会再满
+                                self._data_queue.put_nowait(event.payload)
+                                await self._request_idr_throttled()
+                        else:
+                            if self._awaiting_keyframe and not event.is_key:
+                                # 丢到下一关键帧：断链 P 帧不入队，避免解码
+                                # 错乱拖长花屏（P0-2）
+                                await self._request_idr_throttled()
+                                continue
+                            try:
+                                await asyncio.wait_for(
+                                    self._data_queue.put(event.payload),
+                                    timeout=_QUEUE_FULL_PUT_TIMEOUT,
+                                )
+                                if event.is_key:
+                                    self._awaiting_keyframe = False
                             except asyncio.TimeoutError:
                                 logger.warning(
                                     "socket_queue_full_dropping_packet",
                                     device=device_id,
                                     packet_size=len(event.payload))
+                                dropped = self._drop_backlog()
+                                logger.warning("backpressure_backlog_cleared",
+                                               device=device_id, dropped=dropped)
+                                if event.is_key:
+                                    self._awaiting_keyframe = False
+                                    self._data_queue.put_nowait(event.payload)
+                                else:
+                                    self._awaiting_keyframe = True
+                                    await self._request_idr_throttled()
             except StreamDisabled:
                 logger.warning("video_stream_disabled_by_device", device=device_id)
             except StreamConfigError:
@@ -436,10 +468,10 @@ class ScrcpyEncoder:
             except Exception as e:
                 logger.error("socket_read_error", device=device_id, error=str(e))
             finally:
-                try:
-                    await self._data_queue.put(None)
-                except Exception:
-                    pass
+                # 队列满时 put(None) 会永久阻塞：先清积压再直投哨兵（P0-3）；
+                # 清积压后队列必空（单生产者），put_nowait 不会再满
+                self._drop_backlog()
+                self._data_queue.put_nowait(None)
 
         read_task = asyncio.create_task(read_socket())
 
@@ -609,6 +641,35 @@ class ScrcpyEncoder:
         if self._control_sender is not None:
             await self._control_sender.reset_video()
 
+    def _drop_backlog(self) -> int:
+        """清空积压队列（反压恢复：丢旧保新，时延归零）；返回丢弃包数。"""
+        dropped = 0
+        while True:
+            try:
+                self._data_queue.get_nowait()
+                dropped += 1
+            except asyncio.QueueEmpty:
+                return dropped
+
+    async def _request_idr_throttled(self) -> None:
+        """反压丢包后请求恢复关键帧（RESET_VIDEO，服务端 0.1-0.4s 重出 IDR）。
+
+        1s 节流防风暴；无控制通道 no-op 且不占用窗口；发送失败吞掉
+        （不得杀死读循环），窗口照计以限制重试速率。
+        """
+        if self._control_sender is None:
+            return
+        now = time.monotonic()
+        if now - self._last_idr_request_at < 1.0:
+            return
+        self._last_idr_request_at = now
+        try:
+            await self.request_keyframe()
+            logger.info("backpressure_idr_requested", device=self._device_id)
+        except Exception as e:
+            logger.warning("backpressure_idr_request_failed",
+                           device=self._device_id, error=str(e))
+
     async def _send_swipe(self, data: dict[str, Any]) -> None:
         """
         连续 MOVE 事件滑动（参考 py-scrcpy-client swipe()）。
@@ -761,13 +822,13 @@ class ScrcpyEncoder:
                 pass
 
         # 清空队列
-        while not self._data_queue.empty():
-            try:
-                self._data_queue.get_nowait()
-            except Exception:
-                break
+        dropped = self._drop_backlog()
+        if dropped:
+            logger.info("stop_dropped_backlog", device=self._device_id, dropped=dropped)
 
         logger.info("scrcpy_encoder_stopped", device=self._device_id)
         self._device_id = ""
         self._socket_name = "scrcpy"
         self._resolution = (0, 0)
+        self._awaiting_keyframe = False
+        self._last_idr_request_at = 0.0
