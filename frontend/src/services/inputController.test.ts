@@ -405,3 +405,49 @@ describe('按键与文本输入', () => {
     expect(() => ic.setDeviceResolution(1080, 1920)).not.toThrow()
   })
 })
+
+describe('输入发送回调（setInputHandler，方案 27）', () => {
+  it('按键与文本发送后触发回调', () => {
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const handler = vi.fn()
+    ic.setInputHandler(handler)
+
+    ic.sendKey(KeyCode.HOME)
+    ic.sendText('hi')
+
+    expect(handler).toHaveBeenCalledTimes(2)
+    expect(ws.send).toHaveBeenCalledTimes(2)
+  })
+
+  it('点击/滑动/长按手势发送后触发回调', () => {
+    vi.useFakeTimers()
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const handler = vi.fn()
+    ic.setInputHandler(handler)
+    const canvas = makeCanvas()
+
+    ic.handleMouseDown(makeMouseEvent(50, 50), canvas)
+    ic.handleMouseUp(makeMouseEvent(50, 50), canvas) // tap
+    expect(handler).toHaveBeenCalledTimes(1)
+
+    ic.handleMouseDown(makeMouseEvent(50, 50), canvas)
+    vi.advanceTimersByTime(50)
+    ic.handleMouseMove(makeMouseEvent(80, 50), canvas)
+    ic.handleMouseUp(makeMouseEvent(80, 50), canvas) // swipe
+    expect(handler).toHaveBeenCalledTimes(2)
+
+    ic.handleMouseDown(makeMouseEvent(50, 50), canvas)
+    vi.advanceTimersByTime(600) // long_press
+    expect(handler).toHaveBeenCalledTimes(3)
+
+    vi.useRealTimers()
+  })
+
+  it('未设置 handler 时各输入不抛错', () => {
+    const ic = new InputController(makeWs(), 100, 100)
+    expect(() => ic.sendKey(KeyCode.BACK)).not.toThrow()
+    expect(() => ic.sendText('x')).not.toThrow()
+  })
+})

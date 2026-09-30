@@ -53,6 +53,8 @@ export class InputController {
   private readonly MOVE_THRESHOLD = 20         // px
   /** 是否启用输入处理（Page Visibility 隐藏时停用，方案 17 实施项 4） */
   private enabled = true
+  /** 输入发送后回调（方案 27：截图模式事件驱动截屏触发点） */
+  private onInputSend?: () => void
 
   /**
    * @param ws - WebSocket 连接
@@ -66,6 +68,11 @@ export class InputController {
   /** 更新设备分辨率（保留用于向后兼容） */
   setDeviceResolution(_width: number, _height: number) {
     // 坐标映射现在基于 canvas 的实际像素尺寸，无需保存设备分辨率
+  }
+
+  /** 设置输入发送回调（每次 ws.send 输入事件后触发）。 */
+  setInputHandler(handler: () => void) {
+    this.onInputSend = handler
   }
 
   /**
@@ -296,11 +303,13 @@ export class InputController {
   /** 发送按键事件 */
   sendKey(keycode: number) {
     this.ws.send({ action: 'key', keycode })
+    this.onInputSend?.()
   }
 
   /** 发送文本输入 */
   sendText(text: string) {
     this.ws.send({ action: 'text', text })
+    this.onInputSend?.()
   }
 
   /** 取消长按检测 */
@@ -314,6 +323,7 @@ export class InputController {
   /** 发送点击事件 */
   private sendTap(x: number, y: number) {
     this.ws.send({ action: 'touch', x, y })
+    this.onInputSend?.()
   }
 
   /** 发送滑动事件 */
@@ -323,6 +333,7 @@ export class InputController {
       x1, y1, x2, y2,
       duration: Math.max(duration, 100),
     })
+    this.onInputSend?.()
   }
 
   /** 发送长按事件（后端映射为 DOWN/保持/UP，adb 回退路径用同点 swipe 模拟） */
@@ -332,5 +343,6 @@ export class InputController {
       x, y,
       duration: 1000,
     })
+    this.onInputSend?.()
   }
 }
