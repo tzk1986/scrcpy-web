@@ -406,6 +406,11 @@ onMounted(async () => {
     props.deviceHeight || 1920
   )
 
+  // 输入事件驱动截屏（方案 27）：仅截图模式下转发给 VideoStream.notifyInput
+  inputController.setInputHandler(() => {
+    if (mode.value === 'screenshot') videoStream?.notifyInput()
+  })
+
   // 根据浏览器支持选择视频流模式
   console.log('[VideoPlayer] WebCodecs supported:', isWebCodecsSupported())
   if (isWebCodecsSupported()) {

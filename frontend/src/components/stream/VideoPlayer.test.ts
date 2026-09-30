@@ -75,6 +75,7 @@ const h = vi.hoisted(() => {
   class MockInputController {
     static instances: MockInputController[] = []
     setEnabled = vi.fn()
+    setInputHandler = vi.fn()
     sendKey = vi.fn()
     handleMouseDown = vi.fn()
     handleMouseMove = vi.fn()
@@ -95,6 +96,7 @@ const h = vi.hoisted(() => {
     setStatsUpdateHandler = vi.fn()
     start = vi.fn()
     stop = vi.fn()
+    notifyInput = vi.fn()
 
     constructor() {
       MockVideoStream.instances.push(this)
@@ -432,6 +434,63 @@ describe('VideoPlayer H264 状态机与回退', () => {
     wrapper.unmount()
     expect(vs.stop).toHaveBeenCalled()
     expect(h.MockWebSocketService.instances[0].close).toHaveBeenCalled()
+  })
+})
+
+describe('VideoPlayer 输入事件驱动截屏（方案 27）', () => {
+  it('挂载即注册输入回调，h264 模式下回调空转不触发截图流刷新', async () => {
+    const wrapper = await mountPlayer()
+    const ic = h.MockInputController.instances[0]
+
+    expect(ic.setInputHandler).toHaveBeenCalledTimes(1)
+    const handler = ic.setInputHandler.mock.calls[0][0] as () => void
+
+    // 无截图流实例，回调点按 mode 守卫空转且不抛错
+    expect(h.MockVideoStream.instances.length).toBe(0)
+    expect(() => handler()).not.toThrow()
+    wrapper.unmount()
+  })
+
+  it('回退截图模式后输入回调触发 notifyInput', async () => {
+    const wrapper = await mountPlayer()
+    const ic = h.MockInputController.instances[0]
+    const handler = ic.setInputHandler.mock.calls[0][0] as () => void
+    const h264 = h.MockH264Stream.instances[0]
+
+    h264.stats.state = 'error'
+    h264.setStateChangeHandler.mock.calls[0][0]('error')
+    await nextTick()
+    const vs = h.MockVideoStream.instances[0]
+    expect(wrapper.text()).toContain('模式: screenshot')
+
+    handler()
+    expect(vs.notifyInput).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('回切 h264 后输入回调不再触发 notifyInput', async () => {
+    const wrapper = await mountPlayer()
+    const wsInst = h.MockWebSocketService.instances[0]
+    const ic = h.MockInputController.instances[0]
+    const handler = ic.setInputHandler.mock.calls[0][0] as () => void
+    const h264 = h.MockH264Stream.instances[0]
+
+    h264.stats.state = 'error'
+    h264.setStateChangeHandler.mock.calls[0][0]('error')
+    await nextTick()
+    const vs = h.MockVideoStream.instances[0]
+
+    handler()
+    expect(vs.notifyInput).toHaveBeenCalledTimes(1)
+
+    // WS 重连 → 截图流销毁、mode 回 h264
+    wsInst.reconnectHandler!()
+    await nextTick()
+    expect(wrapper.text()).toContain('模式: h264')
+
+    handler()
+    expect(vs.notifyInput).toHaveBeenCalledTimes(1) // 不再增加
+    wrapper.unmount()
   })
 })
 
