@@ -72,7 +72,9 @@ async def capture(device_id: str, duration: float) -> int:
             if isinstance(msg, str):
                 continue
             t = time.monotonic() - started
-            sizes.append((t, len(msg), first_nalu_type(msg) == 5))
+            # 方案 32：[8B PTS 前缀][Annex B 载荷]——统计基于剥离后的载荷
+            payload = msg[8:]
+            sizes.append((t, len(payload), first_nalu_type(payload) == 5))
 
     print(f"\n===== {device_id} 原始序列（前 12 帧） =====")
     for t, s, k in sizes[:12]:

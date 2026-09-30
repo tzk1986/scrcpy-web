@@ -63,7 +63,8 @@ async def main() -> int:
                 log(f"超时：sent={sent} 后 20s 无消息（流可能已被重启打断），中止")
                 break
             if isinstance(msg, bytes):
-                if t_config2 is not None and t_frame2 is None and len(msg) > 100:
+                payload = msg[8:]  # 方案 32：剥离 8B PTS 前缀
+                if t_config2 is not None and t_frame2 is None and len(payload) > 100:
                     t_frame2 = time.monotonic()
             else:
                 try:

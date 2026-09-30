@@ -4,6 +4,8 @@
 连接后端 /ws/video/{device_id}，抓取 N 秒视频流并输出可判读的统计：
     - 帧数/实fps（总均值与逐秒最小值/最大值，识别 0.4fps 类故障）
     - 包边界合法性（每包以起始码开头；1b 协议模式下每包 = 一个 AU）
+    - PTS 前缀校验（方案 32：8B 大端无符号 µs 原值；非递增次数、
+      相邻间隔中位——30fps 预期 ≈33ms）
     - 每帧 NALU 数直方图（检测多 slice 帧）
     - 关键帧数量与间隔
     - 重复载荷次数（检测 repeat-previous-frame 静止重复出帧）
@@ -71,6 +73,7 @@ async def capture(device_id: str, duration: float, save_path: str | None) -> int
     restarting_count = 0
     error_msgs: list[str] = []
     keyframe_seconds: list[float] = []
+    pts_values: list[int] = []
     started = time.monotonic()
     config_info: dict | None = None
     out = open(save_path, "wb") if save_path else None
@@ -110,21 +113,26 @@ async def capture(device_id: str, duration: float, save_path: str | None) -> int
                         print(f"[capture] error: {j.get('message')}")
                 else:
                     frame_count += 1
-                    frame_bytes += len(msg)
+                    # 方案 32 线上格式：[8B PTS 大端无符号 µs][Annex B 载荷]；
+                    # 所有帧统计与落盘均基于剥离后的载荷
+                    pts = int.from_bytes(msg[:8], "big")
+                    payload = msg[8:]
+                    pts_values.append(pts)
+                    frame_bytes += len(payload)
                     if out:
-                        out.write(msg)
+                        out.write(payload)
                     sec = int(now)
                     per_second[sec] = per_second.get(sec, 0) + 1
 
-                    if not (msg[:4] == START_CODE_4 or msg[:3] == START_CODE_3):
+                    if not (payload[:4] == START_CODE_4 or payload[:3] == START_CODE_3):
                         bad_boundary += 1
-                    n = count_nalus(msg)
+                    n = count_nalus(payload)
                     nalu_histogram[n] = nalu_histogram.get(n, 0) + 1
-                    if first_nalu_type(msg) == 5:
+                    if first_nalu_type(payload) == 5:
                         key_frames += 1
                         keyframe_seconds.append(round(now, 2))
 
-                    h = hashlib.md5(msg).hexdigest()
+                    h = hashlib.md5(payload).hexdigest()
                     if payload_hashes and payload_hashes[-1] == h:
                         duplicate_frames += 1
                     payload_hashes.append(h)
@@ -132,7 +140,8 @@ async def capture(device_id: str, duration: float, save_path: str | None) -> int
                     if frame_count <= 3:
                         print(
                             f"[capture] frame#{frame_count} t={now:.2f}s "
-                            f"size={len(msg)} nalus={n} first_type={first_nalu_type(msg)}"
+                            f"size={len(payload)} pts={pts} nalus={n} "
+                            f"first_type={first_nalu_type(payload)}"
                         )
     finally:
         if out:
@@ -152,6 +161,18 @@ async def capture(device_id: str, duration: float, save_path: str | None) -> int
     print(f"起始码非法包={bad_boundary}")
     print(f"每帧NALU数直方图={dict(sorted(nalu_histogram.items()))}")
     print(f"相邻重复载荷次数={duplicate_frames}")
+    # 方案 32：PTS 全链透传验证（设备单调时钟 µs 原值）
+    pts_non_increasing = 0
+    if pts_values:
+        deltas = [pts_values[i + 1] - pts_values[i] for i in range(len(pts_values) - 1)]
+        positive = [d for d in deltas if d > 0]
+        pts_non_increasing = len(deltas) - len(positive)
+        if positive:
+            med_ms = statistics.median(positive) / 1000
+            print(f"PTS: 非递增次数={pts_non_increasing} "
+                  f"相邻间隔中位={med_ms:.1f}ms（设备 µs 原值；30fps 预期 ≈33ms）")
+        else:
+            print("PTS: 全部为 0（raw 兜底模式预期）")
     print(f"config次数={config_count} restarting次数={restarting_count} error次数={len(error_msgs)}")
     if keyframe_seconds:
         gaps = [
@@ -177,6 +198,8 @@ async def capture(device_id: str, duration: float, save_path: str | None) -> int
         print("[fail] 未收到 config")
     if error_msgs:
         print("[warn] 存在服务端 error 消息")
+    if pts_non_increasing:
+        print(f"[warn] PTS 非递增 {pts_non_increasing} 次（编码器重启跳变除外应无）")
     print("[pass] 基础判读通过" if ok else "[fail] 存在基础判读失败项")
     return 0 if ok else 1
 

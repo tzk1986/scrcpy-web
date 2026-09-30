@@ -103,7 +103,8 @@ async def run(device: str, warmup: float, stall: float, resume: float,
     try:
         agen = encoder.start(
             device, EncoderOpts(max_size=0, bit_rate="4M", codec="h264", fps=30))
-        async for payload in agen:
+        # 方案 32：encoder 产出元组 (pts, payload)
+        async for _pts, payload in agen:
             now = time.monotonic()
             frames += 1
             if is_keyframe(payload):

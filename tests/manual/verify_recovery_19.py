@@ -69,11 +69,12 @@ async def recv_loop(ws, seconds: float, label: str, verbose: bool = True) -> dic
         if last_frame_at is not None:
             max_gap = max(max_gap, now - last_frame_at)
         last_frame_at = now
-        is_key = first_nalu_type(msg) == 5
+        payload = msg[8:]  # 方案 32：剥离 8B PTS 前缀
+        is_key = first_nalu_type(payload) == 5
         if is_key:
             keys += 1
         if verbose and (is_key or frames <= 3):
-            print(f"[{label}] t={now:6.2f}s frame#{frames} size={len(msg)} "
+            print(f"[{label}] t={now:6.2f}s frame#{frames} size={len(payload)} "
                   f"key={is_key}", flush=True)
     return {"frames": frames, "keys": keys, "first_frame_at": first_frame_at,
             "last_frame_at": last_frame_at, "max_gap": max_gap, "msgs": msgs,
@@ -113,11 +114,12 @@ async def mode_recovery(device: str, gap: float) -> int:
             now = time.monotonic() - t_send
             if isinstance(msg, str):
                 continue
-            if first_nalu_type(msg) == 5:
+            payload = msg[8:]  # 方案 32：剥离 8B PTS 前缀
+            if first_nalu_type(payload) == 5:
                 latency = now
-                print(f"[recovery] <<< IDR 到达 t={now:.2f}s size={len(msg)}", flush=True)
+                print(f"[recovery] <<< IDR 到达 t={now:.2f}s size={len(payload)}", flush=True)
                 break
-            print(f"[recovery] t={now:.2f}s 非关键帧先到 size={len(msg)} "
+            print(f"[recovery] t={now:.2f}s 非关键帧先到 size={len(payload)} "
                   f"(不阻断，继续等 IDR)", flush=True)
         print(f"[recovery] 回切延迟={latency if latency is not None else '超时>5s'}", flush=True)
 
