@@ -10,7 +10,8 @@
  *     - 配置消息（JSON）:
  *       { "type": "config", "codec": "avc1.XXYYZZ",
  *         "width": 1280, "height": 720, "description": "<hex SPS+PPS>" }
- *     - 视频帧（二进制）: H.264 NAL 单元（Annex B 格式，带起始码）
+ *     - 视频帧（二进制）: [8B PTS 大端无符号 µs][H.264 Annex B NAL 单元]
+ *       （方案 32：PTS 为设备单调时钟原值，喂入 EncodedVideoChunk.timestamp）
  *     - 错误（JSON）: { "type": "error", "message": "..." }
  *
  *   客户端 → 服务端：JSON 输入消息
@@ -427,14 +428,19 @@ export class H264VideoStream {
 
     this._frameCount++
 
+    // 线上格式（方案 32）：[8B PTS 大端无符号，设备单调时钟 µs][Annex B 载荷]。
+    // PTS 原值喂入 EncodedVideoChunk.timestamp（同单位 µs，无需换算）
+    const pts = Number(new DataView(data.buffer, data.byteOffset, 8).getBigUint64(0))
+    const payload = data.subarray(8)
+
     // 零拷贝单遍扫描（方案 26）：扫描与关键帧判定合一，AVCC 组装单次分配
-    const scan = scanFrame(data)
+    const scan = scanFrame(payload)
 
     if (this._frameCount <= 5) {
       console.log('[H264] Frame', this._frameCount, ':',
-        'raw size:', data.length,
+        'raw size:', payload.length,
         'isKeyFrame:', scan.isKey,
-        'NALUs:', scan.nalus.map(n => `type=${data[n.offset] & 0x1f},len=${n.length}`))
+        'NALUs:', scan.nalus.map(n => `type=${payload[n.offset] & 0x1f},len=${n.length}`))
     }
 
     // 丢帧策略（方案 31）：
@@ -467,11 +473,11 @@ export class H264VideoStream {
     }
 
     // 将 Annex B 帧转换为 AVCC 格式
-    const avccData = frameToAvcc(data, scan)
+    const avccData = frameToAvcc(payload, scan)
 
     const chunk = new EncodedVideoChunk({
       type: scan.isKey ? 'key' : 'delta',
-      timestamp: 0,  // 服务端未提供 PTS，用 0 让解码器自动处理
+      timestamp: pts,  // 设备 PTS 原值（µs）——VideoFrame.timestamp 随之正确
       data: avccData,
     })
 

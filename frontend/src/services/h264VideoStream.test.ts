@@ -7,6 +7,7 @@
  *   - start/stop/suspend/resume 生命周期与 getter
  *   - config / restarting / error 消息处理与全部错误分支
  *   - 二进制帧：丢帧、关键帧重建解码器、AVCC 转换、decode 异常吞掉
+ *   - PTS 透传（方案 32）：8B 前缀解包 → EncodedVideoChunk.timestamp
  *   - 追赶状态机（丢到下一 IDR + 催帧）与 warn 限速（方案 31）
  *   - 解码器 output/error 回调与 canvas 绘制、streaming 状态流转
  */
@@ -32,9 +33,21 @@ const CONFIG_MSG_3BYTE = JSON.stringify({
   description: '0000016742e01e8900000168ce3880',
 })
 
-/** 4 字节起始码的 IDR 关键帧（NAL type 5）与 delta 帧（NAL type 1）。 */
-const KEY_FRAME = new Uint8Array([0, 0, 0, 1, 0x65, 0x11, 0x22, 0x33]).buffer
-const DELTA_FRAME = new Uint8Array([0, 0, 0, 1, 0x41, 0x99, 0x88]).buffer
+/** 4 字节起始码的 IDR 关键帧（NAL type 5）与 delta 帧（NAL type 1）载荷。 */
+const KEY_PAYLOAD = new Uint8Array([0, 0, 0, 1, 0x65, 0x11, 0x22, 0x33])
+const DELTA_PAYLOAD = new Uint8Array([0, 0, 0, 1, 0x41, 0x99, 0x88])
+
+/** 构造线上格式二进制帧：[8B PTS 大端无符号][Annex B 载荷]（方案 32）。 */
+function frameMessage(pts: number, payload: Uint8Array): ArrayBuffer {
+  const out = new Uint8Array(8 + payload.length)
+  new DataView(out.buffer).setBigUint64(0, BigInt(pts))
+  out.set(payload, 8)
+  return out.buffer
+}
+
+/** 带 PTS 前缀的线上格式帧（服务端实际发送的形态）。 */
+const KEY_FRAME = frameMessage(33_333, KEY_PAYLOAD)
+const DELTA_FRAME = frameMessage(66_666, DELTA_PAYLOAD)
 
 type DecoderInit = {
   output: (frame: VideoFrame) => void
@@ -551,6 +564,24 @@ describe('二进制帧处理', () => {
       .toEqual([0, 0, 0, 4, 0x65, 0x11, 0x22, 0x33])
     expect(stream.stats.frameCount).toBe(1)
     expect(stream.stats.lastFrameTime).toBeGreaterThan(0)
+  })
+
+  it('PTS 透传：timestamp 取自 8B 前缀原值、载荷剥离前缀（方案 32）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+
+    ws.handler!(KEY_FRAME)
+    const keyChunk = FakeEncodedVideoChunk.instances.at(-1)
+    expect(keyChunk?.init.timestamp).toBe(33_333)  // 非写死 0，为设备 PTS 原值
+
+    ws.handler!(DELTA_FRAME)
+    const deltaChunk = FakeEncodedVideoChunk.instances.at(-1)
+    expect(deltaChunk?.init.timestamp).toBe(66_666)
+    // 载荷为剥离前缀后的 Annex B → AVCC（无 8B 前缀残留）
+    expect(Array.from(new Uint8Array(deltaChunk!.init.data)))
+      .toEqual([0, 0, 0, 3, 0x41, 0x99, 0x88])
+    expect(stream.stats.frameCount).toBe(2)
   })
 
   it('delta 帧在解码队列积压（>=2）时被丢弃', () => {
