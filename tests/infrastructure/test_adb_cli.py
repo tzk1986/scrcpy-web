@@ -281,6 +281,55 @@ class TestShell:
 
 
 # ---------------------------------------------------------------------------
+# 截图 raw+gzip 链路（方案 29：adb exec-out sh -c "screencap | gzip -1"）
+# ---------------------------------------------------------------------------
+
+class TestScreenshotRawGzip:
+    """测试 screenshot_raw_gzip 方法"""
+
+    def _proc(self, captured: list, rc: int = 0, stdout: bytes = b"\x1f\x8bGZIP", stderr: bytes = b""):
+        async def create_mock_proc(*args, **kwargs):
+            captured.append(args)
+            proc = MagicMock()
+            proc.returncode = rc
+            proc.communicate = AsyncMock(return_value=(stdout, stderr))
+            return proc
+        return create_mock_proc
+
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_argv_and_stdout(self):
+        """命令形态正确（exec-out sh -c "screencap | gzip -1"）且原样返回 gzip 字节。"""
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec',
+                   side_effect=self._proc(captured, stdout=b"GZIP_BYTES")):
+            driver = AdbCliDriver()
+            result = await driver.screenshot_raw_gzip("dev1")
+        assert result == b"GZIP_BYTES"
+        assert captured[0][1:4] == ("-s", "dev1", "exec-out")
+        assert captured[0][4:] == ("sh", "-c", "screencap | gzip -1")
+
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_failure(self):
+        """设备端链失败（rc≠0）抛 AdbError 且携带 stderr。"""
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec',
+                   side_effect=self._proc(captured, rc=127, stderr=b"sh: gzip: not found")):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="gzip: not found"):
+                await driver.screenshot_raw_gzip("dev1")
+
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_empty(self):
+        """空输出抛 AdbError（对齐既有 screenshot 语义）。"""
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec',
+                   side_effect=self._proc(captured, stdout=b"")):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="empty"):
+                await driver.screenshot_raw_gzip("dev1")
+
+
+# ---------------------------------------------------------------------------
 # logcat 流式采集测试（-T 时间下界绑定）
 # ---------------------------------------------------------------------------
 

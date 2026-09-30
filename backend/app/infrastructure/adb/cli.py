@@ -451,6 +451,42 @@ class AdbCliDriver:
 
         return stdout
 
+    async def screenshot_raw_gzip(self, device_id: str) -> bytes:
+        """
+        截取设备屏幕 raw 帧并经设备端 gzip -1 压缩（方案 29）。
+
+        原理：`screencap` 无文件参数时向 stdout 输出 raw RGBA 数据
+        （12/16 字节头 + 像素），管道到设备端 toybox gzip 压缩后经
+        exec-out 传回——设备端 PNG 编码（~950-1000ms 单点）被换为
+        gzip -1（实测照片级画面 ~640ms，spike 见方案 29 §2）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            gzip 压缩的 raw RGBA 帧数据（含 screencap 帧头）。
+
+        异常：
+            AdbError: 执行失败（如设备端无 gzip）或输出为空时。
+        """
+        proc = await asyncio.create_subprocess_exec(
+            self.adb_path, "-s", device_id, "exec-out",
+            "sh", "-c", "screencap | gzip -1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            error_msg = stderr.decode().strip()
+            raise AdbError(f"Raw screenshot failed: {error_msg}")
+
+        if not stdout:
+            raise AdbError("Raw screenshot returned empty data")
+
+        return stdout
+
     async def _consume_stderr(self, stderr: asyncio.StreamReader) -> None:
         """
         消费 stderr 防止管道缓冲区满导致死锁。

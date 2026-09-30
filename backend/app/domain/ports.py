@@ -349,6 +349,21 @@ class AdbDriver(Protocol):
         """
         ...
 
+    async def screenshot_raw_gzip(self, device_id: str) -> bytes:
+        """
+        截取设备屏幕 raw 帧并经设备端 gzip 压缩（方案 29）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            gzip 压缩的 raw RGBA 帧数据（含 screencap 帧头）。
+
+        异常：
+            AdbError: 执行失败（如设备端无 gzip）或输出为空时。
+        """
+        ...
+
     async def connect_tcp(self, ip: str, port: int = 5555) -> str:
         """
         通过 TCP/IP 连接设备，返回 "ip:port" 形式的设备 ID。
