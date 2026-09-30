@@ -98,8 +98,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        # 导出端点元数据头（方案 18 O2）：前端回显行数与区间
-        expose_headers=["X-Export-Count", "X-Export-Oldest-Ts", "X-Export-Newest-Ts"],
+        # 导出端点元数据头（方案 18 O2）：前端回显行数与区间；
+        # X-Frame-Format（方案 29）：截图响应帧格式标识
+        expose_headers=["X-Export-Count", "X-Export-Oldest-Ts", "X-Export-Newest-Ts", "X-Frame-Format"],
     )
 
     # --- 异常处理器 --------------------------------------------------------

@@ -41,6 +41,7 @@ def mock_adb():
     adb.shell = AsyncMock(return_value="")
     adb.install = AsyncMock()
     adb.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n")
+    adb.screenshot_raw_gzip = AsyncMock(return_value=b"\x1f\x8bGZIP")
     adb.connect_tcp = AsyncMock(return_value="192.168.1.5:5555")
     adb.disconnect_tcp = AsyncMock()
     return adb
@@ -255,6 +256,16 @@ class TestScreenshot:
 
         mock_adb.screenshot.assert_called_once_with("emulator-5554")
         assert result == b"\x89PNG\r\n\x1a\nfake_png_data"
+
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_delegates_to_adb(self, service, mock_adb):
+        """测试 raw+gzip 截图委托给 ADB 驱动（方案 29）"""
+        mock_adb.screenshot_raw_gzip.return_value = b"GZIP_FRAME"
+
+        result = await service.screenshot_raw_gzip("emulator-5554")
+
+        mock_adb.screenshot_raw_gzip.assert_called_once_with("emulator-5554")
+        assert result == b"GZIP_FRAME"
 
 
 # ---------------------------------------------------------------------------

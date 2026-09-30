@@ -152,6 +152,18 @@ class DeviceService:
         """
         return await self.adb.screenshot(device_id)
 
+    async def screenshot_raw_gzip(self, device_id: str) -> bytes:
+        """
+        截取设备屏幕 raw 帧并经设备端 gzip 压缩（方案 29）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            gzip 压缩的 raw RGBA 帧数据（含 screencap 帧头）。
+        """
+        return await self.adb.screenshot_raw_gzip(device_id)
+
     async def connect_tcp(self, ip: str, port: int = 5555) -> str:
         """
         通过 TCP/IP 连接到设备。

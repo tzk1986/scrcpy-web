@@ -21,13 +21,13 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response, StreamingResponse
 
 from app.application.device_service import DeviceService
-from app.core.exceptions import DeviceNotFoundError
+from app.core.exceptions import AdbError, DeviceNotFoundError
 from app.core.launcher import is_shutdown_requested
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
@@ -183,16 +183,40 @@ async def install_apk(
 
 
 @router.get("/{device_id}/screenshot")
-async def screenshot(device_id: str, service: DeviceService = Depends(get_device_service)) -> Response:
+async def screenshot(
+    device_id: str,
+    format: Literal["png", "raw"] = "png",
+    service: DeviceService = Depends(get_device_service),
+) -> Response:
     """
     截取设备屏幕截图。
 
     参数：
         device_id: 设备 ADB 序列号（路径参数）。
+        format: png（默认，设备端 PNG 编码）或 raw（方案 29：
+            设备端 raw 帧 + gzip 透传，经 Content-Encoding: gzip
+            由浏览器透明解压；无 gzip 设备单请求内回退 PNG）。
 
     返回：
-        PNG 图片数据（Content-Type: image/png）。
+        png：PNG 图片数据（Content-Type: image/png）。
+        raw：gzip 压缩的 raw RGBA 帧数据（X-Frame-Format: raw-rgba）；
+        链路失败时回退 PNG（X-Frame-Format: png）。
     """
+    if format == "raw":
+        try:
+            gzip_bytes = await service.screenshot_raw_gzip(device_id)
+        except AdbError:
+            png_bytes = await service.screenshot(device_id)
+            return Response(
+                content=png_bytes,
+                media_type="image/png",
+                headers={"X-Frame-Format": "png"},
+            )
+        return Response(
+            content=gzip_bytes,
+            media_type="application/octet-stream",
+            headers={"Content-Encoding": "gzip", "X-Frame-Format": "raw-rgba"},
+        )
     png_bytes = await service.screenshot(device_id)
     return Response(content=png_bytes, media_type="image/png")
 
