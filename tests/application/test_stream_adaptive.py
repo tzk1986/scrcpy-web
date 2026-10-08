@@ -145,6 +145,36 @@ def test_reports_dropped_while_bitrate_switch_pending(stream_settings):
     assert svc._advisors["dev1"].decide(60.0) is None
 
 
+@pytest.mark.asyncio
+async def test_claim_clears_stale_pending_bitrate(stream_settings):
+    """方案 34 D3c：claim 时清除残留 pending——旧流死亡前未消费的码率
+    切换不得被新流首循环消费（05:40:59 实证：新流启动 1 秒内被强制重启）。"""
+    FakeEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeEncoder)
+    svc._pending_bitrate["dev1"] = 1_000_000  # 旧会话残留的未消费切换
+
+    async def consume():
+        async for _ in svc.start_stream("dev1"):
+            pass
+
+    task = asyncio.create_task(consume())
+
+    # 新流照常以起始档启动：残留 pending 被 claim 清除，不触发重启分支
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 1)
+    await asyncio.sleep(0.2)  # 观察窗口：若误消费 pending 会立刻重启出第 2 台
+    assert len(FakeEncoder.created) == 1
+    assert FakeEncoder.created[0].opts.bit_rate == "4000000"
+    assert svc._pending_bitrate.get("dev1") is None
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: FakeEncoder.created[0].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 class FakeIdleEncoder(FakeEncoder):
     """只产 1 帧后挂起——模拟静止画面下 scrcpy 不再出帧。"""
 

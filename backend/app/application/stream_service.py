@@ -154,6 +154,9 @@ class StreamService:
         # 活跃标记写入本会话令牌（truthy），供 teardown 的 identity 守卫使用
         token = _ActiveStreamToken()
         self.active_streams[device_id] = token
+        # 方案 34 D3c：claim 成功即旧流已死/收尾，残留 pending 必为旧会话
+        # 未消费物；清除之，防新流误读（05:40:59 实证：启动 ~1.25s 被强制重启）。
+        self._pending_bitrate.pop(device_id, None)
 
         # 码率重启事件：静止画面下 scrcpy 不出帧，仅靠"下一帧时消费 pending"
         # 会无限挂起，因此取帧协程与本事件赛跑，事件先到也立即重启。
