@@ -115,11 +115,23 @@ def get_app_service() -> AppService:
     return AppService(adb=get_adb_driver())
 
 
+@lru_cache()
 def get_stream_service() -> StreamService:
-    """构建 StreamService 实例。"""
+    """返回进程级 StreamService 单例。
+
+    必须单例（方案 34 D8）：active_streams/encoders/_stall_restarts 等
+    跨会话状态依赖同一实例——每 WS 连接新建实例会让 D4 acquire 守卫
+    各自看到空 dict 永不拒绝、多会话并发各起 scrcpy-server（设备端
+    SIGABRT 互踩，2026-10-08 .33 现场日志实证）。
+    """
     return StreamService()
 
 
+@lru_cache()
 def get_session_service() -> SessionService:
-    """构建一个 SessionService（无外部依赖）。"""
+    """返回进程级 SessionService 单例。
+
+    必须单例：sessions 协作注册表是内存字典，每请求新建实例会让
+    create 后 join/get 落在不同空 dict（查不到会话）。
+    """
     return SessionService()
