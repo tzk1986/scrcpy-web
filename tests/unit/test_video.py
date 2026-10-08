@@ -36,6 +36,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI, WebSocketDisconnect
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from app.deps import get_stream_service
 from app.interfaces.ws import video as video_module
@@ -604,6 +605,90 @@ def test_input_ignored_without_encoder_and_stats_normalized(video_client):
                                     (DEV, 5.0)]
         gate.set()
     assert wait_for(lambda: svc.stop_calls == [DEV])
+
+
+# ---------------------------------------------------------------------------
+# 方案 33：日志降噪（幂等重发降 debug / 输入链降 debug / 一次性打点）
+# ---------------------------------------------------------------------------
+
+def test_duplicate_sps_pps_downgraded_to_debug(video_client):
+    """SPS/PPS 与已缓存值相同（幂等重发）→ debug 级；首次接收仍 INFO。
+    实测活跃流时段 scrcpy-server 以 ~0.5s 周期重发相同 SPS/PPS，
+    是本链路最大日志噪音源；幂等重发不触发 config 重发（行为不回归）。"""
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0, SPS_AVC + PPS_MAIN + IDR_1],
+        encoder=FakeEncoder(),
+    )
+    with capture_logs() as logs:
+        with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+            assert recv_json(session)["type"] == "config"
+            assert recv_binary(session) == frame(0, IDR_0)
+            # 第二轮相同的 SPS/PPS 不触发 config 重发：下一条仍是二进制帧
+            assert recv_binary(session) == frame(0, IDR_1)
+    sps_levels = [e["log_level"] for e in logs if e.get("event") == "sps_received"]
+    pps_levels = [e["log_level"] for e in logs if e.get("event") == "pps_received"]
+    assert sps_levels == ["info", "debug"]
+    assert pps_levels == ["info", "debug"]
+
+
+def test_changed_sps_pps_keep_info_and_resend_config(video_client):
+    """SPS/PPS 与已缓存值不同（编码参数变化）→ 保持 INFO 且 config 重发
+    （方案 19 终审 Minor #3 语义不受降级影响）。"""
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0, SPS_HIGH + PPS_HIGH + IDR_1],
+        encoder=FakeEncoder(),
+    )
+    with capture_logs() as logs:
+        with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+            assert recv_json(session)["type"] == "config"
+            assert recv_binary(session) == frame(0, IDR_0)
+            second = recv_json(session)   # 变化 → 配对重发 config
+            assert second["type"] == "config"
+            assert second["codec"] == "avc1.640028"
+    sps_levels = [e["log_level"] for e in logs if e.get("event") == "sps_received"]
+    assert sps_levels == ["info", "info"]
+
+
+def test_input_chain_downgraded_to_debug(video_client):
+    """输入热路径 3 条日志（input_received/sending_input_via_encoder/input_sent）
+    降为 debug（防拖动场景秒级刷屏）；转发行为不变。"""
+    gate = threading.Event()
+    encoder = FakeEncoder()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        fps_to_bitrate={25.0: 2_000_000},
+        hold_until=gate.is_set,
+    )
+    with capture_logs() as logs:
+        with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+            assert recv_json(session)["type"] == "config"
+            assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
+            session.send_json({"action": "touch", "x": 1, "y": 2})
+            # stats 是同步点：restarting 到达即证明输入链已完整处理
+            session.send_json({"op": "stats", "fps": 25})
+            assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
+            assert encoder.inputs == [{"action": "touch", "x": 1, "y": 2}]
+            gate.set()
+        assert wait_for(lambda: svc.stop_calls == [DEV])
+    for event in ("input_received", "sending_input_via_encoder", "input_sent"):
+        levels = [e["log_level"] for e in logs if e.get("event") == event]
+        assert levels == ["debug"], f"{event}: {levels}"
+
+
+def test_frame_before_config_logged_once(video_client):
+    """config 未就绪期间多帧到达 → frame_before_config INFO 至多 1 条
+    （防 raw 兜底/异常流每帧刷屏）；帧丢弃行为不变。"""
+    svc = FakeStreamService(
+        [IDR_X, IDR_Y, SPS_AVC + PPS_MAIN + IDR_Z],
+        encoder=FakeEncoder(),
+    )
+    with capture_logs() as logs:
+        with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+            assert recv_json(session)["type"] == "config"
+            assert recv_binary(session) == frame(0, IDR_Z)   # IDR_X/IDR_Y 已丢弃
+    entries = [e for e in logs if e.get("event") == "frame_before_config"]
+    assert len(entries) == 1
 
 
 def test_input_handler_stops_on_unexpected_error(video_client):

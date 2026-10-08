@@ -24,6 +24,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from app.core.config import settings
 from app.domain.ports import EncoderOpts
@@ -855,6 +856,102 @@ async def test_fallback_unknown_action_is_noop():
         await encoder.send_input({"action": "bogus", "x": 1, "y": 2})
 
     exec_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 方案 33：日志降噪（输入链降 debug / session 幂等 / 分辨率幂等 / server stderr）
+# ---------------------------------------------------------------------------
+
+async def test_send_input_chain_downgraded_to_debug():
+    """输入热路径日志（send_input_called/sending_touch）降为 debug，
+    防拖动场景秒级刷屏；控制报文行为不变。"""
+    encoder, sender = make_control_encoder()
+
+    with capture_logs() as logs:
+        await encoder.send_input({"action": "touch", "x": 100, "y": 200})
+
+    calls = [(c.args[0], c.args[1], c.args[2]) for c in sender.touch.await_args_list]
+    assert calls == [(100, 200, ACTION_DOWN), (100, 200, ACTION_UP)]
+    levels = {e["event"]: e["log_level"] for e in logs}
+    assert levels.get("send_input_called") == "debug"
+    assert levels.get("sending_touch") == "debug"
+
+
+def test_duplicate_session_meta_downgraded_to_debug():
+    """session 包宽高与当前一致（幂等重发，实测 79% 为重发）→ debug 级；
+    首包（分辨率变化）仍 INFO。"""
+    encoder = ScrcpyEncoder()
+    encoder._control_writer = FakeWriter()
+
+    with capture_logs() as logs:
+        encoder._handle_session_event(DEVICE_ID, SessionEvent(1080, 1920, False))
+        encoder._handle_session_event(DEVICE_ID, SessionEvent(1080, 1920, False))
+
+    levels = [e["log_level"] for e in logs if e.get("event") == "session_meta_received"]
+    assert levels == ["info", "debug"]
+
+
+def test_update_resolution_noop_when_unchanged():
+    """分辨率未变化 → 静默（ControlSender.update_resolution 幂等提前返回）。"""
+    sender = ControlSender(FakeWriter(), (1080, 1920))
+
+    with capture_logs() as logs:
+        sender.update_resolution((1080, 1920))
+
+    assert sender.resolution == (1080, 1920)
+    assert [e for e in logs if e.get("event") == "control_resolution_updated"] == []
+
+
+def test_update_resolution_logs_on_change():
+    """分辨率实际变化 → INFO 且新值生效（旋转场景诊断保留）。"""
+    sender = ControlSender(FakeWriter(), (1080, 1920))
+
+    with capture_logs() as logs:
+        sender.update_resolution((720, 1280))
+
+    assert sender.resolution == (720, 1280)
+    levels = [e["log_level"] for e in logs if e.get("event") == "control_resolution_updated"]
+    assert levels == ["info"]
+
+
+async def test_server_log_lines_downgraded_to_debug():
+    """scrcpy-server stderr 行（启动探测后的后台读取任务）统一 debug 级；
+    启动探测期（:263）本就是 debug。"""
+    encoder = ScrcpyEncoder()
+    sps = b"\x00\x00\x00\x01g" + b"\x00" * 8
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(SC_PACKET_FLAG_CONFIG, len(sps)) + sps
+    )
+    # 前两行供启动探测消费（第二行命中 Device: 即 break），
+    # 第三行留给后台 stderr 任务（治理目标：292 的逐行 INFO）
+    stderr = FakeStderr(
+        [b"INFO: scrcpy 4.1 started\n", b"Device: test-device\n", b"INFO: streaming\n"],
+        block=True,
+    )
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream))
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+
+    with capture_logs() as logs:
+        with patch("asyncio.create_subprocess_exec", new=harness), \
+                patch("asyncio.open_connection", new=conn):
+            agen = encoder.start(DEVICE_ID, EncoderOpts())
+            first = await agen.__anext__()
+            assert first == (0, sps)
+            # 给后台 stderr 任务一个窗口消费第三行（本地 fake readline 无 IO）
+            entries: list[dict] = []
+            for _ in range(100):
+                entries = [e for e in logs if e.get("event") == "scrcpy_server_log"]
+                if len(entries) >= 3:
+                    break
+                await asyncio.sleep(0.01)
+            with pytest.raises(StopAsyncIteration):
+                await agen.__anext__()
+
+    assert len(entries) == 3   # 探测期 2 条 + 后台任务 1 条
+    assert all(e["log_level"] == "debug" for e in entries)
 
 
 # ---------------------------------------------------------------------------
