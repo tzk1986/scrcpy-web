@@ -25,4 +25,4 @@ OpenScrcpy 后端应用
 仅官方支持 Chrome 浏览器（WebCodecs、WebTransport 等特性）。
 """
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
