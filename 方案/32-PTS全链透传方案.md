@@ -1,7 +1,7 @@
 # 方案 32：PTS 全链透传（P2-4）
 
 - 日期：2026-09-30
-- 状态：调研完成，待立项确认
+- 状态：**实施完成（2026-10-08），真机验收闭环**——后端段 55b4457 / 前端段 69c5fc3 / 脚本段 ed7b852 + 验收期修复
 - 关联：[docs/性能对标与优化清单.md](../docs/性能对标与优化清单.md)（P2 第 4 项）、
   `backend/app/scrcpy/stream_protocol.py`、`backend/app/infrastructure/stream/scrcpy.py`、
   `backend/app/interfaces/ws/video.py`、`frontend/src/services/h264VideoStream.ts`
@@ -131,6 +131,19 @@ const payload = data.subarray(8)
 
 （步骤 3 探针形式实施时定；若 hook EncodedVideoChunk 不可行，
 以单测 + 后端日志抽帧比对为准。）
+
+### 验收结果（2026-10-08，.18 时钟页活动流）
+
+| 步骤 | 结果 | 证据 |
+|---|---|---|
+| 1 WS 抓包 | ✅ | `capture_ws_frames.py`：778 帧 PTS **非递增 0 次**；相邻间隔中位 **34.6ms**（≈30fps）；起始码非法包 0 / 每帧恰 1 NALU / 逐帧无错位；config 1 次、重复载荷 0 |
+| 2 e2e 回归 | ✅ | video-stream **2 passed**（帧计数增长 + canvas 真实渲染）；frame-drop-31 场景 1+2 **1 passed**（恢复 29.9fps、催帧恰一次、warn 0）+ 场景 3 **1 passed**（丢帧 0 / 催帧 0 / 无误触发）；stream-stability-19 **3 passed**（含卡死注入回切链） |
+| 3 前端 timestamp | ✅ | 临时探针（e2e addInitScript 包装 `VideoDecoder` 捕获 `chunk.timestamp`，验证后即删）：**155/155 严格递增**、中位间隔 **34.63ms**——与 WS 侧 34.6ms 逐值吻合，端到端闭环 |
+
+验收期修复：`capture_ws_frames.py` 中文 Windows 下 GBK stdout 无法输出 µ 字符
+（UnicodeEncodeError）→ 按项目既有的 `sys.stdout.reconfigure(encoding="utf-8")`
+模式修复。门禁：后端 pytest **804 passed + 1 skipped** / ruff / mypy strict 63 文件；
+前端 vitest **422 passed**（前端零改动）。
 
 ## 七、实施范围
 

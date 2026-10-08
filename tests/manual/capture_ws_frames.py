@@ -27,6 +27,8 @@ import time
 
 from websockets.asyncio.client import connect
 
+sys.stdout.reconfigure(encoding="utf-8")
+
 START_CODE_4 = b"\x00\x00\x00\x01"
 START_CODE_3 = b"\x00\x00\x01"
 
