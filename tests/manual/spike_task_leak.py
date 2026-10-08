@@ -55,7 +55,8 @@ async def run(device: str, seconds: float, interval: float) -> int:
     t0 = time.monotonic()
     next_at = t0 + interval
 
-    stream = svc.start_stream(device)
+    token = await svc.acquire_stream(device)
+    stream = svc.start_stream(device, token)
     try:
         async for _frame in stream:
             frames += 1

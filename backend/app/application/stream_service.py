@@ -88,40 +88,24 @@ class StreamService:
         # 关键帧请求冷却（方案 19 实施项 3）：device → 最近一次实际发送时刻（1s 防抖）
         self._last_keyframe_at: dict[str, float] = {}
 
-    async def start_stream(self, device_id: str) -> AsyncIterator[tuple[int, bytes]]:
+    async def acquire_stream(self, device_id: str) -> _ActiveStreamToken | None:
         """
-        为给定设备启动视频流。
+        尝试为给定设备取得视频流的独占会话令牌（方案 34 D4）。
 
-        从配置读取编码器选项，创建编码器实例，启动编码，并产出 H.264 帧。
-        循环在每次迭代时检查 active_streams[device_id]——
-        如果为 False（由 stop_stream 设置），循环优雅退出。
+        移植原 start_stream 的守卫与 claim：
+        - 已活跃守卫（重连窗口，方案 19 终审修复）：旧流可能正处于
+          stream_ended 发送后的收尾阶段（active_streams 已置 False、
+          finally 未跑完），立即拒绝会让重连前端降级为只读截图。
+          给最多 3×1s 收尾窗口，超时仍活跃才拒绝。truthy 检查：
+          False（收尾中）直接放行，避免把整个重连窗口白等掉。
+        - claim 成功即旧流已死/收尾：写入本会话令牌；残留 pending 必为
+          旧会话未消费物，清除之防新流误读（方案 34 D3c，05:40:59 实证：
+          残留 pending 令新流启动 ~1.25s 即被强制重启）。
 
-        单客户端假设（设计限制）：同一设备流已活跃时本方法阻塞等待最多
-        3×1s（重连窗口，方案 19 终审修复：给旧流 stream_ended 收尾与编码器
-        清理留出窗口），超时仍活跃才直接返回（不产帧），后到的第二连接会
-        拿到空流并被关闭；客户端断开即调用 stop_stream，多观看者场景下
-        互相影响。多人同时观看需上层做 fan-out
-        （一路编码广播给多个订阅者），当前未实现。
-
-        自适应码率开启时，外层循环支持运行中重启编码器切换码率档：
-        report_client_fps 决策出新档位后，帧循环在下一次取帧时停止
-        当前编码器并以新码率重建（scrcpy 协议无运行中改码率消息，
-        只能重启；每次切换有约 1-3s 黑屏，由决策器的迟滞+冷却控制频率）。
-
-        参数：
-            device_id: 要流式传输的设备的 ADB 序列号。
-
-        产出：
-            (PTS, H.264 帧字节)：PTS 为设备单调时钟 µs（方案 32 透传，
-            raw 兜底模式为 0），帧字节为 Annex B。
+        返回 None 表示已有活跃流（被拒）：调用方不得进入推流、不得调用
+        release_stream。不变量：只有持有 token 者能停流——第二客户端
+        无论以何种方式退出都不得踩停第一客户端的活跃流。
         """
-        logger.info("starting_video_stream", device=device_id)
-
-        # 检查是否已经有流在运行。
-        # 重连窗口（方案 19 终审修复）：旧流可能正处于 stream_ended 发送后的
-        # 收尾阶段（stop_stream 已置 False、finally 未跑完），立即拒绝会让
-        # 重连前端降级为只读截图。给最多 3×1s 收尾窗口，超时仍活跃才拒绝。
-        # truthy 检查：False（收尾中）直接放行，避免把整个重连窗口白等掉。
         for attempt in range(3):
             if not self.active_streams.get(device_id):
                 break
@@ -130,7 +114,38 @@ class StreamService:
             await asyncio.sleep(1.0)
         else:
             logger.warning("stream_already_active", device=device_id)
-            return
+            return None
+
+        token = _ActiveStreamToken()
+        self.active_streams[device_id] = token
+        self._pending_bitrate.pop(device_id, None)
+        return token
+
+    async def start_stream(
+        self, device_id: str, token: _ActiveStreamToken
+    ) -> AsyncIterator[tuple[int, bytes]]:
+        """
+        为给定设备启动视频流（须先经 acquire_stream 取得会话令牌）。
+
+        从配置读取编码器选项，创建编码器实例，启动编码，并产出 H.264 帧。
+        循环在每次迭代时检查 active_streams[device_id] 是否仍为本会话
+        令牌——为 False（由 release_stream/stop_stream 置位）或已换主
+        （新会话 claim）时循环优雅退出。
+
+        自适应码率开启时，外层循环支持运行中重启编码器切换码率档：
+        report_client_fps 决策出新档位后，帧循环在下一次取帧时停止
+        当前编码器并以新码率重建（scrcpy 协议无运行中改码率消息，
+        只能重启；每次切换有约 1-3s 黑屏，由决策器的迟滞+冷却控制频率）。
+
+        参数：
+            device_id: 要流式传输的设备的 ADB 序列号。
+            token: acquire_stream 颁发的会话令牌。
+
+        产出：
+            (PTS, H.264 帧字节)：PTS 为设备单调时钟 µs（方案 32 透传，
+            raw 兜底模式为 0），帧字节为 Annex B。
+        """
+        logger.info("starting_video_stream", device=device_id)
 
         s = settings()
         base_bps = parse_bit_rate(s.stream.bit_rate)
@@ -151,12 +166,6 @@ class StreamService:
                     )
                 )
                 self._advisors[device_id] = advisor
-        # 活跃标记写入本会话令牌（truthy），供 teardown 的 identity 守卫使用
-        token = _ActiveStreamToken()
-        self.active_streams[device_id] = token
-        # 方案 34 D3c：claim 成功即旧流已死/收尾，残留 pending 必为旧会话
-        # 未消费物；清除之，防新流误读（05:40:59 实证：启动 ~1.25s 被强制重启）。
-        self._pending_bitrate.pop(device_id, None)
 
         # 码率重启事件：静止画面下 scrcpy 不出帧，仅靠"下一帧时消费 pending"
         # 会无限挂起，因此取帧协程与本事件赛跑，事件先到也立即重启。
@@ -164,7 +173,7 @@ class StreamService:
         self._restart_events[device_id] = restart_event
 
         try:
-            while self.active_streams.get(device_id):
+            while self.active_streams.get(device_id) is token:
                 encoder = self._encoder_factory()
                 self.encoders[device_id] = encoder
                 opts = EncoderOpts(
@@ -180,7 +189,7 @@ class StreamService:
                 event_task = None
                 try:
                     agen = encoder.start(device_id, opts)
-                    while self.active_streams.get(device_id):
+                    while self.active_streams.get(device_id) is token:
                         # pending 存在则事件必已置位（见 report_client_fps），
                         # 不清除，让本回合立即走重启分支
                         if self._pending_bitrate.get(device_id) is None:
@@ -362,12 +371,34 @@ class StreamService:
         self._last_keyframe_at[device_id] = now
         return True
 
+    async def release_stream(self, device_id: str, token: _ActiveStreamToken) -> None:
+        """
+        释放会话令牌所持有的流（方案 34 D4）——WS 生命周期的停流路径。
+
+        仅当注册表条目仍是本 token 时置停止标志（False），让 start_stream
+        循环退出，实际清理由其 finally 完成。旧会话令牌在新会话已 claim
+        后释放为 no-op：不变量「只有持有 token 者能停流」，根治并发踩停
+        （旧行为：每个 WS finally 无条件 stop_stream 写 False，第二客户端
+        踩停第一流 → 双端互踩成 ping-pong 重启循环，05:41-05:43 实证）。
+
+        参数：
+            device_id: 要停止的设备的 ADB 序列号。
+            token: acquire_stream 颁发的会话令牌。
+        """
+        cur = self.active_streams.get(device_id)
+        if cur is token:
+            logger.info("stopping_video_stream", device=device_id)
+            self.active_streams[device_id] = False
+        elif cur is not None:
+            logger.info("release_stream_stale_token_ignored", device=device_id)
+
     async def stop_stream(self, device_id: str) -> None:
         """
-        通知编码器停止给定设备的流式传输。
+        无条件停止给定设备的流式传输（应用关闭场景专用）。
 
-        设置 start_stream 循环检查的标志，使其在下一次迭代时退出。
-        实际清理发生在 start_stream 的 finally 块中。
+        与 release_stream 的区别：不做 token 身份检查。仅用于
+        stop_all_streams（应用关闭清理全量流）；WS 生命周期路径
+        必须走 release_stream（token 持有制，方案 34 D4）。
 
         参数：
             device_id: 要停止的设备的 ADB 序列号。

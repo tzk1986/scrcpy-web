@@ -81,6 +81,18 @@ async def video_stream(
     # 视频小包的 Nagle 延迟；best-effort，失败不影响连接
     enable_tcp_nodelay(websocket)
 
+    # 方案 34 D4：先 acquire（独占会话令牌）再入流。被拒（已有活跃流，
+    # 3×1s 守卫超时）时仅回 stream_ended 直接返回——不触达 release/stop：
+    # 旧行为是 finally 无条件 stop_stream 写 False 踩停第一客户端的
+    # 活跃流，双端互踩成 ping-pong 重启循环（05:41-05:43 实证）。
+    token = await stream_service.acquire_stream(device_id)
+    if token is None:
+        try:
+            await websocket.send_json({"type": "stream_ended"})
+        except Exception:
+            pass
+        return
+
     parser = H264Parser()
     sps_data = None
     pps_data = None
@@ -152,7 +164,7 @@ async def video_stream(
         # 发送视频流
         frame_count = 0
         chunk_count = 0
-        async for pts, chunk in stream_service.start_stream(device_id):
+        async for pts, chunk in stream_service.start_stream(device_id, token):
             chunk_count += 1
 
             # 自适应码率重启：轮次变化时重置解析器，丢弃跨重启的半截 NALU，
@@ -266,7 +278,9 @@ async def video_stream(
             await input_task
         except asyncio.CancelledError:
             pass
-        await stream_service.stop_stream(device_id)
+        # 方案 34 D4：按会话令牌释放（token 持有制）——旧会话释放
+        # no-op 于新会话条目，反之亦然；只有持有者能停自己的流。
+        await stream_service.release_stream(device_id, token)
 
 
 async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes, stream_service: StreamService, device_id: str) -> None:

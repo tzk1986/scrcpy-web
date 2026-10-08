@@ -60,8 +60,9 @@ async def test_no_event_wait_task_leak_after_stream_consumed():
     baseline = _count_event_wait()
     svc = StreamService(encoder_factory=FiniteEncoder)
 
+    token = await svc.acquire_stream("dev1")
     frames = []
-    async for f in svc.start_stream("dev1"):
+    async for f in svc.start_stream("dev1", token):
         frames.append(f)
     assert len(frames) == 5
 

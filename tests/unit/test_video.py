@@ -44,6 +44,9 @@ from app.interfaces.ws.video import video_stream
 
 DEV = "unit-video-device"
 
+# acquire_stream 返回的固定会话令牌（方案 34 D4：WS 层按 token 释放）
+ACQUIRED_TOKEN = "acquired-token"
+
 
 # ---------------------------------------------------------------------------
 # H264 测试数据
@@ -141,6 +144,8 @@ class FakeStreamService:
         self.reported_fps: list[tuple[str, float]] = []
         self.keyframe_requests: list[str] = []
         self.stop_calls: list[str] = []
+        self.release_calls: list[tuple[str, Any]] = []
+        self.reject_acquire = False
 
     # --- StreamService 接口 -------------------------------------------------
 
@@ -171,7 +176,15 @@ class FakeStreamService:
     async def stop_stream(self, device_id: str) -> None:
         self.stop_calls.append(device_id)
 
-    async def start_stream(self, device_id: str) -> AsyncIterator[tuple[int, bytes]]:
+    async def acquire_stream(self, device_id: str) -> Any:
+        return None if self.reject_acquire else ACQUIRED_TOKEN
+
+    async def release_stream(self, device_id: str, token: Any) -> None:
+        self.release_calls.append((device_id, token))
+
+    async def start_stream(
+        self, device_id: str, token: Any
+    ) -> AsyncIterator[tuple[int, bytes]]:
         for index, chunk in enumerate(self.chunks):
             if (index + 1) in self.epoch_after:
                 self.epoch = self.epoch_after[index + 1]
@@ -313,7 +326,7 @@ def test_packet_mode_config_and_one_au_per_chunk(video_client):
         assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
         assert recv_binary(session) == frame(0, P_1)     # chunk2 直通
         assert recv_binary(session) == frame(0, P_2)     # chunk3 直通（修复前被滞后丢失）
-    assert wait_for(lambda: svc.stop_calls == [DEV])
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
 def test_packet_mode_forwards_device_pts(video_client):
@@ -390,7 +403,7 @@ def test_packet_mode_chunk_progress_logging(video_client):
         assert recv_binary(session) == frame(0, IDR_0)
         rest = [recv_binary(session) for _ in range(99)]
         assert rest == [frame(0, nalu(0x41, b"P%03d" % i)) for i in range(1, 100)]
-    assert wait_for(lambda: svc.stop_calls == [DEV])
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
 def test_packet_mode_drops_vcl_before_config(video_client):
@@ -555,7 +568,7 @@ def test_input_touch_forwarded_and_restarting_notified(video_client):
         assert encoder.inputs == [{"action": "touch", "x": 1, "y": 2}]
         assert svc.reported_fps == [(DEV, 25.0)]
         gate.set()
-    assert wait_for(lambda: svc.stop_calls == [DEV])
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
 def test_request_keyframe_op_dispatched(video_client):
@@ -573,7 +586,7 @@ def test_request_keyframe_op_dispatched(video_client):
         # 输入任务在服务端事件循环处理，测试线程轮询等待记录写入
         assert wait_for(lambda: svc.keyframe_requests == [DEV])
         gate.set()
-    assert wait_for(lambda: svc.stop_calls == [DEV])
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
 def test_input_ignored_without_encoder_and_stats_normalized(video_client):
@@ -604,7 +617,7 @@ def test_input_ignored_without_encoder_and_stats_normalized(video_client):
         assert svc.reported_fps == [(DEV, 0.0), (DEV, 0.0), (DEV, 25.0), (DEV, 25.0),
                                     (DEV, 5.0)]
         gate.set()
-    assert wait_for(lambda: svc.stop_calls == [DEV])
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +683,7 @@ def test_input_chain_downgraded_to_debug(video_client):
             assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
             assert encoder.inputs == [{"action": "touch", "x": 1, "y": 2}]
             gate.set()
-        assert wait_for(lambda: svc.stop_calls == [DEV])
+        assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
     for event in ("input_received", "sending_input_via_encoder", "input_sent"):
         levels = [e["log_level"] for e in logs if e.get("event") == event]
         assert levels == ["debug"], f"{event}: {levels}"
@@ -700,7 +713,7 @@ def test_input_handler_stops_on_unexpected_error(video_client):
         assert recv_json(session)["type"] == "config"
         session.send_json({"op": "stats", "fps": 25})
         assert recv_binary(session) == frame(0, IDR_0)   # 视频流不受输入任务崩溃影响
-    assert wait_for(lambda: svc.stop_calls == [DEV])
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
     assert svc.reported_fps == [(DEV, 25.0)]
 
 
@@ -722,7 +735,7 @@ def test_stream_error_notifies_client_and_stops_stream(video_client):
         error = recv_json(session)
         assert error["type"] == "error"
         assert "编码器崩溃" in error["message"]
-    assert wait_for(lambda: svc.stop_calls == [DEV])
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
 async def test_stream_ended_notified_after_normal_completion():
@@ -740,7 +753,7 @@ async def test_stream_ended_notified_after_normal_completion():
     assert ws.sent_json[-1] == {"type": "stream_ended"}
     assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
     assert ws.sent_bytes == [frame(0, IDR_0), frame(0, P_1), frame(0, P_2)]  # 直通无滞后，全部下发
-    assert svc.stop_calls == [DEV]
+    assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
 
 
 # ---------------------------------------------------------------------------
@@ -761,7 +774,7 @@ async def test_send_bytes_disconnect_breaks_stream():
     assert ws.accepted is True
     assert ws.sent_bytes == [frame(0, IDR_0), frame(0, nalu(0x41, b"P002"))]  # 第 3 条发送失败
     assert [m["type"] for m in ws.sent_json] == ["config"]
-    assert svc.stop_calls == [DEV]
+    assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
 
 
 async def test_restarting_notify_send_failure_is_swallowed():
@@ -783,7 +796,7 @@ async def test_restarting_notify_send_failure_is_swallowed():
     assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
     assert "restarting" not in [m["type"] for m in ws.sent_json]
     assert svc.reported_fps == [(DEV, 25.0)]
-    assert svc.stop_calls == [DEV]
+    assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
 
 
 async def test_input_handler_exits_on_client_disconnect():
@@ -804,7 +817,7 @@ async def test_input_handler_exits_on_client_disconnect():
     assert [m["type"] for m in ws.sent_json] == ["config", "stream_ended"]
     assert svc.reported_fps == [(DEV, 25.0)]
     assert ws.sent_bytes == [frame(0, IDR_0), frame(0, P_1)]
-    assert svc.stop_calls == [DEV]
+    assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
 
 
 async def test_error_notify_send_failure_is_swallowed():
@@ -820,7 +833,7 @@ async def test_error_notify_send_failure_is_swallowed():
 
     assert ws.json_attempts[-1] == {"type": "error", "message": "boom"}
     assert "error" not in [m["type"] for m in ws.sent_json]
-    assert svc.stop_calls == [DEV]
+    assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
 
 
 async def test_stream_ended_send_failure_is_swallowed():
@@ -836,4 +849,20 @@ async def test_stream_ended_send_failure_is_swallowed():
     assert ws.json_attempts[-1] == {"type": "stream_ended"}
     assert [m["type"] for m in ws.sent_json] == ["config"]
     assert ws.sent_bytes == [frame(0, IDR_0), frame(0, P_1), frame(0, P_2)]
-    assert svc.stop_calls == [DEV]
+    assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
+
+
+async def test_rejected_acquire_gets_stream_ended_and_no_release():
+    """方案 34 D4：acquire 得 None（已有活跃流）→ 客户端仅收到
+    stream_ended 即返回——不触达 release/stop（旧行为：finally 无条件
+    stop_stream 踩停第一客户端活跃流，双端互踩成重启循环）。"""
+    ws = FakeWS()
+    svc = FakeStreamService([], encoder=FakeEncoder())
+    svc.reject_acquire = True
+    await video_stream(ws, DEV, svc)
+
+    assert ws.accepted is True
+    assert ws.sent_json == [{"type": "stream_ended"}]
+    assert ws.sent_bytes == []
+    assert svc.release_calls == []
+    assert svc.stop_calls == []
