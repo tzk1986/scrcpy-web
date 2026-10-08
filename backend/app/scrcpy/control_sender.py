@@ -71,6 +71,9 @@ class ControlSender:
 
     def update_resolution(self, resolution: tuple[int, int]) -> None:
         """更新屏幕分辨率（屏幕旋转时调用）。"""
+        # 方案 33：分辨率不变时（同值重复调用）提前返回，仅实际变化才打 INFO
+        if resolution == self._resolution:
+            return
         self._resolution = resolution
         logger.info("control_resolution_updated", resolution=resolution)
 

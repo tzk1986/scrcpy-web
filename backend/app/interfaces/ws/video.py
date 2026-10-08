@@ -91,6 +91,8 @@ async def video_stream(
     packet_mode = stream_service.use_packet_protocol()
     # 跨 chunk 悬空前缀 NALU（SEI 等尚无 VCL 可挂靠），聚帧器交还后并入下一批
     pending_aus: list[bytes] = []
+    # 方案 33：config 未就绪期的丢帧日志只打第一条，防异常流每帧刷屏
+    config_pending_warned = False
 
     async def handle_input() -> None:
         """并发处理客户端输入事件；stats 上报喂自适应决策器，
@@ -123,16 +125,24 @@ async def video_stream(
     async def intercept_nalu(nalu: bytes) -> None:
         nonlocal sps_data, pps_data, config_sent
         nalu_type = parser.get_nalu_type(nalu)
+        # 方案 33：幂等重发（scrcpy-server ~0.5s 周期重发相同 SPS/PPS）降
+        # debug，首收/参数变化保持 INFO；变化检测与 config 配对语义不变
         if nalu_type == NALU_TYPE_SPS:
-            if config_sent and sps_data != nalu:
-                config_sent = False
-            sps_data = nalu
-            logger.info("sps_received", device=device_id, nalu_size=len(nalu))
+            if sps_data != nalu:
+                if config_sent:
+                    config_sent = False
+                sps_data = nalu
+                logger.info("sps_received", device=device_id, nalu_size=len(nalu))
+            else:
+                logger.debug("sps_received", device=device_id, nalu_size=len(nalu))
         elif nalu_type == NALU_TYPE_PPS:
-            if config_sent and pps_data != nalu:
-                config_sent = False
-            pps_data = nalu
-            logger.info("pps_received", device=device_id, nalu_size=len(nalu))
+            if pps_data != nalu:
+                if config_sent:
+                    config_sent = False
+                pps_data = nalu
+                logger.info("pps_received", device=device_id, nalu_size=len(nalu))
+            else:
+                logger.debug("pps_received", device=device_id, nalu_size=len(nalu))
             if sps_data and pps_data and not config_sent:
                 await _send_config(websocket, sps_data, pps_data, stream_service, device_id)
                 config_sent = True
@@ -191,8 +201,10 @@ async def video_stream(
                                        frame_count=frame_count,
                                        au_size=len(vcl))
                     elif vcl and frame_count == 0:
-                        logger.info("frame_before_config", device=device_id,
-                                    au_size=len(vcl))
+                        if not config_pending_warned:
+                            config_pending_warned = True
+                            logger.info("frame_before_config", device=device_id,
+                                        au_size=len(vcl))
                 elif config_sent and ranges:
                     await websocket.send_bytes(struct.pack(">Q", pts) + chunk)
                     frame_count += 1
@@ -201,8 +213,10 @@ async def video_stream(
                                    frame_count=frame_count,
                                    au_size=len(chunk))
                 elif ranges and frame_count == 0:
-                    logger.info("frame_before_config", device=device_id,
-                                au_size=len(chunk))
+                    if not config_pending_warned:
+                        config_pending_warned = True
+                        logger.info("frame_before_config", device=device_id,
+                                    au_size=len(chunk))
                 continue
 
             # 兜底模式（raw_stream）：H264Parser 提取 NALU + 启发式聚帧
@@ -224,7 +238,8 @@ async def video_stream(
                                    frame_count=frame_count,
                                    au_size=len(au))
                 else:
-                    if frame_count == 0:
+                    if frame_count == 0 and not config_pending_warned:
+                        config_pending_warned = True
                         logger.info("frame_before_config", device=device_id,
                                     au_size=len(au))
 
@@ -347,15 +362,16 @@ async def _handle_input(device_id: str, data: dict[str, Any], stream_service: St
         stream_service.report_client_fps(device_id, fps)
         return
 
-    logger.info("input_received", device=device_id, action=data.get("action"), data=data)
+    logger.debug("input_received", device=device_id, action=data.get("action"), data=data)
 
     encoder = stream_service.get_encoder(device_id)
     if encoder is None:
         logger.warning("no_encoder_for_input", device=device_id)
         return
 
-    logger.info("sending_input_via_encoder", device=device_id,
+    # 方案 33：输入热路径（拖动可秒级数十条）降 debug 防刷屏
+    logger.debug("sending_input_via_encoder", device=device_id,
                 resolution=encoder.resolution,
                 has_control_sender=encoder._control_sender is not None)
     await encoder.send_input(data)
-    logger.info("input_sent", device=device_id)
+    logger.debug("input_sent", device=device_id)

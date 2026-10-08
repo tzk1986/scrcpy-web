@@ -288,8 +288,10 @@ class ScrcpyEncoder:
                         if line:
                             decoded = line.decode().strip()
                             if decoded:
-                                # 使用 info 级别以便调试
-                                logger.info("scrcpy_server_log",
+                                # 方案 33：运行期 stderr 逐行降 debug（实测 v4.1
+                                # 静默，防御异常 ROM 持续输出刷屏；崩溃诊断链路
+                                # 另有 server_process_ended/returncode 事件）
+                                logger.debug("scrcpy_server_log",
                                           device=device_id, log=decoded)
                         elif self.process.returncode is not None:
                             logger.info("server_process_ended_during_log_read",
@@ -556,10 +558,18 @@ class ScrcpyEncoder:
         session 包出现于流起始与编码器重启（resize/码率切换），
         分辨率以此为准（替代 adb shell wm size）。
         """
-        self._resolution = (event.width, event.height)
-        logger.info("session_meta_received", device=device_id,
-                    width=event.width, height=event.height,
-                    client_resized=event.client_resized)
+        new_resolution = (event.width, event.height)
+        # 方案 33：session 包宽高与当前一致（幂等重发，实测 79% 为重发）
+        # 降 debug；分辨率变化（旋转/重启）保持 INFO
+        if new_resolution != self._resolution:
+            logger.info("session_meta_received", device=device_id,
+                        width=event.width, height=event.height,
+                        client_resized=event.client_resized)
+        else:
+            logger.debug("session_meta_received", device=device_id,
+                        width=event.width, height=event.height,
+                        client_resized=event.client_resized)
+        self._resolution = new_resolution
 
         if self._control_sender is not None:
             self._control_sender.update_resolution(self._resolution)
@@ -589,7 +599,8 @@ class ScrcpyEncoder:
 
         如果控制 socket 不可用，自动回退到 adb shell input。
         """
-        logger.info("send_input_called", device=self._device_id,
+        # 方案 33：输入热路径（拖动可秒级数十条）降 debug 防刷屏
+        logger.debug("send_input_called", device=self._device_id,
                     action=data.get("action"),
                     has_control_sender=self._control_sender is not None,
                     resolution=self._resolution)
@@ -607,7 +618,7 @@ class ScrcpyEncoder:
         try:
             if action == "touch":
                 x, y = data["x"], data["y"]
-                logger.info("sending_touch", device=self._device_id, x=x, y=y)
+                logger.debug("sending_touch", device=self._device_id, x=x, y=y)
                 await self._control_sender.touch(x, y, ACTION_DOWN)
                 await self._control_sender.touch(x, y, ACTION_UP)
 
@@ -617,7 +628,7 @@ class ScrcpyEncoder:
             elif action == "long_press":
                 x, y = data["x"], data["y"]
                 duration = data.get("duration", 1000)
-                logger.info("sending_long_press", device=self._device_id,
+                logger.debug("sending_long_press", device=self._device_id,
                             x=x, y=y, duration=duration)
                 await self._control_sender.touch(x, y, ACTION_DOWN)
                 await asyncio.sleep(duration / 1000.0)
