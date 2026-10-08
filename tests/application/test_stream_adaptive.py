@@ -18,6 +18,7 @@ import pytest
 from app.application.bitrate_advisor import parse_bit_rate
 from app.application.stream_service import StreamService
 from app.core.config import settings
+from app.infrastructure.stream.scrcpy import EncoderStalledError
 
 
 class FakeEncoder:
@@ -228,6 +229,76 @@ async def test_stall_recovery_and_storm_guard(stream_settings, monkeypatch):
     # 首次 + 3 次防风暴窗口内重启 = 4 台编码器、4 个首帧，随后异常传播
     assert frames == [(0, b"f")] * 4
     assert StallOnly.created == 4
+
+
+class StallOnceThenIdleEncoder:
+    """第 1 台实例产 1 帧后 stall；后续实例产 1 帧后挂起（模拟恢复后静止）。"""
+
+    created: list["StallOnceThenIdleEncoder"] = []
+
+    def __init__(self):
+        self.opts = None
+        self.stop_called = False
+        self._never = asyncio.Event()
+        StallOnceThenIdleEncoder.created.append(self)
+        self.n = len(StallOnceThenIdleEncoder.created)
+
+    async def start(self, device_id, opts):
+        self.opts = opts
+        yield 0, b"f"
+        if self.n == 1:
+            raise EncoderStalledError("stalled")
+        await self._never.wait()
+
+    async def stop(self):
+        self.stop_called = True
+
+
+@pytest.mark.asyncio
+async def test_stall_restart_resets_advisor_and_sets_report_grace(stream_settings):
+    """方案 34 D3b：stall 重启清空决策器样本 + 设置上报宽限期——
+    黑屏期垃圾样本不再触发降档（放大级联根治）。"""
+    import time
+
+    StallOnceThenIdleEncoder.created.clear()
+    svc = StreamService(encoder_factory=StallOnceThenIdleEncoder)
+
+    async def consume():
+        async for _ in svc.start_stream("dev1"):
+            pass
+
+    task = asyncio.create_task(consume())
+    assert await _wait_for(lambda: len(StallOnceThenIdleEncoder.created) == 1)
+
+    # stall 前注入 3 个坏样本（未满 8 窗，不触发降档；被 reset 清除也无妨）
+    for i in range(3):
+        svc.report_client_fps("dev1", 10, now=float(i))
+
+    # 首实例 stall → 自愈重启第 2 台 + 写入宽限期
+    assert await _wait_for(lambda: len(StallOnceThenIdleEncoder.created) == 2)
+    grace_until = svc._report_grace_until.get("dev1")
+    assert grace_until is not None and grace_until > time.monotonic()
+
+    # 宽限期内上报被丢弃：样本窗空、无任何决策
+    advisor = svc._advisors["dev1"]
+    for i in range(8):
+        svc.report_client_fps("dev1", 10, now=grace_until - 5.0 + i)
+    assert advisor.decide(grace_until + 9.0) is None
+
+    # 宽限期后上报恢复：8 个坏样本触发降档（第 3 台编码器，2M）
+    t0 = grace_until + 1.0
+    for i in range(8):
+        svc.report_client_fps("dev1", 10, now=t0 + i)
+    assert await _wait_for(lambda: len(StallOnceThenIdleEncoder.created) == 3)
+    assert parse_bit_rate(StallOnceThenIdleEncoder.created[2].opts.bit_rate) == 2_000_000
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: StallOnceThenIdleEncoder.created[2].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 class _GuardSleepProbe:

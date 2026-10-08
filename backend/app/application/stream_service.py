@@ -38,6 +38,11 @@ from app.infrastructure.stream.scrcpy import EncoderStalledError, ScrcpyEncoder
 
 logger = get_logger(__name__)
 
+# 方案 34 D3b：stall 重启后的客户端上报宽限期（秒）。重启黑屏期
+# （.33 实测 8-17s）客户端 fps 样本为垃圾值，丢弃之避免污染决策窗
+# （窗口 8 样本 × 1Hz 上报 = 8s 填满，10s 留余量）。
+_STALL_REPORT_GRACE_S = 10.0
+
 
 class _ActiveStreamToken:
     """活跃流会话的 identity 令牌，替代 bool True 作为活跃标记。
@@ -78,6 +83,8 @@ class StreamService:
         self._restart_events: dict[str, asyncio.Event] = {}
         # 卡死自愈（方案 19 实施项 1b）：device → 最近卡死重启时刻（60s 滑窗防风暴）
         self._stall_restarts: dict[str, deque[float]] = {}
+        # stall 重启后的上报宽限期截止时刻（方案 34 D3b）：黑屏期样本作废
+        self._report_grace_until: dict[str, float] = {}
         # 关键帧请求冷却（方案 19 实施项 3）：device → 最近一次实际发送时刻（1s 防抖）
         self._last_keyframe_at: dict[str, float] = {}
 
@@ -236,6 +243,13 @@ class StreamService:
                     await asyncio.sleep(1.0 * len(hist))
                 hist.append(now)
                 self._epoch[device_id] = self._epoch.get(device_id, 0) + 1
+                # 方案 34 D3b：重启黑屏期样本作废。决策器清窗避免重启前
+                # 坏样本触发降档；宽限期丢弃黑屏期垃圾样本。根治
+                # 「stall → fps 污染 → 降档 → 复核回弹」放大级联。
+                advisor_after_stall = self._advisors.get(device_id)
+                if advisor_after_stall is not None:
+                    advisor_after_stall.reset()
+                self._report_grace_until[device_id] = now + _STALL_REPORT_GRACE_S
                 logger.info("stall_restart_encoder",
                             device=device_id, epoch=self._epoch[device_id],
                             recent_stalls=len(hist))
@@ -258,6 +272,7 @@ class StreamService:
             # parser reset，仅 double-fault 窗口内一次瞬时解码毛刺，可接受）。
             self._epoch.pop(device_id, None)
             self._stall_restarts.pop(device_id, None)
+            self._report_grace_until.pop(device_id, None)
             self._last_keyframe_at.pop(device_id, None)
             logger.info("video_stream_stopped", device=device_id)
 
@@ -293,6 +308,8 @@ class StreamService:
 
         方案 21：码率切换 pending 尚未生效（重启编码器）期间丢弃上报——
         过渡期样本可能来自旧码率流，会污染降档复核窗口。
+        方案 34 D3b：stall 重启宽限期（_report_grace_until）内丢弃上报——
+        黑屏期样本为垃圾值，会触发降档放大级联。
         """
         advisor = self._advisors.get(device_id)
         if advisor is None:
@@ -301,6 +318,8 @@ class StreamService:
             return
         if now is None:
             now = time.monotonic()
+        if now < self._report_grace_until.get(device_id, 0.0):
+            return
         advisor.add_sample(now, fps)
         new_bps = advisor.decide(now)
         if new_bps is not None:

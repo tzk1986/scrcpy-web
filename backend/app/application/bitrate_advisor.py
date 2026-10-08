@@ -84,6 +84,16 @@ class BitrateAdvisor:
     def add_sample(self, now: float, fps: float) -> None:
         self._samples.append(fps)
 
+    def reset(self) -> None:
+        """stall 重启后样本作废（方案 34 D3b）：清空样本窗与降档复核态。
+
+        保留档位与冷却状态：stall 重启不改变码率档，重启前窗口含黑屏期
+        垃圾样本（客户端 fps 报 1.0/4.0/8.0），既不得触发新降档，也不得
+        作为复核基线；冷静期（方案 30 递增序列）语义与重启无关，保留。"""
+        self._samples.clear()
+        self._down_baseline = None
+        self._down_from_idx = None
+
     def decide(self, now: float) -> int | None:
         """返回应切换到的新码率（bps），无需动作返回 None。"""
         cfg = self._cfg

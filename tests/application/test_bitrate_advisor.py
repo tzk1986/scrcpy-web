@@ -277,3 +277,31 @@ class TestNoActionWhenHealthy:
             a.add_sample(float(t), 30)
             assert a.decide(float(t) + 0.5) is None
         assert a.current_bps == 4_000_000
+
+
+class TestReset:
+    """方案 34 D3b：stall 重启后样本作废——清空窗口与降档复核态。"""
+
+    def test_reset_clears_samples_and_review_state(self):
+        a = BitrateAdvisor(make_cfg())
+        feed(a, 0.0, 10, 8)
+        assert a.decide(9.0) == 2_000_000      # 降档并记录复核基线
+        a.reset()
+        # 样本窗已空：既不复核也无新决策（旧基线不得在空窗上回弹）
+        assert a.decide(100.0) is None
+        assert a.current_bps == 2_000_000        # 档位保留
+        # 新窗重新填满后恢复降档能力（旧复核基线不干扰）
+        feed(a, 100.0, 10, 8)
+        assert a.decide(109.0) == 1_000_000
+
+    def test_reset_keeps_cooldown_state(self):
+        a = BitrateAdvisor(make_cfg())
+        feed(a, 0.0, 3.74, 8)
+        assert a.decide(9.0) == 2_000_000
+        feed(a, 20.0, 3.74, 8)
+        assert a.decide(39.0) == 4_000_000      # 无效回弹 → 冷静期至 t=639
+        a.reset()
+        # 冷静期保留：重置后坏样本满窗也不降档（仍在 600s 冷静期内）
+        feed(a, 100.0, 3.74, 8)
+        assert a.decide(109.0) is None
+        assert a.current_bps == 4_000_000
