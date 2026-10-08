@@ -1124,12 +1124,12 @@ async def test_idle_keepalive_sends_reset_video(monkeypatch):
     assert harness.server_process.terminate_called
 
 
-async def test_stall_probe_raises_after_reset(monkeypatch):
-    """RESET_VIDEO 后仍无数据 ≥ idle_reset → 生成器抛 EncoderStalledError（方案 19 项 1b）。
+async def test_stall_window_max_2x_idle_or_10s(monkeypatch):
+    """判死窗 = max(2×idle_reset, 10s)（方案 34 D1）：RESET 后 8s 无数据不判死，
+    越过 10s 窗才抛 EncoderStalledError(reason=no_data_after_reset)。
 
-    注意 async 生成器体内代码只在消费方 await __anext__ 期间推进：
-    首帧消费后直接 await 第二次 __anext__（2s 超时兜底），期间保活循环
-    在 0.2s 空闲发 RESET、约 0.4s 时探针抛异常。
+    时钟注入：编码器构造传入可变假时钟，测试推进时钟驱动探针状态机，
+    异步等待用真实 tick（idle=0.2 → tick=0.1s）。
     """
     import types
 
@@ -1141,7 +1141,8 @@ async def test_stall_probe_raises_after_reset(monkeypatch):
     )
     monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
 
-    encoder = ScrcpyEncoder()
+    clock = {"t": 100.0}
+    encoder = ScrcpyEncoder(clock=lambda: clock["t"])
     payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
     stream = (
         make_handshake()
@@ -1153,18 +1154,168 @@ async def test_stall_probe_raises_after_reset(monkeypatch):
     conn = ConnectionHarness(make_reader(stream, eof=False))  # 1 帧后视频流永久静默
 
     encoder._server_manager.push_server = AsyncMock(return_value=True)
+    received: list[tuple[int, bytes]] = []
+
+    async def consume() -> None:
+        async for chunk in encoder.start(DEVICE_ID, EncoderOpts()):
+            received.append(chunk)
+
     with patch("asyncio.create_subprocess_exec", new=harness), \
             patch("asyncio.open_connection", new=conn):
-        agen = encoder.start(DEVICE_ID, EncoderOpts())
-        first = await asyncio.wait_for(agen.__anext__(), timeout=2.0)
-        assert first == (0, payload)
-        # 首帧后 0.2s（发 RESET）+ 0.2s（探针）量级内抛 EncoderStalledError，2s 超时兜底
-        t0 = time.monotonic()
-        with pytest.raises(EncoderStalledError):
-            await asyncio.wait_for(agen.__anext__(), timeout=2.0)
-        assert time.monotonic() - t0 < 1.5
+        task = asyncio.create_task(consume())
+        try:
+            # ① 启动并消费首帧（session 包建立 _control_sender）
+            assert await wait_until(lambda: len(received) == 1)
+            # ② 静止越过 idle_reset（假时钟 +0.3s）→ RESET 发出并锁存
+            clock["t"] = 100.3
+            assert await wait_until(
+                lambda: bytes(conn.control_writer.written) == b"\x11")
+            # ③ +8s（108.3）仍在 10s 判死窗内：消费任务不结束
+            clock["t"] = 108.3
+            await asyncio.sleep(0.3)  # 过数个真实 tick
+            assert not task.done()
+            # ④ +10.2s（110.5）越过判死窗 → EncoderStalledError
+            clock["t"] = 110.5
+            assert await wait_until(lambda: task.done(), timeout=1.5)
+            exc = task.exception()
+            assert isinstance(exc, EncoderStalledError)
+            assert exc.reason == "no_data_after_reset"
+        finally:
+            if not task.done():
+                encoder._running = False
+                await task
+            else:
+                task.exception()  # 已析出异常，避免挂在 finally 重抛
     # RESET 确实发出过一次；异常退出仍走完整 stop 清理
     assert bytes(conn.control_writer.written) == b"\x11"
+    assert harness.server_process.terminate_called
+
+
+async def test_stall_after_repeated_probe_send_failure(monkeypatch):
+    """发针发送失败有界兜底（方案 34 D2）：连续 3 次 reset_video 异常 →
+    EncoderStalledError(reason=probe_send_failed)，不再无限静默重试。
+
+    瞬态失败（<3 次）仍走清除锁存重试路径（既有
+    test_idle_keepalive_retries_after_send_failure 钉死），本用例只
+    针对控制通道坏死场景。
+    """
+    import types
+
+    from app.infrastructure.stream.scrcpy import EncoderStalledError
+
+    fake = types.SimpleNamespace(
+        stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
+        adb=types.SimpleNamespace(path="adb"),
+    )
+    monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
+
+    clock = {"t": 100.0}
+    encoder = ScrcpyEncoder(clock=lambda: clock["t"])
+    payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))  # 首帧后永久静默
+
+    # 控制 socket 每次写都抛错（模拟控制通道坏死）
+    write_calls = {"n": 0}
+
+    def dead_write(data: bytes) -> None:
+        write_calls["n"] += 1
+        raise RuntimeError("control channel dead")
+
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    received: list[tuple[int, bytes]] = []
+
+    async def consume() -> None:
+        async for chunk in encoder.start(DEVICE_ID, EncoderOpts()):
+            received.append(chunk)
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        conn.control_writer.write = dead_write
+        task = asyncio.create_task(consume())
+        try:
+            # ① 首帧消费（session 建立 _control_sender）
+            assert await wait_until(lambda: len(received) == 1)
+            # ② 发针持续失败（时钟一次性越过 idle_reset，每次 tick 重试）
+            clock["t"] = 100.3
+            assert await wait_until(lambda: task.done(), timeout=1.5)
+            exc = task.exception()
+            assert isinstance(exc, EncoderStalledError)
+            assert exc.reason == "probe_send_failed"
+            assert write_calls["n"] == 3  # 连续 3 次失败即判死
+        finally:
+            if not task.done():
+                encoder._running = False
+                await task
+            else:
+                task.exception()  # 已析出异常，避免挂在 finally 重抛
+    assert harness.server_process.terminate_called
+
+
+async def test_probe_response_latency_debug_log(monkeypatch):
+    """数据到达清锁存处记录 reset→data 延迟（debug 级，方案 34 D7 观测）。"""
+    import types
+
+    from structlog.testing import capture_logs
+
+    fake = types.SimpleNamespace(
+        stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
+        adb=types.SimpleNamespace(path="adb"),
+    )
+    monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
+
+    clock = {"t": 100.0}
+    encoder = ScrcpyEncoder(clock=lambda: clock["t"])
+    payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))
+
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    received: list[tuple[int, bytes]] = []
+
+    async def consume() -> None:
+        async for chunk in encoder.start(DEVICE_ID, EncoderOpts()):
+            received.append(chunk)
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        with capture_logs() as logs:
+            task = asyncio.create_task(consume())
+            try:
+                # ① 首帧
+                assert await wait_until(lambda: len(received) == 1)
+                # ② 静止越过 idle_reset → RESET 锁存于 t=100.3
+                clock["t"] = 100.3
+                assert await wait_until(
+                    lambda: bytes(conn.control_writer.written) == b"\x11")
+                # ③ t=100.5 推入新帧 → 清锁存处记录延迟 0.2s = 200ms
+                clock["t"] = 100.5
+                conn.video_reader.feed_data(
+                    make_frame_header(0, len(payload)) + payload)
+                assert await wait_until(lambda: len(received) == 2)
+                # ④ 推新帧后再静默越过 idle_reset 触发第二次探针，
+                #    结束前保证循环状态正常（开销极小）
+                clock["t"] = 100.8
+                assert await wait_until(
+                    lambda: bytes(conn.control_writer.written) == b"\x11\x11")
+            finally:
+                encoder._running = False
+                await task
+        latencies = [e for e in logs if e.get("event") == "probe_response_latency"]
+        assert len(latencies) == 1
+        assert latencies[0]["latency_ms"] == 200
     assert harness.server_process.terminate_called
 
 

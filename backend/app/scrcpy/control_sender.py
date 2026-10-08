@@ -78,8 +78,11 @@ class ControlSender:
         logger.info("control_resolution_updated", resolution=resolution)
 
     async def reset_video(self) -> None:
-        """发送 RESET_VIDEO(type=17)：服务端复位视频管线，0.1-0.4s 内产出
-        新 IDR 并重发 SESSION/CONFIG 包（方案 19 实测）。"""
+        """发送 RESET_VIDEO(type=17)：触发服务端重出关键帧。
+
+        应答延迟取决于设备端状态：健康面 0.1-0.4s（方案 19 实测），
+        低帧率静止面实测重尾至 10s+（.33 方案 34 spike）——判死窗
+        由 scrcpy.py 探针段独立加宽决策，此处仅为发送原语。"""
         await self._send(struct.pack(">B", TYPE_RESET_VIDEO))
 
     async def touch(

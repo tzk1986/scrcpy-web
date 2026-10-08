@@ -39,7 +39,7 @@ scrcpy-server 视频编码器
 
 import asyncio
 import time
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -68,8 +68,12 @@ _QUEUE_FULL_PUT_TIMEOUT = 1.0  # 队列满时 put 超时（秒），反压恢复
 
 
 class EncoderStalledError(RuntimeError):
-    """编码器卡死：发出 RESET_VIDEO 探针后仍超过 idle_reset 秒无数据
-    （E009/E021 同族「活着不产帧」故障，方案 19 实施项 1b）。"""
+    """编码器卡死（E009/E021 同族「活着不产帧」故障，方案 19 实施项 1b；
+    方案 34 加宽判死窗并引入 reason 区分两种成因）。"""
+
+    def __init__(self, message: str, *, reason: str = "no_data_after_reset") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class ScrcpyEncoder:
@@ -83,10 +87,14 @@ class ScrcpyEncoder:
     同时提供 send_input() 方法，通过控制 socket 发送二进制控制消息。
     """
 
-    def __init__(self) -> None:
-        """初始化编码器状态。"""
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        """初始化编码器状态。
+
+        clock：探针段使用的单调时钟源（默认系统时钟；单测注入假时钟）。
+        """
         self.process: asyncio.subprocess.Process | None = None
         self._running = False
+        self._clock = clock
         self._device_id: str = ""
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -485,8 +493,13 @@ class ScrcpyEncoder:
         # 12. 从队列 yield 数据
         idle_reset = float(settings().stream.idle_reset_seconds)
         tick = min(2.0, idle_reset / 2) if idle_reset > 0 else 2.0
-        last_data_at = time.monotonic()
+        # 判死窗与空闲阈值解耦（方案 34 D1）：低帧率设备上 RESET 应答延迟
+        # 实测重尾（.33 静止面 p50≈4.1s、max≈10.6s），沿用 idle_reset 会把
+        # 慢恢复误判为卡死。真卡死时自愈多等 ~5s，由前端截图兜底覆盖。
+        stall_grace = max(2.0 * idle_reset, 10.0)
+        last_data_at = self._clock()
         reset_sent_at: float | None = None
+        probe_failures = 0  # 发针连续失败计数（方案 34 D2 有界兜底）
         try:
             while self._running:
                 try:
@@ -496,7 +509,14 @@ class ScrcpyEncoder:
                     if data is None:
                         logger.info("queue_sentinel_received", device=device_id)
                         break
-                    last_data_at = time.monotonic()
+                    last_data_at = self._clock()
+                    if reset_sent_at is not None:
+                        # 方案 34 D7：探针应答延迟 debug 采样（验收调窗依据）
+                        logger.debug(
+                            "probe_response_latency",
+                            device=device_id,
+                            latency_ms=round((last_data_at - reset_sent_at) * 1000),
+                        )
                     reset_sent_at = None
                     yield data
                 except asyncio.TimeoutError:
@@ -507,28 +527,39 @@ class ScrcpyEncoder:
                         break
                     if idle_reset <= 0 or self._control_sender is None:
                         continue
-                    now = time.monotonic()
+                    now = self._clock()
                     if reset_sent_at is None:
                         if now - last_data_at >= idle_reset:
                             reset_sent_at = now
                             try:
                                 await self._control_sender.reset_video()
+                                probe_failures = 0
                                 logger.info("idle_reset_video_sent",
                                             device=device_id,
                                             idle_s=round(now - last_data_at, 1))
                             except Exception as e:
                                 logger.warning("idle_reset_video_failed",
                                                device=device_id, error=str(e))
-                                # 发送失败时清除锁存，下一个 tick 重试
-                                # （粒度 idle_reset/2，风暴安全）
+                                # 瞬态失败：清除锁存，下个 tick 重试
+                                # （粒度 idle_reset/2，方案 19 评审语义）
                                 reset_sent_at = None
-                    elif now - reset_sent_at >= idle_reset:
+                                probe_failures += 1
+                                if probe_failures >= 3:
+                                    # 方案 34 D2：连续失败＝控制通道坏死，
+                                    # 不再无限静默重试
+                                    raise EncoderStalledError(
+                                        f"RESET_VIDEO send failed "
+                                        f"{probe_failures} times consecutively",
+                                        reason="probe_send_failed",
+                                    )
+                    elif now - reset_sent_at >= stall_grace:
                         raise EncoderStalledError(
                             f"no data {now - reset_sent_at:.1f}s after RESET_VIDEO")
                     continue
         except EncoderStalledError as e:
             # 探针异常不能被 stream_error 吞掉，必须上抛给 StreamService 自愈
-            logger.error("encoder_stalled", device=device_id, error=str(e))
+            logger.error("encoder_stalled", device=device_id,
+                         error=str(e), reason=e.reason)
             raise
         except Exception as e:
             logger.error("stream_error", device=device_id, error=str(e))
