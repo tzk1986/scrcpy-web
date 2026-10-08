@@ -51,11 +51,15 @@ export interface FallbackThresholds {
 /**
  * 与后端空闲保活联动的回退阈值（方案 19 实施项 2a）。
  * keepaliveMs 为后端 RESET_VIDEO 保活间隔（config.idle_reset_seconds×1000）；
- * 静止设备在保活下仍有周期性 IDR，STALL 取 2× 间隔，再叠加
- * 2s/5s 余量保证 NO_STREAM < HARD 单调。keepaliveMs=0（保活关闭）回默认。
+ * 静止设备在保活下仍有周期性 IDR，STALL 取 2× 间隔 + 2000 探针应答余量
+ * （方案 34 D6：后端判死窗加宽至 max(2×idle, 10s) 后，慢探针恢复期
+ * 最长 ~15s，2× 间隔会让前端在中途误进截图 fallback 形成呼吸循环；
+ * idle=5 → STALL 12s 覆盖「空闲窗 + 探针应答 p50 量级」慢恢复段，
+ * 尾段仍会落截图则属有意设计：真死时 12s 落截图优于等后端 15s 自愈），
+ * 再叠加 2s/5s 余量保证 NO_STREAM < HARD 单调。keepaliveMs=0（保活关闭）回默认。
  */
 export function computeFallbackThresholds(keepaliveMs: number): FallbackThresholds {
-  const STALL_MS = Math.max(3000, keepaliveMs * 2)
+  const STALL_MS = Math.max(3000, keepaliveMs * 2 + 2000)
   const NO_STREAM_MS = Math.max(8000, STALL_MS + 2000)
   const HARD_TIMEOUT_MS = Math.max(15000, NO_STREAM_MS + 5000)
   if (keepaliveMs <= 0) {

@@ -132,13 +132,15 @@ describe('computeFallbackThresholds', () => {
       STALL_MS: 3000, NO_STREAM_MS: 8000, HARD_TIMEOUT_MS: 15000,
     })
   })
-  it('keepalive=5000 → 10000/12000/17000', () => {
+  it('keepalive=5000 → 12000/14000/19000（方案 34 D6：+2000 探针余量）', () => {
     expect(computeFallbackThresholds(5000)).toEqual({
-      STALL_MS: 10000, NO_STREAM_MS: 12000, HARD_TIMEOUT_MS: 17000,
+      STALL_MS: 12000, NO_STREAM_MS: 14000, HARD_TIMEOUT_MS: 19000,
     })
   })
-  it('小 keepalive 不低于默认下限', () => {
-    expect(computeFallbackThresholds(1000)).toEqual(FALLBACK_THRESHOLDS)
+  it('小 keepalive：STALL 不低于默认下限（+2000 余量生效）', () => {
+    expect(computeFallbackThresholds(1000)).toEqual({
+      STALL_MS: 4000, NO_STREAM_MS: 8000, HARD_TIMEOUT_MS: 15000,
+    })
   })
 })
 
