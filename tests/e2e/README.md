@@ -32,3 +32,8 @@
   （可写入可回读但 `SurfaceOrientation` 不变）→ coordinate-mapping 用例自动 skip
 - 192.168.8.33（rk3566_r，Android 11）：cooker 应用 kiosk 保活，HOME 后约 6s 自动回前台，
   输入断言不可靠，勿作为 E2E 测试设备
+- 192.168.8.18（rk3568_r，Android 11）：软旋转可用（自然方向为横屏，`user_rotation 1` 即竖屏）。
+  默认 launcher 为沉浸全屏（`mSystemUiVisibility=0x1f04`，隐藏系统栏），其前台时顶缘下滑
+  不会展开通知栏（adb 原生与注入滑动均实测无效）；kiosk 应用（duzkj.facecash）会不定时
+  抢占前台 → coordinate-mapping 用例已做「滑动前锚定 Settings 前台 + 转场等待 + 一次重试」
+  健壮化（2026-10-08，3 连绿）

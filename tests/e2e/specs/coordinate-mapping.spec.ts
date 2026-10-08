@@ -65,16 +65,35 @@ test.describe('坐标映射与横竖屏（需设备）', () => {
 
       // 旋转后从 canvas 顶缘下滑：证明输入按当前（旋转后）分辨率映射
       await expect(page.locator('.stat-item.streaming')).toBeVisible({ timeout: 30_000 })
+
+      // 前台锚定：部分设备固件的默认 launcher 为沉浸全屏（隐藏系统栏），
+      // 其前台时顶缘下滑不会展开通知栏（.18 真机实测，注入/原生滑动均无效）；
+      // 且 kiosk 应用可能随时抢占前台。先导航到 Settings（非沉浸）并等待
+      // 转场结束，保证滑动落点环境稳定后再测映射
+      await shell('cmd statusbar collapse; am start -a android.settings.DEVICE_INFO_SETTINGS')
+      await new Promise((r) => setTimeout(r, 2000))
+
       const box = await page.locator('.video-canvas').boundingBox()
       expect(box).not.toBeNull()
       const cx = box!.x + box!.width / 2
-      await page.mouse.move(cx, box!.y + 1)
-      await page.mouse.down()
-      await page.mouse.move(cx, box!.y + box!.height - 2, { steps: 8 })
-      await page.mouse.up()
-      await expect
-        .poll(async () => await focusOf(shell), { timeout: 10_000 })
-        .toMatch(/StatusBar|Notification/)
+      const swipeDown = async (): Promise<void> => {
+        await page.mouse.move(cx, box!.y + 1)
+        await page.mouse.down()
+        await page.mouse.move(cx, box!.y + box!.height - 2, { steps: 8 })
+        await page.mouse.up()
+      }
+      await swipeDown()
+      // 一次重试兜底窗口切换瞬态的偶发丢弃
+      try {
+        await expect
+          .poll(async () => await focusOf(shell), { timeout: 4_000 })
+          .toMatch(/StatusBar|Notification/)
+      } catch {
+        await swipeDown()
+        await expect
+          .poll(async () => await focusOf(shell), { timeout: 10_000 })
+          .toMatch(/StatusBar|Notification/)
+      }
     } finally {
       // 恢复默认旋转与自动旋转，避免污染后续测试与设备状态
       await shell('settings put system user_rotation 0').catch(() => {})
