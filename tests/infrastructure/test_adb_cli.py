@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.infrastructure.adb.cli import AdbCliDriver
 from app.core.exceptions import AdbError, DeviceUnreachableError
-from app.domain.device import DeviceInfo
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +160,58 @@ class TestGetDeviceInfo:
             assert info.resolution == (1080, 2400)
             assert info.battery == 85
             assert info.status == "online"
+
+    @pytest.mark.asyncio
+    async def test_get_device_info_commands_use_short_timeout(self, mock_device_id):
+        """4 条信息命令均以 5s 短超时透传（诊断类命令的 30s 不受影响）。"""
+        calls: list = []
+
+        async def fake_run_serial(device_id, *args, **kwargs):
+            calls.append(kwargs)
+            if "ro.product.model" in args:
+                return "Pixel 6"
+            if "ro.build.version.release" in args:
+                return "13"
+            if "size" in args:
+                return "Physical size: 1080x2400"
+            return "level: 85"
+
+        driver = AdbCliDriver()
+        with patch.object(driver, "_run_serial", new=fake_run_serial):
+            info = await driver.get_device_info(mock_device_id)
+
+        assert info.model == "Pixel 6"
+        assert len(calls) == 4
+        assert all(kwargs.get("timeout") == 5 for kwargs in calls)
+
+    @pytest.mark.asyncio
+    async def test_get_device_info_runs_commands_concurrently(self, mock_device_id):
+        """4 条命令并发执行——串行实现 in-flight 峰值恒为 1（方案 35 D2）。"""
+        import asyncio
+
+        in_flight = 0
+        peak = 0
+
+        async def fake_run_serial(device_id, *args, **kwargs):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            if "ro.product.model" in args:
+                return "Pixel 6"
+            if "ro.build.version.release" in args:
+                return "13"
+            if "size" in args:
+                return "Physical size: 1080x2400"
+            return "level: 85"
+
+        driver = AdbCliDriver()
+        with patch.object(driver, "_run_serial", new=fake_run_serial):
+            info = await driver.get_device_info(mock_device_id)
+
+        assert info.battery == 85
+        assert peak >= 2
 
 
 # ---------------------------------------------------------------------------

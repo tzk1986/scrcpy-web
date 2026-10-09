@@ -25,7 +25,7 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 """
 
 import asyncio
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
 from app.core.exceptions import AdbError, DeviceUnreachableError
@@ -54,6 +54,12 @@ class AdbCliDriver:
     # 纯数字参数按计数解析，不可用于零重放）。经 shell 以单参数传入
     #（同 shell_stream 约定，避免远端 shell 把带空格的时刻拆成两个参数）。
     _LOGCAT_SINCE_NOW_CMD = 'logcat -v threadtime -T "$(date "+%m-%d %H:%M:%S.%N")"'
+
+    # 设备信息快命令（getprop / wm size / dumpsys battery）的超时（秒，
+    # 方案 35 D2）：正常设备单条实测 0.15-0.2s，5s 对慢设备仍有余量，
+    # 卡设备从「30s 阻塞」降为「5s + 信息缺失（列表兜底）」；诊断类
+    # 命令（install/screenshot 等）继续用配置的 adb.timeout（30s）。
+    _INFO_CMD_TIMEOUT = 5
 
     @property
     def adb_path(self) -> str:
@@ -108,7 +114,9 @@ class AdbCliDriver:
 
         return stdout.decode().strip()
 
-    async def _run_serial(self, device_id: str, *args: str) -> str:
+    async def _run_serial(
+        self, device_id: str, *args: str, timeout: int | None = None
+    ) -> str:
         """
         执行针对特定设备的 ADB 命令。
 
@@ -117,11 +125,12 @@ class AdbCliDriver:
         参数：
             device_id: ADB 序列号。
             *args: 设备选择器之后的命令参数。
+            timeout: 覆盖配置中的默认超时（秒）。
 
         返回：
             去除首尾空白的 stdout 字符串。
         """
-        return await self._run("-s", device_id, *args)
+        return await self._run("-s", device_id, *args, timeout=timeout)
 
     async def list_devices(self) -> list[str]:
         """
@@ -143,28 +152,52 @@ class AdbCliDriver:
         """
         通过 ADB shell 查询设备属性并构建 DeviceInfo。
 
-        执行多个 `adb shell getprop` 和 `adb shell wm size` 命令
-        来收集型号、OS 版本、分辨率和电量。
+        4 条命令相互独立，并发执行（方案 35 D2）——单台设备总耗时上界
+        从串行的 4×5s 压到 max(单条) ≤ _INFO_CMD_TIMEOUT。
+        return_exceptions=True 必不可少：首异常取消其余命令会跳过 _run
+        的超时 kill 收尾路径，留下孤儿 adb 进程。
 
         参数：
             device_id: ADB 序列号。
 
         返回：
             填充了设备属性的 DeviceInfo。
+
+        异常：
+            AdbError: 任一命令失败或超时时（沿用「整台失败」语义）。
         """
-        model = await self._run_serial(device_id, "shell", "getprop", "ro.product.model")
-        os_version = await self._run_serial(
-            device_id, "shell", "getprop", "ro.build.version.release"
+        results = await asyncio.gather(
+            self._run_serial(
+                device_id, "shell", "getprop", "ro.product.model",
+                timeout=self._INFO_CMD_TIMEOUT,
+            ),
+            self._run_serial(
+                device_id, "shell", "getprop", "ro.build.version.release",
+                timeout=self._INFO_CMD_TIMEOUT,
+            ),
+            self._run_serial(
+                device_id, "shell", "wm", "size",
+                timeout=self._INFO_CMD_TIMEOUT,
+            ),
+            self._get_battery_level(device_id, timeout=self._INFO_CMD_TIMEOUT),
+            return_exceptions=True,
         )
-        wm_size = await self._run_serial(device_id, "shell", "wm", "size")
-        resolution = self._parse_resolution(wm_size)
-        battery = await self._get_battery_level(device_id)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+        # gather(return_exceptions=True) 返回 list[object]；异常已在上方
+        # 排除，4 个元素的类型由各命令签名保证
+        model = cast(str, results[0])
+        os_version = cast(str, results[1])
+        wm_size = cast(str, results[2])
+        battery = cast(int, results[3])
 
         return DeviceInfo(
             id=device_id,
             model=model,
             os_version=os_version,
-            resolution=resolution,
+            resolution=self._parse_resolution(wm_size),
             battery=battery,
             status="online",
         )
@@ -191,7 +224,7 @@ class AdbCliDriver:
                 return int(w), int(h)
         return 0, 0
 
-    async def _get_battery_level(self, device_id: str) -> int:
+    async def _get_battery_level(self, device_id: str, timeout: int | None = None) -> int:
         """
         从 `dumpsys battery` 获取电量。
 
@@ -199,11 +232,12 @@ class AdbCliDriver:
 
         参数：
             device_id: ADB 序列号。
+            timeout: 覆盖配置中的默认超时（秒）。
 
         返回：
             电量 0-100。解析失败时返回 0。
         """
-        output = await self._run_serial(device_id, "shell", "dumpsys", "battery")
+        output = await self._run_serial(device_id, "shell", "dumpsys", "battery", timeout=timeout)
         for line in output.split("\n"):
             if "level" in line:
                 return int(line.split(":")[1].strip())
