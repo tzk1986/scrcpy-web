@@ -1,7 +1,7 @@
 # Base Configuration (defaults)
 app:
   name: OpenScrcpy
-  version: 0.7.2
+  version: 0.7.3
   debug: false
   log_level: INFO
   config_watch: true         # 配置文件（config/*.yaml）热重载监听

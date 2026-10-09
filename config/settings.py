@@ -19,7 +19,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AppConfig(BaseSettings):
     name: str = "OpenScrcpy"
-    version: str = "0.7.2"
+    version: str = "0.7.3"
     debug: bool = False
     log_level: str = "INFO"
     config_watch: bool = True  # 配置文件（config/*.yaml）热重载监听开关
