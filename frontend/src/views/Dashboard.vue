@@ -61,10 +61,15 @@
         </template>
       </el-table-column>
       <el-table-column prop="battery" label="电量" min-width="80" />
-      <el-table-column prop="status" label="状态" min-width="80">
+      <el-table-column prop="status" label="状态" min-width="120">
         <template #default="{ row }">
           <el-tag :type="row.status === 'online' ? 'success' : 'info'" size="small">
             {{ row.status === 'online' ? '在线' : row.status }}
+          </el-tag>
+          <!-- 方案 35 D7：信息查询失败（最常见原因为 adb 响应慢），
+               当前信息可能为缓存/默认值；查询恢复后手动刷新灭灯 -->
+          <el-tag v-if="row.slow" type="danger" size="small" class="slow-tag">
+            adb 慢
           </el-tag>
         </template>
       </el-table-column>
@@ -173,8 +178,9 @@ const formRules: FormRules = {
 
 // ===== 生命周期 =====
 onMounted(async () => {
-  await store.fetchDevices()
+  // SSE 订阅先就位（方案 35 D6）：列表刷新慢不推迟事件订阅
   store.startSSE()
+  await store.fetchDevices()
 })
 
 onUnmounted(() => {
@@ -278,6 +284,10 @@ function isTcpDevice(deviceId: string): boolean {
 
 .empty-tip {
   margin-bottom: 1rem;
+}
+
+.slow-tag {
+  margin-left: 4px;
 }
 
 .empty-tip p {

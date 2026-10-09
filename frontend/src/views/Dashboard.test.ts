@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { defineComponent, h as vueH, inject, nextTick, provide } from 'vue'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
@@ -103,10 +103,37 @@ const ElAlertStub = {
   template: '<div class="stub-alert"><div class="stub-alert-title">{{ title }}</div><slot /></div>',
 }
 
-const ElTableStub = {
+const ElTableStub = defineComponent({
   name: 'ElTable',
-  props: ['data'],
-  template: '<div class="stub-table"><slot /></div>',
+  props: { data: { type: Array, default: () => [] } },
+  setup(props, { slots }) {
+    provide('tableData', () => props.data as Array<Record<string, unknown>>)
+    return () => vueH('div', { class: 'stub-table' }, slots.default?.())
+  },
+})
+
+const ElTableColumnStub = defineComponent({
+  name: 'ElTableColumn',
+  setup(_props, { slots }) {
+    const tableData = inject<(() => Array<Record<string, unknown>>) | undefined>('tableData')
+    return () => {
+      const slot = slots.default
+      if (!slot || !tableData) return null
+      return vueH(
+        'div',
+        { class: 'stub-column' },
+        tableData().map((row) =>
+          vueH('div', { class: 'stub-row', 'data-id': String(row.id ?? '') }, slot({ row }))
+        )
+      )
+    }
+  },
+})
+
+const ElTagStub = {
+  name: 'ElTag',
+  props: ['type'],
+  template: '<span class="stub-tag" :data-type="type"><slot /></span>',
 }
 
 let pinia: Pinia
@@ -137,9 +164,9 @@ async function mountDashboard(): Promise<VueWrapper> {
         'el-input-number': ElInputStub,
         'el-alert': ElAlertStub,
         'el-table': ElTableStub,
-        'el-table-column': true,
+        'el-table-column': ElTableColumnStub,
         'el-icon': true,
-        'el-tag': true,
+        'el-tag': ElTagStub,
       },
       directives: { loading: {} },
     },
@@ -238,6 +265,32 @@ describe('Dashboard', () => {
     await refreshBtn!.trigger('click')
     await flushPromises()
     expect(mockApi.listDevices).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+  })
+
+  it('挂载顺序：SSE 先于列表刷新就位（列表挂起不影响事件订阅）', async () => {
+    mockApi.listDevices.mockImplementation(() => new Promise(() => {}))
+    const wrapper = await mountDashboard()
+
+    expect(h.MockEventSource.instances).toHaveLength(1)
+
+    wrapper.unmount()
+  })
+
+  it('慢设备行渲染「adb 慢」红灯，正常设备行无红灯', async () => {
+    mockApi.listDevices.mockResolvedValue([{ ...deviceA, slow: true }, deviceB])
+    const wrapper = await mountDashboard()
+
+    const slowTags = wrapper.findAll('.stub-tag').filter((t) => t.text() === 'adb 慢')
+    expect(slowTags).toHaveLength(1)
+
+    const slowRows = wrapper.findAll('.stub-row[data-id="dev-a"]')
+    expect(slowRows.some((r) => r.text().includes('adb 慢'))).toBe(true)
+
+    const normalRows = wrapper.findAll('.stub-row[data-id="192.168.1.33:5555"]')
+    expect(normalRows.length).toBeGreaterThan(0)
+    expect(normalRows.every((r) => !r.text().includes('adb 慢'))).toBe(true)
 
     wrapper.unmount()
   })

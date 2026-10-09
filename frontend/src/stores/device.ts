@@ -37,6 +37,11 @@ export interface DeviceInfo {
   status: string
   ip?: string
   port?: number
+  /**
+   * 瞬态展示字段（方案 35 D7）：该设备本轮信息查询失败（最常见原因为
+   * adb 响应慢），当前信息可能为缓存/默认值。光源为列表响应即出即用。
+   */
+  slow?: boolean
 }
 
 /**
@@ -49,19 +54,30 @@ export const useDeviceStore = defineStore('device', () => {
   const error = ref<string | null>(null)
   const eventSource = ref<EventSource | null>(null)
 
+  // 请求代次（方案 35 D6）：并发重拉时丢弃过期响应，防止慢响应
+  // 覆盖新状态（例如把刚本地移除的断开设备复活）
+  let fetchGeneration = 0
+
   /**
    * 从后端获取设备列表。
    * 设置 loading 状态，捕获错误。
+   *
+   * @param opts.silent - 静默刷新：不置列表 loading（用于断开/连接后的
+   *   兜底重拉，不阻塞用户操作关键路径）
    */
-  async function fetchDevices() {
-    loading.value = true
+  async function fetchDevices(opts: { silent?: boolean } = {}) {
+    const generation = ++fetchGeneration
+    if (!opts.silent) loading.value = true
     error.value = null
     try {
-      devices.value = await api.listDevices()
+      const list = await api.listDevices()
+      if (generation !== fetchGeneration) return // 过期响应：丢弃
+      devices.value = list
     } catch (e) {
+      if (generation !== fetchGeneration) return
       error.value = (e as Error).message
     } finally {
-      loading.value = false
+      if (!opts.silent) loading.value = false
     }
   }
 
@@ -77,9 +93,9 @@ export const useDeviceStore = defineStore('device', () => {
     try {
       const result = await api.connectDevice(ip, port)
       if (result.success) {
-        // 等待一下让设备完全连接
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        await fetchDevices()
+        // 静默重拉补齐设备行（方案 35 D6）：不 await，对话框立即关闭；
+        // fetchDevices 内部不抛出，无 unhandled rejection 风险
+        void fetchDevices({ silent: true })
       }
       return result
     } catch (e) {
@@ -100,9 +116,10 @@ export const useDeviceStore = defineStore('device', () => {
       const result = await api.disconnectDevice(deviceId)
       if (result.success) {
         // 不可达断开是「跳过 adb 清理」路径，adb 侧表项可能短暂残留；
-        // 先本地移除保证立即生效，再拉取列表重同步
+        // 先本地移除保证立即生效，再静默重拉兜底同步（方案 35 D6：
+        // 不 await，按钮立即恢复）
         devices.value = devices.value.filter(d => d.id !== deviceId)
-        await fetchDevices()
+        void fetchDevices({ silent: true })
       }
       return result
     } catch (e) {

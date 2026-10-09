@@ -96,41 +96,97 @@ describe('device store - fetchDevices', () => {
     expect(store.loading).toBe(false)
     expect(store.devices).toEqual([])
   })
+
+  it('silent 刷新全程不置 loading，正常覆盖列表', async () => {
+    const store = useDeviceStore()
+    let resolveList!: (value: DeviceInfo[]) => void
+    mockApi.listDevices.mockImplementationOnce(
+      () =>
+        new Promise<DeviceInfo[]>((resolve) => {
+          resolveList = resolve
+        })
+    )
+
+    const p = store.fetchDevices({ silent: true })
+    expect(store.loading).toBe(false) // 发起后：silent 不置 loading
+
+    resolveList([dev('a')])
+    await p
+    expect(store.loading).toBe(false)
+    expect(store.devices.map((d) => d.id)).toEqual(['a'])
+  })
+
+  it('过期响应被代次检查丢弃：慢响应不覆盖新代次结果', async () => {
+    const store = useDeviceStore()
+    let resolveSlow!: (value: DeviceInfo[]) => void
+    let resolveFast!: (value: DeviceInfo[]) => void
+    mockApi.listDevices
+      .mockImplementationOnce(
+        () =>
+          new Promise<DeviceInfo[]>((resolve) => {
+            resolveSlow = resolve
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<DeviceInfo[]>((resolve) => {
+            resolveFast = resolve
+          })
+      )
+
+    const p1 = store.fetchDevices() // 旧代次（慢）
+    const p2 = store.fetchDevices() // 新代次（快）
+
+    resolveFast([dev('fresh')])
+    await p2
+    expect(store.devices.map((d) => d.id)).toEqual(['fresh'])
+
+    resolveSlow([dev('stale')]) // 慢响应此刻才到，应被丢弃
+    await p1
+    expect(store.devices.map((d) => d.id)).toEqual(['fresh'])
+  })
 })
 
 describe('device store - connectDevice', () => {
-  it('连接成功后延时刷新设备列表（默认端口 5555）', async () => {
+  it('连接成功后静默重拉设备列表（默认端口 5555）', async () => {
     const store = useDeviceStore()
     mockApi.connectDevice.mockResolvedValueOnce({ success: true, device_id: '1.2.3.4:5555' })
     mockApi.listDevices.mockResolvedValueOnce([dev('1.2.3.4:5555')])
 
-    vi.useFakeTimers()
+    const result = await store.connectDevice('1.2.3.4')
+
+    expect(result).toEqual({ success: true, device_id: '1.2.3.4:5555' })
+    expect(mockApi.connectDevice).toHaveBeenCalledWith('1.2.3.4', 5555)
+    await vi.waitFor(() => expect(store.devices.map((d) => d.id)).toEqual(['1.2.3.4:5555']))
+    expect(mockApi.listDevices).toHaveBeenCalledTimes(1)
+    expect(store.error).toBeNull()
+  })
+
+  it('重拉不阻塞连接返回：列表挂起时仍立即返回成功', async () => {
+    const store = useDeviceStore()
+    mockApi.connectDevice.mockResolvedValueOnce({ success: true, device_id: '1.2.3.4:5555' })
+    mockApi.listDevices.mockImplementation(() => new Promise<DeviceInfo[]>(() => {}))
+
+    let deadline: ReturnType<typeof setTimeout> | undefined
     try {
-      const p = store.connectDevice('1.2.3.4')
-      await vi.advanceTimersByTimeAsync(1000)
-      const result = await p
+      const result = await Promise.race([
+        store.connectDevice('1.2.3.4'),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => reject(new Error('列表刷新阻塞了连接返回')), 500)
+        }),
+      ])
 
       expect(result).toEqual({ success: true, device_id: '1.2.3.4:5555' })
-      expect(mockApi.connectDevice).toHaveBeenCalledWith('1.2.3.4', 5555)
-      expect(mockApi.listDevices).toHaveBeenCalledTimes(1)
-      expect(store.devices.map((d) => d.id)).toEqual(['1.2.3.4:5555'])
-      expect(store.error).toBeNull()
+      expect(mockApi.listDevices).toHaveBeenCalled() // 静默重拉已发起
     } finally {
-      vi.useRealTimers()
+      clearTimeout(deadline)
     }
   })
 
   it('自定义端口透传给 API', async () => {
     const store = useDeviceStore()
-    vi.useFakeTimers()
-    try {
-      const p = store.connectDevice('10.0.0.5', 5037)
-      await vi.advanceTimersByTimeAsync(1000)
-      await p
-      expect(mockApi.connectDevice).toHaveBeenCalledWith('10.0.0.5', 5037)
-    } finally {
-      vi.useRealTimers()
-    }
+    await store.connectDevice('10.0.0.5', 5037)
+    expect(mockApi.connectDevice).toHaveBeenCalledWith('10.0.0.5', 5037)
   })
 
   it('success=false 时返回结果但不刷新列表', async () => {
@@ -172,6 +228,28 @@ describe('device store - disconnectDevice', () => {
     resolveList([dev('b'), dev('c')])
     await p
     expect(store.devices.map((d) => d.id)).toEqual(['b', 'c'])
+  })
+
+  it('重拉不阻塞断开返回：列表挂起时仍立即返回成功且本地已移除', async () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a'), dev('b')]
+    mockApi.listDevices.mockImplementation(() => new Promise<DeviceInfo[]>(() => {}))
+
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      const result = await Promise.race([
+        store.disconnectDevice('a'),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => reject(new Error('列表刷新阻塞了断开返回')), 500)
+        }),
+      ])
+
+      expect(result).toEqual({ success: true })
+      expect(store.devices.map((d) => d.id)).toEqual(['b']) // 本地移除已生效
+      expect(mockApi.listDevices).toHaveBeenCalled() // 静默重拉已发起
+    } finally {
+      clearTimeout(deadline)
+    }
   })
 
   it('success=false 时保持列表不变且不重拉', async () => {
