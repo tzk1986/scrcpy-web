@@ -32,7 +32,7 @@ async function installCanvasProbe(page: Page) {
 }
 
 test.describe('诊断：.33 切页画面滞后', () => {
-  test('点击规格二 tab 的端到端可见延迟', async ({ page, device, shell }) => {
+  test('点击规格 tab 的端到端可见延迟', async ({ page, device, shell }) => {
     test.skip(!device, '无在线 ADB 设备')
     await shell('input keyevent KEYCODE_WAKEUP; svc power stayon true')
 
@@ -62,14 +62,15 @@ test.describe('诊断：.33 切页画面滞后', () => {
     }
     console.log('[probe] click 前 stats:', await readStats())
 
-    // canvas 坐标映射：设备 (216,396) → 显示坐标
+    // canvas 坐标映射：设备 (400,130) → 显示坐标（顶部「规格」tab 中心，
+    // 与 probe_switch_latency.py 验收切页点一致）
     const box = await page.locator('.video-canvas').boundingBox()
     const dims = await page.evaluate(() => {
       const c = document.querySelector('.video-canvas') as HTMLCanvasElement
       return { w: c.width, h: c.height }
     })
-    const dx = box!.x + (216 / dims.w) * box!.width
-    const dy = box!.y + (396 / dims.h) * box!.height
+    const dx = box!.x + (400 / dims.w) * box!.width
+    const dy = box!.y + (130 / dims.h) * box!.height
     const tClick = await page.evaluate(() => performance.now())
     await page.mouse.click(dx, dy)
     console.log(`[probe] click@(${dx.toFixed(0)},${dy.toFixed(0)}) canvas=${dims.w}x${dims.h} t=${tClick.toFixed(0)}`)
