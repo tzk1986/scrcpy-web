@@ -315,9 +315,15 @@ async def test_stall_restart_resets_advisor_and_sets_report_grace(stream_setting
             pass
 
     task = asyncio.create_task(consume())
-    assert await _wait_for(lambda: len(StallOnceThenIdleEncoder.created) == 1)
+    # 首实例就绪。条件必须单调（>=1）：stall→自愈重启链在亚毫秒级完成，
+    # 「恰好 1 台」是瞬态窗口——== 精确匹配依赖 10ms 级轮询恰好命中，
+    # Linux CI 高精度时钟下系统性错过（2026-10-09 CI 实证）；Windows
+    # 粗时钟（15.6ms 粒度）下 sleep(0.01) 提前触发、轮询过密才侥幸通过。
+    assert await _wait_for(lambda: len(StallOnceThenIdleEncoder.created) >= 1)
 
-    # stall 前注入 3 个坏样本（未满 8 窗，不触发降档；被 reset 清除也无妨）
+    # 注入 3 个坏样本（未满 8 窗不触发降档）。时序不保证在 stall 前：
+    # stall 后用上报宽限期丢弃、stall 前用 advisor.reset() 清窗——两种
+    # 时序都不得触发降档，后续断言对二者等价。
     for i in range(3):
         svc.report_client_fps("dev1", 10, now=float(i))
 
