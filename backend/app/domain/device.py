@@ -21,6 +21,7 @@
     status:     连接状态 — "online"、"offline" 或 "busy"
     ip:         （可选）WiFi 连接设备的 IP 地址
     port:       （可选）WiFi 连接设备的端口
+    slow:       （瞬态）信息查询失败的标记（方案 35 D7）——不入库
 """
 
 from dataclasses import dataclass
@@ -39,6 +40,9 @@ class DeviceInfo:
     status: str  # "online" | "offline" | "busy"
     ip: Optional[str] = None
     port: Optional[int] = None
+    # 瞬态展示字段：该设备本轮信息查询失败（最常见原因为 adb 响应慢），
+    # 显示内容可能为缓存/默认值；不参与 SQLite 持久化（列映射不涉及）。
+    slow: bool = False
 
     @property
     def is_online(self) -> bool:

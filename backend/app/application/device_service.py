@@ -23,9 +23,14 @@
 
 注意：batch_install 已用 asyncio.gather() + 信号量（并发上限 5）实现并发；
 单设备失败被捕获并计入结果列表，不中止整批。
+
+方案 35：设备列表查询并发化 + 失败兜底保留 + 冷却负缓存 + 查询任务复用
+（见 list_devices / _get_info_cached / _fetch_info / _fallback_device）。
 """
 
 import asyncio
+import time
+from dataclasses import replace
 from typing import Awaitable, Callable, Optional
 
 from app.core.logging import get_logger
@@ -33,6 +38,13 @@ from app.domain.device import DeviceInfo
 from app.domain.ports import AdbDriver, DeviceRepository
 
 logger = get_logger(__name__)
+
+# 信息查询失败后的冷却时长（秒，方案 35 D4）：卡设备 30s 内不重试，
+# 边界设备重试频率低（对设备友好）；到期自动恢复查询。
+_COOLDOWN_SECONDS = 30
+
+# 设备信息查询的设备级并发上限（方案 35 D1）：防设备数增长后进程失控。
+_INFO_CONCURRENCY = 8
 
 
 class DeviceService:
@@ -51,32 +63,91 @@ class DeviceService:
         self._previous_devices: set[str] = set()
         self._on_device_connected: list[Callable[[DeviceInfo], Awaitable[None]]] = []
         self._on_device_disconnected: list[Callable[[str], Awaitable[None]]] = []
+        self._info_semaphore = asyncio.Semaphore(_INFO_CONCURRENCY)
+        self._info_cooldown: dict[str, float] = {}  # device_id → 冷却截止（time.monotonic）
+        self._info_tasks: dict[str, asyncio.Task[Optional[DeviceInfo]]] = {}
 
     async def list_devices(self) -> list[DeviceInfo]:
         """
         扫描已连接的设备并返回完整信息。
 
+        并发查询所有设备详情（方案 35 D1）——总时长从「Σ 各设备」降为
+        「max(单设备)」；查询失败的设备不消失，走缓存/最小信息兜底并标记
+        `slow`（D3/D7）。
+
         副作用：
             - 查询 ADB 获取已连接设备序列号列表
             - 获取每个设备的详细信息（型号、OS、分辨率等）
-            - 将每个设备持久化到仓库（upsert）
+            - 查询成功的设备持久化到仓库（upsert）
 
         返回：
-            所有当前已连接设备的 DeviceInfo 对象列表。
+            所有当前已连接设备的 DeviceInfo 对象列表（含失败兜底条目）。
         """
         logger.info("listing_devices")
         device_ids = await self.adb.list_devices()
-        devices = []
-        for device_id in device_ids:
+        results = await asyncio.gather(*(self._get_info_cached(d) for d in device_ids))
+
+        devices: list[DeviceInfo] = []
+        for device_id, info in zip(device_ids, results):
+            if info is not None:
+                devices.append(info)
+            else:
+                devices.append(await self._fallback_device(device_id))
+        return devices
+
+    async def _get_info_cached(self, device_id: str) -> Optional[DeviceInfo]:
+        """
+        取设备信息：冷却中直接返回 None（走兜底）；否则复用或创建查询任务。
+
+        任务复用（方案 35 D5）：并发的列表请求对同一设备共享一个在途
+        查询任务，不重复发起 adb 查询。检查-创建之间无 await——asyncio
+        单线程下即为原子。
+        """
+        if time.monotonic() < self._info_cooldown.get(device_id, 0.0):
+            return None
+        task = self._info_tasks.get(device_id)
+        if task is None or task.done():
+            task = asyncio.create_task(self._fetch_info(device_id))
+            self._info_tasks[device_id] = task
+        return await task
+
+    async def _fetch_info(self, device_id: str) -> Optional[DeviceInfo]:
+        """
+        单设备信息查询任务体：成功清冷却并落库，失败记冷却（方案 35 D4）。
+
+        异常不出任务（避免 "Task exception was never retrieved" 噪音），
+        冷却置位与结果一并落地；失败返回 None 由调用方走兜底。
+        """
+        async with self._info_semaphore:
             try:
                 info = await self.adb.get_device_info(device_id)
             except Exception as e:
-                # 掉线未察觉的残留表项：跳过单台设备，不让整个列表接口失败
                 logger.warning("device_info_failed", device=device_id, error=str(e))
-                continue
+                self._info_cooldown[device_id] = time.monotonic() + _COOLDOWN_SECONDS
+                return None
+            self._info_cooldown.pop(device_id, None)
             await self.repo.save(info)
-            devices.append(info)
-        return devices
+            return info
+
+    async def _fallback_device(self, device_id: str) -> DeviceInfo:
+        """
+        查询失败设备的兜底条目（方案 35 D3/D7）。
+
+        有缓存返回缓存内容（slow=True，**不**回写覆盖——避免坏数据污染
+        好数据）；无缓存（新设备首查失败）返回最小信息。
+        """
+        cached = await self.repo.get(device_id)
+        if cached is not None:
+            return replace(cached, slow=True)
+        return DeviceInfo(
+            id=device_id,
+            model="",
+            os_version="",
+            resolution=(0, 0),
+            battery=0,
+            status="online",
+            slow=True,
+        )
 
     async def get_device(self, device_id: str) -> Optional[DeviceInfo]:
         """
@@ -179,8 +250,13 @@ class DeviceService:
             AdbError: 连接失败时。
         """
         device_id = await self.adb.connect_tcp(ip, port)
-        # 连接成功后获取设备信息并保存
-        info = await self.adb.get_device_info(device_id)
+        # 连接成功后获取设备信息并保存；信息查询失败不阻断连接本身
+        # （方案 35 D6：get_device_info 命令走 5s 短超时，失败仅告警）
+        try:
+            info = await self.adb.get_device_info(device_id)
+        except Exception as e:
+            logger.warning("device_info_failed", device=device_id, error=str(e))
+            return device_id
         await self.repo.save(info)
         return device_id
 
@@ -196,6 +272,9 @@ class DeviceService:
         await self.adb.disconnect_tcp(ip, port)
         # 从仓库中删除设备
         await self.repo.delete(device_id)
+        # 清理查询缓存（方案 35 D4）：防止断开后残留冷却/任务占用内存
+        self._info_cooldown.pop(device_id, None)
+        self._info_tasks.pop(device_id, None)
 
     async def start(self) -> None:
         """

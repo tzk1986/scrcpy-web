@@ -14,6 +14,7 @@
 """
 
 import asyncio
+import time
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
@@ -138,16 +139,123 @@ class TestListDevices:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_list_devices_skips_broken_device(self, service, mock_adb, mock_repo):
-        """单台设备信息获取失败（掉线未察觉的残留表项）→ 跳过该设备，不拖垮整个列表"""
+    async def test_list_devices_runs_concurrently(self, service, mock_adb):
+        """3 台设备并发查询（方案 35 D1）——串行实现峰值恒为 1 且总时长 ~3×0.3s"""
+        in_flight = 0
+        peak = 0
+
+        async def fake_get_device_info(device_id):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.3)
+            in_flight -= 1
+            return _make_device(device_id)
+
+        mock_adb.list_devices.return_value = ["d1", "d2", "d3"]
+        mock_adb.get_device_info.side_effect = fake_get_device_info
+
+        started = time.monotonic()
+        result = await service.list_devices()
+        elapsed = time.monotonic() - started
+
+        assert [d.id for d in result] == ["d1", "d2", "d3"]
+        assert peak >= 2
+        assert elapsed < 0.6
+        assert all(d.slow is False for d in result)
+
+    @pytest.mark.asyncio
+    async def test_list_devices_keeps_broken_device_without_cache(self, service, mock_adb, mock_repo):
+        """信息获取失败的设备保留在列表中（最小信息 + slow 标记），不落库（方案 35 D3/D7）"""
         good = _make_device("device-good")
         mock_adb.list_devices.return_value = ["device-good", "device-broken"]
         mock_adb.get_device_info.side_effect = [good, AdbError("device offline")]
 
         result = await service.list_devices()
 
-        assert [d.id for d in result] == ["device-good"]
+        assert [d.id for d in result] == ["device-good", "device-broken"]
+        broken = result[1]
+        assert broken.model == ""
+        assert broken.resolution == (0, 0)
+        assert broken.battery == 0
+        assert broken.status == "online"
+        assert broken.slow is True
+        assert result[0].slow is False
         mock_repo.save.assert_called_once_with(good)
+
+    @pytest.mark.asyncio
+    async def test_list_devices_keeps_broken_device_with_cache(self, service, mock_adb, mock_repo):
+        """有缓存的失败设备：返回缓存内容（逐字段一致）但 slow 标记，且不覆写仓库"""
+        cached = _make_device("device-broken", model="Cached Model")
+        mock_adb.list_devices.return_value = ["device-broken"]
+        mock_adb.get_device_info.side_effect = AdbError("timeout")
+        mock_repo.get.return_value = cached
+
+        result = await service.list_devices()
+
+        assert len(result) == 1
+        broken = result[0]
+        assert broken.id == cached.id
+        assert broken.model == cached.model
+        assert broken.os_version == cached.os_version
+        assert broken.resolution == cached.resolution
+        assert broken.battery == cached.battery
+        assert broken.status == cached.status
+        assert broken.slow is True
+        mock_repo.save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_devices_cooldown_after_failure(self, service, mock_adb, monkeypatch):
+        """失败后 30s 冷却（方案 35 D4）：期间不发起查询，到期恢复重试"""
+        class FakeTime:
+            now = 1000.0
+
+            @staticmethod
+            def monotonic():
+                return FakeTime.now
+
+        monkeypatch.setattr("app.application.device_service.time", FakeTime)
+        mock_adb.list_devices.return_value = ["device-flaky"]
+        mock_adb.get_device_info.side_effect = AdbError("slow device")
+
+        # 第一次：查询失败 → 兜底 + slow
+        result1 = await service.list_devices()
+        assert result1[0].slow is True
+        assert mock_adb.get_device_info.call_count == 1
+
+        # 冷却期内：不再调用查询
+        result2 = await service.list_devices()
+        assert result2[0].slow is True
+        assert mock_adb.get_device_info.call_count == 1
+
+        # 推进 30s：恢复重试（这次成功 → 清冷却、slow 消失）
+        FakeTime.now += 31
+        good = _make_device("device-flaky")
+        mock_adb.get_device_info.side_effect = None
+        mock_adb.get_device_info.return_value = good
+        result3 = await service.list_devices()
+        assert result3[0].slow is False
+        assert mock_adb.get_device_info.call_count == 2
+
+        # 成功后冷却已清：下次列表刷新立即重查（无 30s 等待）
+        await service.list_devices()
+        assert mock_adb.get_device_info.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_list_devices_reuses_inflight_task(self, service, mock_adb):
+        """并发两个 list_devices：同设备查询只发起一次（方案 35 D5 任务复用）"""
+        async def slow_get_device_info(device_id):
+            await asyncio.sleep(0.1)
+            return _make_device(device_id)
+
+        mock_adb.list_devices.return_value = ["d1", "d2"]
+        mock_adb.get_device_info.side_effect = slow_get_device_info
+
+        r1, r2 = await asyncio.gather(service.list_devices(), service.list_devices())
+
+        assert mock_adb.get_device_info.call_count == 2  # 复用而非 2×2
+        assert sorted(d.id for d in r1) == ["d1", "d2"]
+        assert sorted(d.id for d in r2) == ["d1", "d2"]
 
 
 class TestGetDevice:
@@ -297,6 +405,17 @@ class TestConnectTcp:
         with pytest.raises(AdbError, match="Connection refused"):
             await service.connect_tcp("192.168.1.5", 5555)
 
+    @pytest.mark.asyncio
+    async def test_connect_tolerates_info_failure(self, service, mock_adb, mock_repo):
+        """adb connect 成功但信息查询失败：仍返回 device_id、不落库、不上抛（方案 35）"""
+        mock_adb.connect_tcp.return_value = "192.168.1.5:5555"
+        mock_adb.get_device_info.side_effect = AdbError("ADB command timed out after 5s")
+
+        result = await service.connect_tcp("192.168.1.5", 5555)
+
+        assert result == "192.168.1.5:5555"
+        mock_repo.save.assert_not_called()
+
 
 class TestDisconnectTcp:
     """测试 disconnect_tcp 方法"""
@@ -308,6 +427,17 @@ class TestDisconnectTcp:
 
         mock_adb.disconnect_tcp.assert_called_once_with("192.168.1.5", 5555)
         mock_repo.delete.assert_called_once_with("192.168.1.5:5555")
+
+    @pytest.mark.asyncio
+    async def test_disconnect_clears_query_cache(self, service, mock_adb, mock_repo):
+        """断开时清理该设备的冷却与任务表条目（方案 35 D4/D5）"""
+        service._info_cooldown["192.168.1.5:5555"] = 12345.0
+        service._info_tasks["192.168.1.5:5555"] = None  # 占位条目
+
+        await service.disconnect_tcp("192.168.1.5", 5555)
+
+        assert "192.168.1.5:5555" not in service._info_cooldown
+        assert "192.168.1.5:5555" not in service._info_tasks
 
 
 # ---------------------------------------------------------------------------

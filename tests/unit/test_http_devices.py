@@ -142,6 +142,7 @@ def test_list_devices(fake: FakeDeviceService) -> None:
         "status": "online",
         "ip": None,
         "port": None,
+        "slow": False,
     }
     assert body[1]["status"] == "offline"
 
