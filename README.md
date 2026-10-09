@@ -17,7 +17,15 @@
 
 ## 🚀 快速开始
 
-### 环境要求
+### Windows 绿色版（推荐，零安装）
+
+从 [Releases](https://github.com/tzk1986/scrcpy-web/releases) 下载
+`OpenScrcpy-win64-<版本>.zip`，解压到任意可写目录后双击 `OpenScrcpy.exe`，
+服务启动后自动打开浏览器（默认 http://127.0.0.1:8765）。除 Chrome 外**零安装**
+（adb、scrcpy-server、Python 运行时全部随包分发）。用法、端口/单实例、
+退出服务与故障排查详见 [Windows exe 发布说明](docs/Windows-exe-发布说明.md)。
+
+### 环境要求（源码运行）
 
 - Python 3.10+
 - Node.js 20+
@@ -111,6 +119,8 @@ ConPTY/pywinpty、scrcpy.exe、ProactorEventLoop 等 Windows 专属组件）。�
 | 31 | [前端丢帧策略与 warn 风暴治理](方案/31-前端丢帧策略与warn风暴治理.md) | ✅ 已实施（2026-09-30，追赶状态机锁定至下一 IDR，恢复 0.91–1.11s） |
 | 32 | [PTS 全链透传](方案/32-PTS全链透传方案.md) | ✅ 已实施（2026-10-08，WS 8B PTS 前缀 + WebCodecs timestamp 正确化，真机验收闭环） |
 | 33 | [后端流日志降噪](方案/33-后端日志降噪方案.md) | ✅ 已实施（2026-10-08，SPS/PPS 幂等重发等 7 项精准降级，预期活跃流 INFO 降 ~75%） |
+| 34 | [低帧率设备探针误判治理](方案/34-低帧率设备探针误判治理方案.md) | ✅ 已实施并真机验收（2026-10-09，判死窗解耦加宽 10s + 并发防踩停 token 制 + 注入单例修复；.33 风暴复测 20 针 0/20 越阈） |
+| 35 | [设备列表慢设备阻塞治理](方案/35-设备列表慢设备阻塞治理方案.md) | ✅ 已实施并真机验收（2026-10-09，慢设备查询并发化 + 短路超时 + 冷却负缓存；32.2s 全表阻塞降至秒级） |
 
 ## 🏗️ 项目结构
 
@@ -274,15 +284,15 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ## 📮 联系方式
 
-- 问题反馈：[GitHub Issues](https://github.com/yourusername/openscrcpy/issues)
-- 讨论交流：[GitHub Discussions](https://github.com/yourusername/openscrcpy/discussions)
+- 问题反馈：[GitHub Issues](https://github.com/tzk1986/scrcpy-web/issues)
+- 讨论交流：[GitHub Discussions](https://github.com/tzk1986/scrcpy-web/discussions)
 
 ---
 
 **项目状态**：🚧 积极开发中
 
-**最新版本**：v0.7.3
+**最新版本**：v0.7.3（2026-10-09 正式发布）
 
-**最新进展**：2026-10-08（性能打磨阶段 **P0–P2 全线收口**：方案 26–32 经真机/e2e 逐项验收，含端到端延迟 76ms 基线、截图反馈 <800ms、PTS 全链透传等；**P3 日志降噪收口**：方案 33 按幂等性精准降级 7 项，预期活跃流 INFO 降 ~75%，门禁全绿；见 `docs/性能对标与优化清单.md`）
+**最新进展**：2026-10-09 正式发版 **v0.7.3** —— 含方案 35「设备列表慢设备阻塞治理」（慢设备不再阻塞全表，连接页/管理页秒级响应）与方案 34「低帧率设备探针误判治理」全链收口（判死窗解耦加宽 + 并发防踩停 token 制 + 注入单例修复；.33 真机风暴复测 20 针 0/20 越阈，切页/双会话/前端阈值四项验收全 PASS）
 
-**下一步**：绿色版试用反馈收集；P3 余项（事件循环对象分配、raw 模式延迟）spike 评估；方案 33 真机日志量对比回填；Phase 2 规划（网络抓包等）
+**下一步**：绿色版试用反馈收集；设备 offline 场景治理评估（方案 34 D5 暂缓项）；Phase 2 规划（网络抓包等）

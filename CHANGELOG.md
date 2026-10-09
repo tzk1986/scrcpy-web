@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-09
+
+### Added
+- 设备列表慢设备阻塞治理（方案 35）：单设备信息查询 4 命令并发化 + 快命令 5s 短路超时（慢设备触顶时 `GET /api/devices` 全表阻塞 32.2s → 秒级）、查询失败兜底保留条目、30s 冷却负缓存、查询任务复用
+- `DeviceInfo.slow` 瞬态字段 + 设备管理页「adb 慢」红灯标识（设备恢复后毫秒级消除）
+
+### Changed
+- 前端设备列表刷新移出交互关键路径：断开/跳转即时响应，列表静默重拉（代次守卫防覆盖）
+
+### Fixed
+- 慢设备阻塞引发的连锁卡顿：连接页→设备管理页加载久、断开按钮转圈（0.7.2 实测反馈）
+
+## [0.7.1 ~ 0.7.2] - 2026-10-08（方案 34 内测包，未发布 Release）
+
+- **0.7.1**：低帧率设备探针误判治理（方案 34）全链实施——判死窗解耦加宽
+  `max(2×idle_reset, 10s)`、探针发送失败有界兜底（连续 3 次判死）、stall
+  重启决策器样本作废 + 10s 上报宽限期、claim 清残留 pending、acquire/release
+  token 持有制（防并发踩停）、前端 STALL_MS 联动 `2×keepalive+2s`、stall
+  原因区分与探针应答延迟采样
+- **0.7.2**：注入服务单例缺陷修复（D8）——`get_stream_service`/
+  `get_session_service` 补 `@lru_cache()`，根治多会话并发各起 encoder 互踩
+  （设备端 SIGABRT 重启循环）。0.7.3 起含方案 34 §四全部真机验收收口
+  （.33 风暴复测 20 针 0/20 越阈、切页/双会话/前端阈值四项 PASS）
+
 ## [0.7.0] - 2026-09-29（pre-release 首发）
 
 ### Added
