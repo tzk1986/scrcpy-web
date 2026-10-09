@@ -5,6 +5,7 @@ export interface DeviceInfo {
   model: string
   status: string
   resolution: [number, number]
+  slow?: boolean
 }
 
 type Fixtures = {
@@ -14,6 +15,8 @@ type Fixtures = {
 
 // 设备探测：E2E_DEVICE 环境变量可钉住序列号；否则取第一个 online 设备；
 // 无设备返回 null，由 spec 决定 skip。
+// 排除 slow 设备（方案 35 D3 兜底条目：status=online 但信息查询失败、
+// model 为空，选作测试设备会让 shell 通道随即失败）。
 // shell 通道：POST /api/debug/sessions?device_id&user_id → session_id，
 // 再 POST /api/debug/sessions/{sid}/shell?command=...，返回 stdout 文本。
 export const test = base.extend<Fixtures>({
@@ -21,7 +24,7 @@ export const test = base.extend<Fixtures>({
     const res = await request.get('/api/devices')
     const devices = (await res.json()) as DeviceInfo[]
     const pinned = process.env.E2E_DEVICE
-    const online = devices.filter((d) => d.status === 'online')
+    const online = devices.filter((d) => d.status === 'online' && !d.slow)
     const dev = (pinned ? online.find((d) => d.id === pinned) : online[0]) ?? null
     if (pinned && !dev) {
       throw new Error(`E2E_DEVICE=${pinned} 不在 online 设备列表中：${online.map((d) => d.id).join(', ')}`)

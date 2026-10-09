@@ -152,12 +152,15 @@
     "battery": 87,
     "status": "online",
     "ip": null,
-    "port": null
+    "port": null,
+    "slow": false
   }
 ]
 ```
 
-字段说明（`backend/app/domain/device.py`）：`status` 取 `"online" | "offline" | "busy"`；`resolution` 为 `[宽, 高]` 数组；`ip`/`port` 为可选字段，当前 ADB 驱动（`infrastructure/adb/cli.py:get_device_info`）不填充，恒为 `null`。单台设备信息获取失败时该设备被跳过，不影响整体列表。
+字段说明（`backend/app/domain/device.py`）：`status` 取 `"online" | "offline" | "busy"`；`resolution` 为 `[宽, 高]` 数组；`ip`/`port` 为可选字段，当前 ADB 驱动（`infrastructure/adb/cli.py:get_device_info`）不填充，恒为 `null`。
+
+单台设备信息获取失败（最常见原因为 adb 响应慢）时该设备**保留在列表中**并置 `slow: true`（此时 model/resolution/battery 等字段为缓存值或默认值）；该设备 30s 冷却期内不重复查询，冷却到期自动恢复。查询成功时 `slow` 恒为 `false`。`slow` 为瞬态展示字段（不入库），前端据此在设备列表亮红色「adb 慢」标识。设备信息查询并发执行（设备级并发上限 8，单设备 4 条命令各 5s 短超时并发）。
 
 #### GET /api/devices/{device_id}
 
@@ -206,7 +209,7 @@
 
 #### GET /api/devices/events（SSE）
 
-设备上下线事件流（Server-Sent Events），事件源为后端每 5s 一次的设备状态刷新循环。
+设备上下线事件流（Server-Sent Events），事件来源为后端设备状态刷新循环（当前生产未接线启动，事件流保持连接但不会收到事件；前端设备增删依赖手动刷新与操作后重拉）。
 
 - 响应：`text/event-stream`，`Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`
 - 事件格式（`data:` 单行 JSON）：
