@@ -453,6 +453,57 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
     stream.stop()
   })
 
+  it('rotation=2 raw 帧 → 180° 像素反序补偿（方案 38 B5）', async () => {
+    // 2×1 两像素帧：像素序 [A, B] 经 180° 补偿后为 [B, A]（行主序全反序）
+    const bytes = new Uint8Array(12 + 8)
+    const dv = new DataView(bytes.buffer)
+    dv.setUint32(0, 2, true)
+    dv.setUint32(4, 1, true)
+    dv.setUint32(8, 1, true)
+    const px = new Uint32Array(bytes.buffer, 12, 2)
+    px[0] = 0x11223344
+    px[1] = 0x55667788
+    screenshotRawMock.mockResolvedValue({
+      blob: new Blob([bytes.buffer]),
+      format: 'raw-rgba',
+      rotation: 2,
+    })
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+
+    await stream.start()
+
+    expect(putImageData).toHaveBeenCalledTimes(1)
+    const [imageData] = putImageData.mock.calls[0]
+    const out = new Uint32Array(imageData.data.buffer, imageData.data.byteOffset, 2)
+    expect(Array.from(out)).toEqual([0x55667788, 0x11223344])
+    expect(stream.stats.frameCount).toBe(1)
+    stream.stop()
+  })
+
+  it('rotation=0 raw 帧 → 像素序不变（无多余重排开销）', async () => {
+    const bytes = new Uint8Array(12 + 8)
+    const dv = new DataView(bytes.buffer)
+    dv.setUint32(0, 2, true)
+    dv.setUint32(4, 1, true)
+    dv.setUint32(8, 1, true)
+    const px = new Uint32Array(bytes.buffer, 12, 2)
+    px[0] = 0x11223344
+    px[1] = 0x55667788
+    screenshotRawMock.mockResolvedValue({
+      blob: new Blob([bytes.buffer]),
+      format: 'raw-rgba',
+      rotation: 0,
+    })
+    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+
+    await stream.start()
+
+    const [imageData] = putImageData.mock.calls[0]
+    const out = new Uint32Array(imageData.data.buffer, imageData.data.byteOffset, 2)
+    expect(Array.from(out)).toEqual([0x11223344, 0x55667788])
+    stream.stop()
+  })
+
   it('12B 头 raw 帧（Android 7 旧机）→ 同样 putImageData 渲染', async () => {
     screenshotRawMock.mockResolvedValue({
       blob: rawFrameBlob(2, 2, 1, 12),

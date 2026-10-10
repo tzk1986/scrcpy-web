@@ -57,6 +57,8 @@ export class VideoStream {
   private _pendingRefresh = false
   /** 方案 29：raw 链路不可用（校验失败/后端回退 PNG）后降级记忆，不再试 raw */
   private _rawUnsupported = false
+  /** 方案 38 B5：最近一次 raw 响应的 X-Rotation 值（仅 180° 做像素反序补偿） */
+  private _rotation = 0
 
   /**
    * @param deviceId - 设备 ADB 序列号
@@ -218,7 +220,8 @@ export class VideoStream {
         return
       }
 
-      const { blob, format } = await api.screenshotRaw(this.deviceId)
+      const { blob, format, rotation } = await api.screenshotRaw(this.deviceId)
+      this._rotation = rotation
       if (format === 'raw-rgba') {
         if (!(await this.renderRawFrame(blob))) {
           // 帧校验失败：丢弃该帧（不渲染不计数），置降级记忆，下周期起走 PNG
@@ -274,7 +277,16 @@ export class VideoStream {
         // 设置 CSS aspect-ratio 保持显示比例
         this.canvas.style.aspectRatio = `${width} / ${height}`
       }
-      const pixels = new Uint8ClampedArray(buf, headerSize, width * height * 4)
+      let pixels = new Uint8ClampedArray(buf, headerSize, width * height * 4)
+      if (this._rotation === 2) {
+        // putImageData 忽略 ctx 变换矩阵，无法用 ctx.rotate 补偿；
+        // 按 32 位像素整组反序实现 180°（copy 避免原地 reverse 污染 buf 视图）
+        const px = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4)
+        const copy = new Uint32Array(px.length)
+        copy.set(px)
+        copy.reverse()
+        pixels = new Uint8ClampedArray(copy.buffer)
+      }
       ctx.putImageData(new ImageData(pixels, width, height), 0, 0)
     }
     return true

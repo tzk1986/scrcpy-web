@@ -265,17 +265,21 @@ export const api = {
    * 对应：GET /api/devices/{deviceId}/screenshot?format=raw
    * 后端以 X-Frame-Format 响应头标注帧格式：raw-rgba（设备端 raw 帧 +
    * gzip 透传，浏览器透明解压）或 png（raw 链路失败时后端单请求回退）。
+   * X-Rotation 标注设备显示 rotation 0-3（方案 38 B5）：raw 链路前端
+   * 画布/像素补偿依据；头缺失或非数字按 0（不旋转）防御。
    */
   async screenshotRaw(deviceId: string): Promise<{
     blob: Blob
     format: 'raw-rgba' | 'png'
+    rotation: number
   }> {
     const res = await client.get(`/devices/${deviceId}/screenshot`, {
       params: { format: 'raw' },
       responseType: 'blob',
     })
     const format = res.headers['x-frame-format'] === 'raw-rgba' ? 'raw-rgba' : 'png'
-    return { blob: res.data as Blob, format }
+    const rotation = Number(res.headers['x-rotation']) || 0
+    return { blob: res.data as Blob, format, rotation }
   },
 
   // ==================== 性能监控 API ====================

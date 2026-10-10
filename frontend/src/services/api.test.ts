@@ -186,14 +186,15 @@ describe('截屏与性能 API', () => {
     })
   })
 
-  it('screenshotRaw 带 format=raw 参数并解析 x-frame-format 头（方案 29）', async () => {
+  it('screenshotRaw 带 format=raw 参数并解析 x-frame-format/x-rotation 头（方案 29/38）', async () => {
     mockClient.get.mockResolvedValueOnce({
       data: BLOB,
-      headers: { 'x-frame-format': 'raw-rgba' },
+      headers: { 'x-frame-format': 'raw-rgba', 'x-rotation': '2' },
     })
     await expect(api.screenshotRaw('dev1')).resolves.toEqual({
       blob: BLOB,
       format: 'raw-rgba',
+      rotation: 2,
     })
     expect(mockClient.get).toHaveBeenCalledWith('/devices/dev1/screenshot', {
       params: { format: 'raw' },
@@ -201,24 +202,34 @@ describe('截屏与性能 API', () => {
     })
   })
 
-  it('screenshotRaw 后端回退 png 头 → format 为 png', async () => {
+  it('screenshotRaw 后端回退 png 头 → format 为 png（rotation 透传）', async () => {
     mockClient.get.mockResolvedValueOnce({
       data: BLOB,
-      headers: { 'x-frame-format': 'png' },
+      headers: { 'x-frame-format': 'png', 'x-rotation': '3' },
     })
     await expect(api.screenshotRaw('dev1')).resolves.toEqual({
       blob: BLOB,
       format: 'png',
+      rotation: 3,
     })
   })
 
-  it('screenshotRaw 响应头缺失 → 按 png 处理（防中间层吞头）', async () => {
+  it('screenshotRaw 响应头缺失 → 按 png 处理且 rotation=0（防中间层吞头）', async () => {
     // 真实 axios 响应必有 headers 对象；吞头场景 = headers 存在但自定义头缺席
     mockClient.get.mockResolvedValueOnce({ data: BLOB, headers: {} })
     await expect(api.screenshotRaw('dev1')).resolves.toEqual({
       blob: BLOB,
       format: 'png',
+      rotation: 0,
     })
+  })
+
+  it('screenshotRaw x-rotation 非数字 → rotation=0（防御不猜）', async () => {
+    mockClient.get.mockResolvedValueOnce({
+      data: BLOB,
+      headers: { 'x-rotation': 'abc' },
+    })
+    await expect(api.screenshotRaw('dev1')).resolves.toMatchObject({ rotation: 0 })
   })
 
   it('getPerfMetrics 编码 deviceId 且 limit 默认 100', async () => {
