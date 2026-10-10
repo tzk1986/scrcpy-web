@@ -33,7 +33,8 @@ const h = vi.hoisted(() => {
   }
   return {
     MockEventSource,
-    ElMessage: { success: vi.fn(), error: vi.fn() },
+    ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+    ElMessageBox: { confirm: vi.fn() },
   }
 })
 
@@ -46,7 +47,10 @@ const mockApi = vi.hoisted(() => ({
   screenshot: vi.fn(),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
-vi.mock('element-plus', () => ({ ElMessage: h.ElMessage }))
+vi.mock('element-plus', () => ({
+  ElMessage: h.ElMessage,
+  ElMessageBox: h.ElMessageBox,
+}))
 
 // happy-dom 无 createObjectURL / revokeObjectURL 实现（store 缩略图链路需要，m9）
 const urlStub = vi.hoisted(() => ({
@@ -116,8 +120,12 @@ const ElAlertStub = {
 const ElTableStub = defineComponent({
   name: 'ElTable',
   props: { data: { type: Array, default: () => [] } },
-  setup(props, { slots }) {
+  emits: ['selection-change'],
+  setup(props, { slots, expose }) {
     provide('tableData', () => props.data as Array<Record<string, unknown>>)
+    // 方案 36 增补 D10：clearSelection 暴露给测试断言（批量断开后调用）
+    const clearSelection = vi.fn()
+    expose({ clearSelection })
     return () => vueH('div', { class: 'stub-table' }, slots.default?.())
   },
 })
@@ -160,10 +168,15 @@ const ElCheckboxStub = {
     '<label class="stub-checkbox"><input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" /><slot /></label>',
 }
 
+const ElPopoverStub = {
+  name: 'ElPopover',
+  template: '<div class="stub-popover"><slot /><slot name="reference" /></div>',
+}
+
 /** 扫描结果样例：开放 2 台，1 成功 1 connect_failed（方案 36） */
 function scanFixture(overrides: Record<string, unknown> = {}) {
   return {
-    cidr: '192.168.8.0/24',
+    label: '192.168.8.0/24',
     probed: 254,
     open_hosts: ['192.168.8.18', '192.168.8.25'],
     connect_results: [
@@ -208,6 +221,7 @@ async function mountDashboard(): Promise<VueWrapper> {
         'el-tag': ElTagStub,
         'el-image': ElImageStub,
         'el-checkbox': ElCheckboxStub,
+        'el-popover': ElPopoverStub,
       },
       directives: { loading: {} },
     },
@@ -221,6 +235,7 @@ beforeEach(() => {
   h.MockEventSource.instances = []
   mockApi.listDevices.mockReset()
   mockApi.connectDevice.mockReset()
+  mockApi.disconnectDevice.mockReset()
   mockApi.scanSubnet.mockReset()
   mockApi.screenshot.mockReset().mockResolvedValue(new Blob(['png']))
   urlStub.createObjectURL.mockReset().mockImplementation(() => 'blob:dash-thumb')
@@ -235,6 +250,8 @@ beforeEach(() => {
   })
   h.ElMessage.success.mockClear()
   h.ElMessage.error.mockClear()
+  h.ElMessage.warning.mockClear()
+  h.ElMessageBox.confirm.mockReset().mockResolvedValue('confirm')
 })
 
 afterEach(() => {
@@ -370,7 +387,9 @@ describe('Dashboard', () => {
     // store.scanSubnet 内部静默重拉 + 对 ok 设备自动加载缩略图（D5 触发时机 1）
     await vi.waitFor(() => expect(mockApi.listDevices).toHaveBeenCalledTimes(2)) // 挂载 1 + 扫描后 1
     await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledWith('192.168.8.18:5555'))
-    expect(mockApi.screenshot).toHaveBeenCalledTimes(1) // 失败设备不加载
+    // 挂载时 D7 自动加载 dev-a（1 次）+ 扫描后 ok 设备（1 次）；失败设备不加载
+    expect(mockApi.screenshot).toHaveBeenCalledWith('dev-a')
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
   })
@@ -452,17 +471,14 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
-  it('缩略图列：点击加载 → 渲染 img（blob URL + 快照时间 title），失败重试可恢复', async () => {
+  it('缩略图列：D7 自动加载失败 → 点击重试成功渲染 img（blob URL + 快照时间 title）', async () => {
     mockApi.listDevices.mockResolvedValue([deviceA])
     mockApi.screenshot.mockRejectedValueOnce(new Error('offline'))
     const wrapper = await mountDashboard()
-
-    const cellSel = '.stub-row[data-id="dev-a"]'
-    expect(wrapper.find(`${cellSel} .thumb-placeholder`).exists()).toBe(true)
-
-    // 首次加载失败 → 失败重试态
-    await wrapper.find(`${cellSel} .thumb-placeholder`).trigger('click')
     await flushPromises()
+
+    // D7 挂载即自动加载（「点击加载」占位不复现于稳定态）→ 失败呈现重试态
+    const cellSel = '.stub-row[data-id="dev-a"]'
     expect(wrapper.find(`${cellSel} .thumb-failed`).exists()).toBe(true)
     expect(wrapper.find(`${cellSel} .stub-image`).exists()).toBe(false)
 
@@ -490,6 +506,169 @@ describe('Dashboard', () => {
     expect(mockApi.screenshot).toHaveBeenCalledWith('192.168.1.33:5555')
     expect(wrapper.find('.stub-row[data-id="dev-a"] .stub-image').exists()).toBe(true)
     expect(wrapper.find('.stub-row[data-id="192.168.1.33:5555"] .stub-image').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  // ==================== 方案 36 增补 D9：开放主机清单可交互 ====================
+
+  it('扫描结果回显开放主机条目：已连接 / 连接失败 / 未连接三分类（D9）', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.18', '192.168.8.25', '192.168.8.30'] })
+    )
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    const rows = wrapper.findAll('.scan-host-row')
+    expect(rows).toHaveLength(3)
+
+    // .18 connect_results ok → 已连接，无操作按钮
+    const row18 = rows.find((r) => r.text().includes('192.168.8.18'))!
+    expect(row18.find('.stub-tag').text()).toBe('已连接')
+    expect(row18.findAll('button')).toHaveLength(0)
+
+    // .25 connect_failed → 连接失败（悬停 message）+ 重试按钮
+    const row25 = rows.find((r) => r.text().includes('192.168.8.25'))!
+    expect(row25.find('.stub-tag').text()).toBe('连接失败')
+    expect(row25.find('.stub-tag').attributes('title')).toContain('握手超时')
+    expect(row25.findAll('button').find((b) => b.text() === '重试')).toBeDefined()
+
+    // .30 不在 connect_results → 未连接 + 连接按钮
+    const row30 = rows.find((r) => r.text().includes('192.168.8.30'))!
+    expect(row30.find('.stub-tag').text()).toBe('未连接')
+    expect(row30.findAll('button').find((b) => b.text() === '连接')).toBeDefined()
+
+    wrapper.unmount()
+  })
+
+  it('开放主机条目「连接」透传扫描时端口快照，成功后即时转已连接（D9）', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30'], connect_results: [] })
+    )
+    mockApi.connectDevice.mockResolvedValue({ success: true, device_id: '192.168.8.30:5555' })
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    // 扫描完成后中途改端口表单：连接动作必须用扫描时的端口快照（防错位）
+    await wrapper.find('input.scan-port').setValue('6666')
+    const row30 = wrapper.find('.scan-host-row')
+    await row30.findAll('button').find((b) => b.text() === '连接')!.trigger('click')
+    await flushPromises()
+
+    expect(mockApi.connectDevice).toHaveBeenCalledWith('192.168.8.30', 5555)
+    expect(h.ElMessage.success).toHaveBeenCalledWith('已连接 192.168.8.30:5555')
+    expect(row30.find('.stub-tag').text()).toBe('已连接')
+
+    wrapper.unmount()
+  })
+
+  // ==================== 方案 36 增补 D10：选择 + 批量断开 ====================
+
+  it('选择 TCP 设备出现工具条；批量断开经确认逐台调用并清除选择（D10）', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA, deviceB])
+    mockApi.disconnectDevice.mockResolvedValue({ success: true })
+    const wrapper = await mountDashboard()
+
+    // 未选择时无工具条
+    expect(wrapper.find('.batch-bar').exists()).toBe(false)
+
+    // 模拟表格 selection-change：选中 TCP 设备 deviceB
+    const tableVm = wrapper.findComponent({ name: 'ElTable' }).vm as unknown as {
+      clearSelection: ReturnType<typeof vi.fn>
+    }
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('selection-change', [deviceB])
+    await nextTick()
+
+    const bar = wrapper.find('.batch-bar')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('已选 1 台')
+
+    // 批量断开：先走 ElMessageBox.confirm 确认
+    await bar.findAll('button').find((b) => b.text() === '批量断开')!.trigger('click')
+    await flushPromises()
+
+    expect(h.ElMessageBox.confirm).toHaveBeenCalled()
+    expect(mockApi.disconnectDevice).toHaveBeenCalledWith('192.168.1.33:5555')
+    expect(mockApi.disconnectDevice).toHaveBeenCalledTimes(1)
+    expect(h.ElMessage.success).toHaveBeenCalledWith('已断开 1 台设备')
+    // 完成后显式清除选择：工具条消失 + tableRef.clearSelection 被调
+    expect(wrapper.find('.batch-bar').exists()).toBe(false)
+    expect(tableVm.clearSelection).toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('批量断开确认取消不调用断开；工具条「取消选择」显式清空（D10）', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA, deviceB])
+    h.ElMessageBox.confirm.mockRejectedValue('cancel')
+    const wrapper = await mountDashboard()
+
+    const tableVm = wrapper.findComponent({ name: 'ElTable' }).vm as unknown as {
+      clearSelection: ReturnType<typeof vi.fn>
+    }
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('selection-change', [deviceB])
+    await nextTick()
+
+    // 确认取消 → 不调用断开
+    const bar = wrapper.find('.batch-bar')
+    await bar.findAll('button').find((b) => b.text() === '批量断开')!.trigger('click')
+    await flushPromises()
+    expect(mockApi.disconnectDevice).not.toHaveBeenCalled()
+
+    // 再次选中后走「取消选择」
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('selection-change', [deviceB])
+    await nextTick()
+    await wrapper.findAll('button').find((b) => b.text() === '取消选择')!.trigger('click')
+    expect(tableVm.clearSelection).toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('批量断开部分失败走 warning 汇总提示（D10）', async () => {
+    const deviceB2 = { ...deviceB, id: '192.168.1.34:5555' }
+    mockApi.listDevices.mockResolvedValue([deviceA, deviceB, deviceB2])
+    mockApi.disconnectDevice
+      .mockResolvedValueOnce({ success: false })
+      .mockResolvedValue({ success: true })
+    const wrapper = await mountDashboard()
+
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('selection-change', [deviceB, deviceB2])
+    await nextTick()
+    await wrapper.findAll('button').find((b) => b.text() === '批量断开')!.trigger('click')
+    await flushPromises()
+
+    expect(mockApi.disconnectDevice).toHaveBeenCalledTimes(2)
+    expect(h.ElMessage.warning).toHaveBeenCalled()
+    expect(h.ElMessage.success).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  // ==================== 方案 36 增补 D11：输入说明 ====================
+
+  it('扫描输入框 placeholder 更新，帮助 popover 说明三种输入形态（D11）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    const wrapper = await mountDashboard()
+
+    expect(wrapper.find('input.scan-cidr').attributes('placeholder'))
+      .toBe('如 192.168.8.0/24 或 192.168.8.10-100')
+
+    const pop = wrapper.find('.stub-popover .scan-help-body')
+    expect(pop.exists()).toBe(true)
+    const text = pop.text()
+    expect(text).toContain('192.168.8.18')
+    expect(text).toContain('192.168.8.0/24')
+    expect(text).toContain('192.168.8.10-100')
+    expect(text).toContain('192.168.8.10-192.168.9.20')
+    expect(text).toContain('仅扫描不连接')
 
     wrapper.unmount()
   })

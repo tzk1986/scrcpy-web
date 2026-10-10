@@ -40,11 +40,25 @@
     <div class="scan-bar">
       <el-input
         v-model="scanForm.cidr"
-        placeholder="192.168.8.0/24"
+        placeholder="如 192.168.8.0/24 或 192.168.8.10-100"
         class="scan-cidr"
         clearable
         @keyup.enter="handleScan"
       />
+      <el-popover placement="bottom" :width="340" trigger="click">
+        <template #reference>
+          <el-button class="scan-help" size="small" circle>?</el-button>
+        </template>
+        <div class="scan-help-body">
+          <p><strong>单个 IP：</strong><code>192.168.8.18</code>（只扫这一台）</p>
+          <p><strong>网段（CIDR）：</strong><code>192.168.8.0/24</code>（支持 /22 ~ /32）</p>
+          <p>
+            <strong>起止区间：</strong><code>192.168.8.10-100</code>（只扫 .10 到 .100；
+            也支持完整写法 <code>192.168.8.10-192.168.9.20</code>）
+          </p>
+          <p>端口默认 5555；勾选「仅扫描不连接」只探测，结果中可逐台点击连接。</p>
+        </div>
+      </el-popover>
       <el-input-number
         v-model="scanForm.port"
         :min="1"
@@ -70,6 +84,32 @@
       <p v-if="scanResult.truncated">
         开放主机过多，仅连接前 64 台（其余保留在开放清单中）。
       </p>
+      <!-- 方案 36 增补 D9：开放主机可交互清单（已连接 / 连接失败 / 未连接） -->
+      <ul v-if="scanResult.open_hosts.length > 0" class="scan-hosts">
+        <li v-for="ip in scanResult.open_hosts" :key="ip" class="scan-host-row">
+          <span class="scan-host-ip">{{ ip }}</span>
+          <el-tag v-if="hostState(ip) === 'connected'" type="success" size="small">
+            已连接
+          </el-tag>
+          <el-tag
+            v-else-if="hostState(ip) === 'failed'"
+            type="danger"
+            size="small"
+            :title="hostFailureMessage(ip)"
+          >
+            连接失败
+          </el-tag>
+          <el-tag v-else type="info" size="small">未连接</el-tag>
+          <el-button
+            v-if="hostState(ip) !== 'connected'"
+            size="small"
+            :loading="hostConnectingIp === ip"
+            @click="connectHost(ip)"
+          >
+            {{ hostState(ip) === 'failed' ? '重试' : '连接' }}
+          </el-button>
+        </li>
+      </ul>
     </el-alert>
 
     <!-- 连接提示 -->
@@ -88,9 +128,30 @@
       </p>
     </el-alert>
 
-    <el-table :data="store.devices" v-loading="store.loading">
+    <!-- 方案 36 增补 D10：批量断开工具条（选中 ≥1 台 TCP 设备时出现） -->
+    <div v-if="selectedDevices.length > 0" class="batch-bar">
+      <span class="batch-count">已选 {{ selectedDevices.length }} 台</span>
+      <el-button
+        type="danger"
+        size="small"
+        :loading="batchDisconnecting"
+        @click="handleBatchDisconnect"
+      >
+        批量断开
+      </el-button>
+      <el-button size="small" @click="clearDeviceSelection">取消选择</el-button>
+    </div>
+
+    <el-table
+      ref="tableRef"
+      :data="store.devices"
+      v-loading="store.loading"
+      @selection-change="handleSelectionChange"
+    >
+      <!-- D10：选择列，仅 TCP 设备可勾选（USB 无 TCP 断开语义） -->
+      <el-table-column type="selection" :selectable="isTcpDevice" width="40" />
       <el-table-column prop="id" label="设备ID" min-width="180" />
-      <el-table-column label="屏幕" width="90">
+      <el-table-column label="屏幕" width="120">
         <template #default="{ row }">
           <div class="thumb-cell">
             <template v-if="store.thumbnails[row.id]">
@@ -224,9 +285,10 @@
 import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { Plus, Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useDeviceStore } from '@/stores/device'
+import type { DeviceInfo } from '@/stores/device'
 import type { ScanResult } from '@/services/api'
 
 const store = useDeviceStore()
@@ -246,6 +308,17 @@ const scanForm = reactive({
   port: 5555,
   scanOnly: false,
 })
+// 方案 36 增补 D9：扫描发起时的端口快照（防中途改表单导致结果条目连接错位）
+const scanPort = ref(5555)
+// D9：结果清单「已连接」判定 = 本次 connect_results 成功集合 ∪ 手动连接成功
+// 集合 ∪ store 当前设备列表（含 `${ip}:${scanPort}`）
+const hostConnectedIps = ref(new Set<string>())
+const hostConnectingIp = ref<string | null>(null)
+
+// ===== 设备多选与批量断开（方案 36 增补 D10） =====
+const tableRef = ref()
+const selectedDevices = ref<DeviceInfo[]>([])
+const batchDisconnecting = ref(false)
 
 const form = reactive({
   ip: '',
@@ -314,12 +387,45 @@ async function handleScan() {
   }
   scanning.value = true
   scanResult.value = null
+  hostConnectedIps.value = new Set() // 新一次扫描清空上次手动连接集合（D9）
+  scanPort.value = scanForm.port // D9：端口显式快照，结果条目连接用快照值
   try {
     scanResult.value = await store.scanSubnet(cidr, !scanForm.scanOnly, scanForm.port)
   } catch (e) {
     ElMessage.error(`扫描失败: ${extractApiError(e, '未知错误')}`)
   } finally {
     scanning.value = false
+  }
+}
+
+/** D9：开放主机条目状态三分类（已连接 / 连接失败 / 未连接） */
+type HostState = 'connected' | 'failed' | 'open'
+function hostState(ip: string): HostState {
+  const attempt = scanResult.value?.connect_results.find((a) => a.ip === ip)
+  if (attempt?.ok) return 'connected'
+  if (hostConnectedIps.value.has(ip)) return 'connected'
+  if (store.devices.some((d) => d.id === `${ip}:${scanPort.value}`)) return 'connected'
+  if (attempt) return 'failed'
+  return 'open'
+}
+
+/** D9：失败条目悬停提示（后端 message 摘要；缺省回退固定文案） */
+function hostFailureMessage(ip: string): string {
+  const attempt = scanResult.value?.connect_results.find((a) => a.ip === ip)
+  return attempt?.message || '连接失败'
+}
+
+/** D9：结果条目点击连接（端口用扫描时快照；成功后即时转已连接） */
+async function connectHost(ip: string) {
+  hostConnectingIp.value = ip
+  try {
+    await store.connectDevice(ip, scanPort.value)
+    hostConnectedIps.value = new Set([...hostConnectedIps.value, ip])
+    ElMessage.success(`已连接 ${ip}:${scanPort.value}`)
+  } catch (e) {
+    ElMessage.error(`连接失败: ${extractApiError(e, '未知错误')}`)
+  } finally {
+    hostConnectingIp.value = null
   }
 }
 
@@ -395,6 +501,55 @@ function isTcpDevice(deviceId: string): boolean {
   // TCP/IP 设备 ID 格式为 "ip:port" 或 "ip"
   return /^(\d{1,3}\.){3}\d{1,3}(:\d+)?$/.test(deviceId)
 }
+
+// ===== 设备多选与批量断开（方案 36 增补 D10） =====
+
+/** 表格选中变化（el-table selection-change 通道） */
+function handleSelectionChange(rows: DeviceInfo[]) {
+  selectedDevices.value = rows
+}
+
+/** 显式清空表格选择（工具条「取消选择」/ 批量断开完成后） */
+function clearDeviceSelection() {
+  // 本地状态先行清空（工具条即时消失，不依赖 EP selection-change 回发时序），
+  // 表格勾选态交给 clearSelection 同步
+  selectedDevices.value = []
+  tableRef.value?.clearSelection()
+}
+
+/**
+ * 批量断开选中设备：ElMessageBox 二次确认 → store.batchDisconnect
+ * （逐台顺序、失败不中断、成功项本地移除 + 仅一次静默重拉）；
+ * 完成后汇总提示并显式清除选择。
+ */
+async function handleBatchDisconnect() {
+  const ids = selectedDevices.value.map((d) => d.id)
+  if (ids.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确定断开选中的 ${ids.length} 台设备吗？`,
+      '批量断开',
+      { type: 'warning', confirmButtonText: '断开', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  batchDisconnecting.value = true
+  try {
+    const result = await store.batchDisconnect(ids)
+    if (result.failed.length > 0) {
+      ElMessage.warning(
+        `已断开 ${result.ok.length} 台，失败 ${result.failed.length} 台：` +
+          result.failed.map((f) => f.id).join('、')
+      )
+    } else {
+      ElMessage.success(`已断开 ${result.ok.length} 台设备`)
+    }
+  } finally {
+    batchDisconnecting.value = false
+    clearDeviceSelection()
+  }
+}
 </script>
 
 <style scoped>
@@ -445,6 +600,41 @@ function isTcpDevice(deviceId: string): boolean {
   margin: 0.25rem 0;
 }
 
+/* 方案 36 增补 D9：开放主机可交互清单 */
+.scan-hosts {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.scan-host-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0.75rem 0.5rem 0;
+}
+
+/* 方案 36 增补 D10：批量断开工具条 */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #fef0f0;
+  border: 1px solid #fde2e2;
+  border-radius: 4px;
+}
+
+.batch-count {
+  font-size: 13px;
+  color: #f56c6c;
+}
+
+.scan-help {
+  flex-shrink: 0;
+}
+
 .thumb-cell {
   display: flex;
   flex-direction: column;
@@ -453,8 +643,8 @@ function isTcpDevice(deviceId: string): boolean {
 }
 
 .thumb-image {
-  width: 40px;
-  height: 70px;
+  width: 96px;
+  height: 72px;
   display: block;
   border-radius: 3px;
 }
@@ -462,8 +652,8 @@ function isTcpDevice(deviceId: string): boolean {
 .thumb-loading,
 .thumb-placeholder,
 .thumb-failed {
-  width: 40px;
-  height: 70px;
+  width: 96px;
+  height: 72px;
   display: flex;
   align-items: center;
   justify-content: center;
