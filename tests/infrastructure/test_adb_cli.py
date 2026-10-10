@@ -394,7 +394,7 @@ class TestScreenshotRawGzip:
 
     @pytest.mark.asyncio
     async def test_screenshot_raw_gzip_argv_and_stdout(self):
-        """命令形态正确（exec-out sh -c "screencap | gzip -1"）且原样返回 gzip 字节。"""
+        """命令形态正确（exec-out sh -c "screencap 2>/dev/null | gzip -1"，方案 38 A1）且原样返回 gzip 字节。"""
         captured: list = []
         with patch('asyncio.create_subprocess_exec',
                    side_effect=self._proc(captured, stdout=b"GZIP_BYTES")):
@@ -402,7 +402,28 @@ class TestScreenshotRawGzip:
             result = await driver.screenshot_raw_gzip("dev1")
         assert result == b"GZIP_BYTES"
         assert captured[0][1:4] == ("-s", "dev1", "exec-out")
-        assert captured[0][4:] == ("sh", "-c", "screencap | gzip -1")
+        assert captured[0][4:] == ("sh", "-c", "screencap 2>/dev/null | gzip -1")
+
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_strips_lead_junk(self):
+        """多屏警告前缀剥离（方案 38 A2）：347B 文本 + gzip 流 → 从魔数处切片。"""
+        warning = b"Multiple displays were found - screenshot captured on the default display\n"
+        stdout = warning + b"\x1f\x8bGZIP_PAYLOAD"
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec', side_effect=self._proc(captured, stdout=stdout)):
+            driver = AdbCliDriver()
+            result = await driver.screenshot_raw_gzip("dev1")
+        assert result == b"\x1f\x8bGZIP_PAYLOAD"
+
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_magic_at_zero_untouched(self):
+        """魔数位于 0 位 → 原样透传（防御不增不减）。"""
+        stdout = b"\x1f\x8bGZIP_PAYLOAD"
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec', side_effect=self._proc(captured, stdout=stdout)):
+            driver = AdbCliDriver()
+            result = await driver.screenshot_raw_gzip("dev1")
+        assert result == stdout
 
     @pytest.mark.asyncio
     async def test_screenshot_raw_gzip_failure(self):
@@ -423,6 +444,70 @@ class TestScreenshotRawGzip:
             driver = AdbCliDriver()
             with pytest.raises(AdbError, match="empty"):
                 await driver.screenshot_raw_gzip("dev1")
+
+
+# ---------------------------------------------------------------------------
+# 截图 PNG 链路（方案 38：sh -c 硬化 + 魔数剥前缀）
+# ---------------------------------------------------------------------------
+
+class TestScreenshotPng:
+    """测试 screenshot（PNG）方法"""
+
+    def _proc(self, captured: list, rc: int = 0, stdout: bytes = b"\x89PNG\r\n\x1a\n", stderr: bytes = b""):
+        async def create_mock_proc(*args, **kwargs):
+            captured.append(args)
+            proc = MagicMock()
+            proc.returncode = rc
+            proc.communicate = AsyncMock(return_value=(stdout, stderr))
+            return proc
+        return create_mock_proc
+
+    @pytest.mark.asyncio
+    async def test_screenshot_argv_and_stdout(self):
+        """命令形态正确（exec-out sh -c "screencap -p 2>/dev/null"，方案 38 A1）且原样返回 PNG 字节。"""
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec',
+                   side_effect=self._proc(captured, stdout=b"PNG_BYTES")):
+            driver = AdbCliDriver()
+            result = await driver.screenshot("dev1")
+        assert result == b"PNG_BYTES"
+        assert captured[0][1:4] == ("-s", "dev1", "exec-out")
+        assert captured[0][4:] == ("sh", "-c", "screencap -p 2>/dev/null")
+
+    @pytest.mark.asyncio
+    async def test_screenshot_strips_lead_junk(self):
+        """多屏警告前缀剥离（方案 38 A2）：文本 + PNG → 从魔数处切片。"""
+        warning = b"Multiple displays were found 347B junk\n"
+        stdout = warning + b"\x89PNG\r\n\x1a\nPAYLOAD"
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec', side_effect=self._proc(captured, stdout=stdout)):
+            driver = AdbCliDriver()
+            result = await driver.screenshot("dev1")
+        assert result == b"\x89PNG\r\n\x1a\nPAYLOAD"
+
+    @pytest.mark.asyncio
+    async def test_screenshot_magic_at_zero_untouched(self):
+        """魔数位于 0 位 → 原样透传。"""
+        stdout = b"\x89PNG\r\n\x1a\nPAYLOAD"
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec', side_effect=self._proc(captured, stdout=stdout)):
+            driver = AdbCliDriver()
+            result = await driver.screenshot("dev1")
+        assert result == stdout
+
+    @pytest.mark.asyncio
+    async def test_screenshot_failure_and_empty(self):
+        """链路失败（rc≠0）抛 AdbError；空输出抛 AdbError。"""
+        captured: list = []
+        with patch('asyncio.create_subprocess_exec',
+                   side_effect=self._proc(captured, rc=1, stderr=b"boom")):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="boom"):
+                await driver.screenshot("dev1")
+        with patch('asyncio.create_subprocess_exec', side_effect=self._proc(captured, stdout=b"")):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="empty"):
+                await driver.screenshot("dev1")
 
 
 # ---------------------------------------------------------------------------

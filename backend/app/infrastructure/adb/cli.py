@@ -37,6 +37,17 @@ from app.infrastructure.adb.reachability import probe_tcp, scan_open_hosts
 
 logger = get_logger(__name__)
 
+# 截图数据流魔数（方案 38 A2）：多屏设备 screencap 的 stderr 警告经
+# exec-out 合并进 stdout 首位，剥前缀时以此为锚点。
+PNG_MAGIC = b"\x89PNG"
+GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _strip_lead_junk(data: bytes, magic: bytes) -> bytes:
+    """从魔数处剥离输出流首位噪声；魔数缺失或在 0 位则原样返回（只增不减）。"""
+    pos = data.find(magic)
+    return data[pos:] if pos > 0 else data
+
 
 class AdbCliDriver:
     """
@@ -475,8 +486,10 @@ class AdbCliDriver:
         """
         截取屏幕截图并返回 PNG 字节。
 
-        使用 `adb exec-out screencap -p` 直接管道输出 PNG 数据，
-        比传统的 screencap + pull + rm 三步方式快得多（单次 ADB 调用）。
+        使用 `adb exec-out sh -c "screencap -p 2>/dev/null"` 直接管道输出
+        PNG 数据，比传统的 screencap + pull + rm 三步方式快得多（单次 ADB
+        调用）。2>/dev/null 丢弃多屏设备 screencap 的 stderr 警告（方案 38
+        A1）；返回前再经魔数剥前缀兜底（方案 38 A2）。
 
         参数：
             device_id: ADB 序列号。
@@ -485,7 +498,8 @@ class AdbCliDriver:
             PNG 图像数据字节。
         """
         proc = await asyncio.create_subprocess_exec(
-            self.adb_path, "-s", device_id, "exec-out", "screencap", "-p",
+            self.adb_path, "-s", device_id, "exec-out",
+            "sh", "-c", "screencap -p 2>/dev/null",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
@@ -499,7 +513,7 @@ class AdbCliDriver:
         if not stdout:
             raise AdbError("Screenshot returned empty data")
 
-        return stdout
+        return _strip_lead_junk(stdout, PNG_MAGIC)
 
     async def screenshot_raw_gzip(self, device_id: str) -> bytes:
         """
@@ -509,6 +523,8 @@ class AdbCliDriver:
         （12/16 字节头 + 像素），管道到设备端 toybox gzip 压缩后经
         exec-out 传回——设备端 PNG 编码（~950-1000ms 单点）被换为
         gzip -1（实测照片级画面 ~640ms，spike 见方案 29 §2）。
+        screencap 的 stderr 经 2>/dev/null 丢弃，返回前魔数剥前缀
+        兜底（方案 38 A1/A2）。
 
         参数：
             device_id: ADB 序列号。
@@ -521,7 +537,7 @@ class AdbCliDriver:
         """
         proc = await asyncio.create_subprocess_exec(
             self.adb_path, "-s", device_id, "exec-out",
-            "sh", "-c", "screencap | gzip -1",
+            "sh", "-c", "screencap 2>/dev/null | gzip -1",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
@@ -535,7 +551,7 @@ class AdbCliDriver:
         if not stdout:
             raise AdbError("Raw screenshot returned empty data")
 
-        return stdout
+        return _strip_lead_junk(stdout, GZIP_MAGIC)
 
     async def _consume_stderr(self, stderr: asyncio.StreamReader) -> None:
         """
