@@ -19,7 +19,7 @@ import time
 from ipaddress import ip_network
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock
 
 from app.application.device_service import (
     MAX_CONNECT,
