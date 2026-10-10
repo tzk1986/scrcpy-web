@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
 
-VERSION="0.7.3"  # 与 pyproject.toml 的 project.version 保持同步
+VERSION="0.7.4"  # 与 pyproject.toml 的 project.version 保持同步
 PYINSTALLER_PIN="6.22.3"  # spike 实证版本（35c4ad3）
 
 echo "==> [1/6] 获取外置工具（adb 三件套 + scrcpy-server.jar）"
