@@ -375,6 +375,18 @@ export const useDeviceStore = defineStore('device', () => {
     return Promise.all(deviceIds.map((id) => loadThumbnail(id, force)))
   }
 
+  /**
+   * 用视频流抓帧直接写入缩略图缓存（方案 40 消费点 2）。
+   * 观看会话首帧渲染后调用：方向与视频流天然一致，绕过设备端截图；
+   * 写入结构与 loadThumbnail 一致（{url, ts}），TTL 命中/过期语义共用。
+   */
+  function setThumbnailFromBlob(deviceId: string, blob: Blob) {
+    const url = URL.createObjectURL(blob)
+    const old = thumbnails.value[deviceId]
+    thumbnails.value = { ...thumbnails.value, [deviceId]: { url, ts: Date.now() } }
+    if (old) URL.revokeObjectURL(old.url)
+  }
+
   // 缩略图自动加载（方案 36 增补 D7）：设备列表变化即加载在线设备缩略图，
   // 免手动点击。key 串含 id:status——SSE 增删与整体替换都会触发；负荷控制
   // 复用 loadThumbnail 的 TTL 缓存 + 并发池 3 + in-flight 去重；失败设备
@@ -424,6 +436,7 @@ export const useDeviceStore = defineStore('device', () => {
     scanSubnet,
     loadThumbnail,
     loadThumbnails,
+    setThumbnailFromBlob,
     startSSE,
     stopSSE,
     installApk,

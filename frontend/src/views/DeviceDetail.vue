@@ -53,6 +53,7 @@
         :device-id="deviceId"
         :device-width="deviceResolution[0]"
         :device-height="deviceResolution[1]"
+        @first-frame="onFirstFrame"
       />
 
       <DebugPanel
@@ -70,11 +71,13 @@ import { api } from '@/services/api'
 import DebugPanel from '@/components/debug/DebugPanel.vue'
 import VideoPlayer from '@/components/stream/VideoPlayer.vue'
 import { useDebugStore } from '@/stores/debug'
+import { useDeviceStore } from '@/stores/device'
 
 const props = defineProps<{ id: string }>()
 const deviceId = props.id
 
 const debugStore = useDebugStore()
+const deviceStore = useDeviceStore()
 const deviceResolution = ref<[number, number]>([1080, 1920])
 /** 调试面板停靠位置，用于切换布局方向。 */
 const panelPosition = ref<'bottom' | 'right'>('right')
@@ -109,6 +112,14 @@ onUnmounted(() => {
 function disconnect() {
   debugStore.closeSession()
   window.history.back()
+}
+
+/**
+ * 视频流首帧抓帧（方案 40 消费点 2）：写入设备 store 缩略图缓存，
+ * 列表页直接复用以 {url, ts} 结构，TTL 语义与 loadThumbnail 共用。
+ */
+function onFirstFrame(blob: Blob) {
+  deviceStore.setThumbnailFromBlob(deviceId, blob)
 }
 
 /**

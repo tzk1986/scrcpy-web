@@ -760,3 +760,26 @@ describe('device store - 缩略图缓存（方案 36 D5）', () => {
     expect(urlStub.revokeObjectURL).toHaveBeenCalledWith('blob:x')
   })
 })
+
+describe('device store - 流帧缩略图写入（方案 40 消费点 2）', () => {
+  it('setThumbnailFromBlob 写入 url+ts 并 revoke 旧 URL', () => {
+    const store = useDeviceStore()
+    store.thumbnails = { a: { url: 'blob:old', ts: 1 } }
+
+    store.setThumbnailFromBlob('a', new Blob(['frame']))
+
+    expect(store.thumbnails['a'].url).toBe('blob:thumb-1')
+    expect(store.thumbnails['a'].ts).toBeGreaterThan(0)
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith('blob:old')
+  })
+
+  it('流帧写入后 TTL 内 loadThumbnail 命中缓存不重拉', async () => {
+    const store = useDeviceStore()
+    store.setThumbnailFromBlob('a', new Blob(['frame']))
+    mockApi.screenshot.mockClear()
+
+    await store.loadThumbnail('a')
+
+    expect(mockApi.screenshot).not.toHaveBeenCalled()
+  })
+})

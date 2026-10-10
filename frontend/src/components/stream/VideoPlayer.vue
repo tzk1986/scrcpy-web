@@ -121,6 +121,9 @@ const props = defineProps<{
   deviceHeight?: number
 }>()
 
+/** 方案 40 消费点 2：h264 观看会话首帧渲染后抓帧上抛，供列表缩略图缓存 */
+const emit = defineEmits<{ (e: 'first-frame', blob: Blob): void }>()
+
 const containerRef = ref<HTMLElement>()
 const canvasRef = ref<HTMLCanvasElement>()
 
@@ -152,8 +155,17 @@ const recoveringBadge = computed(
 
 // state 的一切流转都汇于此处（h264 与截图两条链路的 onStateChange 均赋值 state），
 // 首次进入 streaming 即置位 hasStreamedOnce；重复置位幂等。
+// 方案 40 消费点 2：h264 首帧已绘制进渲染 canvas，此刻抓帧方向天然正，
+// 上抛给列表页写入缩略图缓存；抓帧失败静默（不影响观看会话）。
 watch(state, (s) => {
-  if (s === 'streaming') hasStreamedOnce.value = true
+  if (s !== 'streaming' || hasStreamedOnce.value) return
+  hasStreamedOnce.value = true
+  if (mode.value === 'h264' && h264Stream) {
+    h264Stream
+      .captureFrame()
+      .then((blob) => emit('first-frame', blob))
+      .catch(() => {})
+  }
 })
 
 let ws: WebSocketService | null = null

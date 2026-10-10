@@ -66,7 +66,8 @@ const h = vi.hoisted(() => {
     resume = vi.fn()
     setStateChangeHandler = vi.fn()
     setStatsUpdateHandler = vi.fn()
-    captureFrame = vi.fn()
+    // 默认解析为 PNG Blob（真实实现始终返回 Promise；个别用例按需 override）
+    captureFrame = vi.fn(() => Promise.resolve(new Blob(['frame'])))
 
     constructor(...args: unknown[]) {
       this.args = args
@@ -690,6 +691,51 @@ describe('VideoPlayer 截图快照（方案 40 A）', () => {
     expect(result.source).toBe('fallback')
     expect(result.blob).toBe(apiBlob)
     expect(h.MockApi.screenshot).toHaveBeenCalledWith('dev1')
+    wrapper.unmount()
+  })
+})
+describe('VideoPlayer 首帧事件（方案 40 消费点 2）', () => {
+  it('h264 首次 streaming 抓帧并发出 first-frame，重复 streaming 不重发', async () => {
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    const blob = new Blob(['frame'])
+    h264.captureFrame.mockResolvedValue(blob)
+
+    h264.setStateChangeHandler.mock.calls[0][0]('streaming')
+    await flushPromises()
+    expect(wrapper.emitted('first-frame')).toEqual([[blob]])
+
+    h264.setStateChangeHandler.mock.calls[0][0]('streaming')
+    await flushPromises()
+    expect(wrapper.emitted('first-frame')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('截图模式 streaming 不发 first-frame 也不抓帧', async () => {
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+
+    h264.stats.state = 'error'
+    h264.setStateChangeHandler.mock.calls[0][0]('error')
+    await nextTick()
+    const vs = h.MockVideoStream.instances[0]
+    vs.setStateChangeHandler.mock.calls[0][0]('streaming')
+    await flushPromises()
+
+    expect(wrapper.emitted('first-frame')).toBeUndefined()
+    expect(h264.captureFrame).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('抓帧失败静默吞掉，不影响会话', async () => {
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    h264.captureFrame.mockRejectedValue(new Error('toBlob null'))
+
+    h264.setStateChangeHandler.mock.calls[0][0]('streaming')
+    await flushPromises()
+
+    expect(wrapper.emitted('first-frame')).toBeUndefined()
     wrapper.unmount()
   })
 })

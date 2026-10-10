@@ -28,6 +28,12 @@ vi.mock('element-plus', () => ({ ElMessage: elMessageMock }))
 /** 方案 40 A：VideoPlayer stub 暴露 captureSnapshot，供父组件截图按钮调用 */
 const captureSnapshotMock = vi.hoisted(() => vi.fn())
 
+/** 方案 40 消费点 2：首帧缩略图写入设备 store */
+const setThumbnailMock = vi.hoisted(() => vi.fn())
+vi.mock('@/stores/device', () => ({
+  useDeviceStore: () => ({ setThumbnailFromBlob: setThumbnailMock }),
+}))
+
 /** happy-dom 无 createObjectURL / revokeObjectURL 实现（截图下载链路需要，m9 先例） */
 const urlStub = vi.hoisted(() => ({
   createObjectURL: vi.fn(),
@@ -39,6 +45,7 @@ import DeviceDetail from './DeviceDetail.vue'
 const VideoPlayerStub = {
   name: 'VideoPlayer',
   props: ['deviceId', 'deviceWidth', 'deviceHeight'],
+  emits: ['first-frame'],
   setup(
     _props: Record<string, unknown>,
     ctx: { expose: (exposed: Record<string, unknown>) => void },
@@ -89,6 +96,7 @@ beforeEach(() => {
   mockApi.createDebugSession.mockReset().mockResolvedValue({ session_id: 's1' })
   mockApi.closeDebugSession.mockReset().mockResolvedValue(undefined)
   captureSnapshotMock.mockReset()
+  setThumbnailMock.mockReset()
   elMessageMock.info.mockReset()
   anchorClickSpy.mockClear()
   urlStub.createObjectURL.mockReset().mockImplementation(() => 'blob:shot')
@@ -207,6 +215,20 @@ describe('DeviceDetail 截图按钮（方案 40 A）', () => {
     expect(elMessageMock.info).toHaveBeenCalledWith('当前无视频流，已回退设备端截图')
     expect(urlStub.createObjectURL).toHaveBeenCalledTimes(1)
     expect(anchorClickSpy).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+})
+
+describe('DeviceDetail 首帧缩略图（方案 40 消费点 2）', () => {
+  it('视频流首帧抓帧写入设备 store 缩略图缓存', async () => {
+    mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
+    const wrapper = await mountView()
+    const blob = new Blob(['frame'])
+
+    wrapper.findComponent({ name: 'VideoPlayer' }).vm.$emit('first-frame', blob)
+    await flushPromises()
+
+    expect(setThumbnailMock).toHaveBeenCalledWith('dev1', blob)
     wrapper.unmount()
   })
 })
