@@ -87,7 +87,7 @@ describe('axios 实例与设备 API', () => {
 
   it('scanSubnet 支持自定义 connect/port 并透传 ScanResult', async () => {
     const scanResult = {
-      cidr: '10.0.0.0/24',
+      label: '10.0.0.0/24',
       probed: 254,
       open_hosts: ['10.0.0.5'],
       connect_results: [

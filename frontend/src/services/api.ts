@@ -36,7 +36,7 @@ export interface ConnectAttempt {
 
 /** 网段扫描 + 批量连接结果（方案 36，对应后端 ScanResult）。 */
 export interface ScanResult {
-  cidr: string
+  label: string
   probed: number
   open_hosts: string[]
   connect_results: ConnectAttempt[]
