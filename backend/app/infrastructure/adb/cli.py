@@ -256,10 +256,13 @@ class AdbCliDriver:
 
     async def get_rotation(self, device_id: str) -> int:
         """
-        查询设备显示 rotation（方案 38 B1）。
+        查询设备显示 rotation（方案 40 B1）。
 
-        使用 `dumpsys input`（轻量命令）解析 `SurfaceOrientation: <n>` 行，
-        数值为 Surface rotation 常量 0-3。
+        使用 `dumpsys display` 解析默认显示器（首个）的
+        `mCurrentOrientation=<n>` 行，数值为 Surface rotation 常量 0-3。
+        方案 38 的 `dumpsys input SurfaceOrientation` 是 InputFlinger
+        坐标系语义而非 Display rotation，已在 .19/.13 实测证伪
+        （.13 且出现双行噪声）。
 
         参数：
             device_id: ADB 序列号。
@@ -271,12 +274,12 @@ class AdbCliDriver:
             AdbError: 命令执行失败（由应用层收敛为 0 并缓存）。
         """
         output = await self._run_serial(
-            device_id, "shell", "dumpsys", "input", timeout=self._INFO_CMD_TIMEOUT
+            device_id, "shell", "dumpsys", "display", timeout=self._INFO_CMD_TIMEOUT
         )
         for line in output.split("\n"):
-            if line.strip().startswith("SurfaceOrientation:"):
+            if line.strip().startswith("mCurrentOrientation="):
                 try:
-                    return int(line.split(":")[1].strip())
+                    return int(line.split("=")[1].strip())
                 except ValueError:
                     return 0
         return 0

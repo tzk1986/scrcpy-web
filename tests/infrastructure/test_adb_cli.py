@@ -511,31 +511,56 @@ class TestScreenshotPng:
 
 
 # ---------------------------------------------------------------------------
-# 设备 rotation 查询（方案 38 B1：dumpsys input SurfaceOrientation）
+# 设备 rotation 查询（方案 40 B1：dumpsys display mCurrentOrientation——
+# 方案 38 的 dumpsys input SurfaceOrientation 是 InputFlinger 坐标系语义，
+# .19/.13 实测证伪（.13 且双行噪声）；真信号 = 默认显示器当前 orientation）
 # ---------------------------------------------------------------------------
 
 class TestRotation:
     """测试 get_rotation 方法"""
 
-    _DUMP = (
-        "TouchDisplayId: 0\n"
-        "SurfaceOrientation: 2\n"
-        "windowOrientationListenerEnabled: true\n"
+    # 真机样张结构（2026-10-10 六台取证：DisplayDeviceInfo 段 + 紧跟的
+    # mCurrentOrientation 行；.24 型单屏 2、.13 型内置 0 + 外接 HDMI 2）
+    _DUMP_SINGLE_DISPLAY = (
+        '  DisplayDeviceInfo{"内置屏幕": uniqueId="local:0", 1280 x 800, '
+        "rotation 0, type BUILT_IN, state ON}\n"
+        "    mCurrentOrientation=2\n"
+        "    mBaseDisplayInfo=DisplayInfo{app 1920 x 1080, rotation 0}\n"
+    )
+
+    _DUMP_DUAL_DISPLAY = (
+        '  DisplayDeviceInfo{"内置屏幕": uniqueId="local:0", 1280 x 720, '
+        "rotation 0, type INTERNAL, state ON}\n"
+        "    mCurrentOrientation=0\n"
+        '  DisplayDeviceInfo{"HDMI 屏幕": uniqueId="local:1", 1024 x 600, '
+        "rotation 2, type EXTERNAL, state ON}\n"
+        "    mCurrentOrientation=2\n"
     )
 
     @pytest.mark.asyncio
-    async def test_get_rotation_parses_value(self):
-        """解析 SurfaceOrientation 数值。"""
-        with patch.object(
-            AdbCliDriver, "_run_serial", new=AsyncMock(return_value=self._DUMP)
-        ):
+    async def test_get_rotation_parses_mcurrentorientation(self):
+        """解析默认显示器（首个）mCurrentOrientation 数值，命令为 dumpsys display。"""
+        mock_run = AsyncMock(return_value=self._DUMP_SINGLE_DISPLAY)
+        with patch.object(AdbCliDriver, "_run_serial", new=mock_run):
             driver = AdbCliDriver()
             result = await driver.get_rotation("dev1")
         assert result == 2
+        assert mock_run.await_args.args[1:] == ("shell", "dumpsys", "display")
+
+    @pytest.mark.asyncio
+    async def test_get_rotation_dual_display_takes_first(self):
+        """双显示器（.13 型：内置 0 + 外接 HDMI 2）→ 取首个（默认屏）= 0。"""
+        with patch.object(
+            AdbCliDriver, "_run_serial",
+            new=AsyncMock(return_value=self._DUMP_DUAL_DISPLAY),
+        ):
+            driver = AdbCliDriver()
+            result = await driver.get_rotation("dev1")
+        assert result == 0
 
     @pytest.mark.asyncio
     async def test_get_rotation_missing_line_defaults_zero(self):
-        """输出无 SurfaceOrientation 行 → 0（不旋转）。"""
+        """输出无 mCurrentOrientation 行 → 0（不旋转）。"""
         with patch.object(
             AdbCliDriver, "_run_serial", new=AsyncMock(return_value="no such line\n")
         ):
