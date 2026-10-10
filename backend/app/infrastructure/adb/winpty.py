@@ -156,6 +156,17 @@ class ConPtyProcess:
         self.kill()
 
 
+_CMD_UNSAFE_CHARS = frozenset('&|<>^%!"()')
+
+
+def _validate_argv(argv: Sequence[str]) -> None:
+    """拒绝 cmd 元字符（H1 修复）：spawn 经 cmd /C 拼接执行，
+    list2cmdline 不转义这些字符，请求来源参数不得携带。"""
+    for arg in argv:
+        if any(ch in _CMD_UNSAFE_CHARS for ch in arg) or any(ch in "\r\n\x00" for ch in arg):
+            raise ValueError(f"unsafe character in argv element: {arg!r}")
+
+
 async def spawn_conpty(argv: Sequence[str],
                        dimensions: tuple[int, int] = (24, 80)) -> ConPtyProcess:
     """
@@ -169,11 +180,13 @@ async def spawn_conpty(argv: Sequence[str],
         ConPtyUnavailableError: 非 Windows 或缺 pywinpty。
         FileNotFoundError: 命令不存在（与 create_subprocess_exec 语义一致）。
     """
+    argv = list(argv)
+    # argv[0] 为运维配置的命令路径（可信）；argv[1:] 可能携带请求输入（device_id 等）
+    _validate_argv(argv[1:])
     if not conpty_supported():
         raise ConPtyUnavailableError("ConPTY requires Windows with pywinpty installed")
     from winpty import PTY
 
-    argv = list(argv)
     command = which(argv[0]) or argv[0]
     if not os.path.exists(command):
         raise FileNotFoundError(f"command not found: {argv[0]}")

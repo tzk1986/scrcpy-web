@@ -18,7 +18,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.exceptions import InvalidIdentifierError
 from app.core.logging import get_logger
+from app.domain.identifiers import is_valid_package_name
 from app.domain.ports import AdbDriver
 
 logger = get_logger(__name__)
@@ -257,6 +259,8 @@ class AppService:
         返回：
             AppInfo 对象，或 None（应用不存在）。
         """
+        if not is_valid_package_name(package):
+            raise InvalidIdentifierError("package")
         return await self._get_app_info_internal(device_id, package)
 
     async def _get_app_info_internal(
@@ -406,6 +410,8 @@ class AppService:
         返回：
             是否成功。
         """
+        if not is_valid_package_name(package):
+            raise InvalidIdentifierError("package")
         try:
             # 使用 monkey 启动应用，--pct-syskeys 0 跳过物理按键检查
             cmd = f"monkey -p {package} -c android.intent.category.LAUNCHER --pct-syskeys 0 1"
@@ -434,6 +440,8 @@ class AppService:
         返回：
             是否成功。
         """
+        if not is_valid_package_name(package):
+            raise InvalidIdentifierError("package")
         try:
             await self.adb.shell(device_id, f"am force-stop {package}")
             logger.info("app_stopped", device=device_id, package=package)
@@ -454,6 +462,8 @@ class AppService:
         返回：
             是否成功。
         """
+        if not is_valid_package_name(package):
+            raise InvalidIdentifierError("package")
         try:
             output = await self.adb.shell(device_id, f"pm uninstall {package}")
             success = "Success" in output
@@ -480,6 +490,8 @@ class AppService:
         返回：
             是否成功。
         """
+        if not is_valid_package_name(package):
+            raise InvalidIdentifierError("package")
         try:
             output = await self.adb.shell(device_id, f"pm clear {package}")
             success = "Success" in output
@@ -506,4 +518,6 @@ class AppService:
         返回：
             内存占用（KB），或 None。
         """
+        if not is_valid_package_name(package):
+            raise InvalidIdentifierError("package")
         return await self._get_app_memory(device_id, package)

@@ -33,8 +33,9 @@ from typing import Any, AsyncGenerator, Optional, cast
 
 from fastapi import WebSocket
 
-from app.core.exceptions import SessionNotFoundError
+from app.core.exceptions import InvalidIdentifierError, SessionNotFoundError
 from app.core.logging import get_logger
+from app.domain.identifiers import is_valid_device_id
 from app.domain.ports import (
     AdbDriver,
     DebugRepository,
@@ -111,6 +112,8 @@ class DebugService:
         返回：
             新创建的 DebugSession。
         """
+        if not is_valid_device_id(device_id):
+            raise InvalidIdentifierError("device_id")
         logger.info("creating_debug_session", device=device_id, user=user_id)
         await self.writer.start()
         session_id = f"{device_id}_{user_id}_{int(time.time())}"

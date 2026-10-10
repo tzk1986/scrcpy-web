@@ -13,6 +13,7 @@
     ├── DeviceNotFoundError      — 特定设备 ID 未连接（404）
     ├── SessionNotFoundError     — 调试会话 ID 无效/过期（404）
     ├── PermissionDeniedError    — 调用者无权限执行该操作（403）
+    ├── InvalidIdentifierError   — 外部标识符（设备 ID/包名）格式非法（400，方案 37 A5）
     ├── AdbError                 — ADB 子进程返回非零退出码（400）
     ├── DeviceUnreachableError   — TCP 可达性预检失败（400，connect/disconnect 前置）
     ├── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）
@@ -82,6 +83,16 @@ class PermissionDeniedError(OpenScrcpyException):
 
     def __init__(self, message: str):
         super().__init__(message, code="PERMISSION_DENIED")
+
+
+class InvalidIdentifierError(OpenScrcpyException):
+    """外部标识符（设备 ID / 包名）格式非法（方案 37 A5，注入面防护）。
+
+    消息不回显原值：避免攻击载荷反射面（A1 报告 L4 同源问题）。
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(f"Invalid {kind} format", code="INVALID_IDENTIFIER")
 
 
 class AdbError(OpenScrcpyException):

@@ -223,3 +223,16 @@ async def test_task_removes_itself_after_finish():
     assert session.id not in svc.logcat_tasks
     await svc.close_session(session.id)  # 幂等：无任务时再次 close 不抛
     await svc.writer.stop()
+
+
+async def test_create_session_rejects_invalid_device_id():
+    from app.core.exceptions import InvalidIdentifierError
+
+    adb = HangingAdb()
+    svc = DebugService(adb=adb, repo=Repo())
+    try:
+        with pytest.raises(InvalidIdentifierError):
+            await svc.create_session("dev1&calc", "u1")
+        assert svc.sessions == {}  # 无副作用：会话未创建
+    finally:
+        await svc.writer.stop()

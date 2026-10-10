@@ -14,8 +14,10 @@
 关键用例带真机（192.168.8.18，Android 11+）取证样本（REAL_* 常量）。
 """
 
+import pytest
+
 from app.application.app_service import AppService
-from app.core.exceptions import AdbError
+from app.core.exceptions import AdbError, InvalidIdentifierError
 
 DEVICE = "192.168.1.100"
 CHAT_PKG = "com.example.chat"
@@ -823,3 +825,19 @@ async def test_get_app_memory_public_method_delegates():
     fake = FakeAdb().on(f"dumpsys meminfo {CHAT_PKG}", MEMINFO_CHAT)
 
     assert await AppService(fake).get_app_memory(DEVICE, CHAT_PKG) == 75784
+
+
+async def test_uninstall_app_rejects_injected_package():
+    fake = FakeAdb()
+    service = AppService(fake)
+    with pytest.raises(InvalidIdentifierError):
+        await service.uninstall_app("dev", "com.a;reboot")
+    assert fake.cmds == []  # 未触达设备
+
+
+async def test_launch_app_rejects_injected_package():
+    fake = FakeAdb()
+    service = AppService(fake)
+    with pytest.raises(InvalidIdentifierError):
+        await service.launch_app("dev", "com.a && rm -rf")
+    assert fake.cmds == []
