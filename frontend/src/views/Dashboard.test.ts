@@ -233,6 +233,7 @@ async function mountDashboard(): Promise<VueWrapper> {
 }
 
 beforeEach(() => {
+  localStorage.clear()
   vi.stubGlobal('EventSource', h.MockEventSource)
   h.MockEventSource.instances = []
   mockApi.listDevices.mockReset()
@@ -514,7 +515,7 @@ describe('Dashboard', () => {
 
   // ==================== 方案 36 增补 D9：开放主机清单可交互 ====================
 
-  it('扫描结果回显开放主机条目：已连接 / 连接失败 / 未连接三分类（D9）', async () => {
+  it('扫描记录独立卡片：已连接行不呈现、失败/未连接两分类呈现，alert 内不再有清单（第三批）', async () => {
     mockApi.listDevices.mockResolvedValue([deviceA])
     mockApi.scanSubnet.mockResolvedValue(
       scanFixture({ open_hosts: ['192.168.8.18', '192.168.8.25', '192.168.8.30'] })
@@ -525,13 +526,13 @@ describe('Dashboard', () => {
     await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
     await flushPromises()
 
-    const rows = wrapper.findAll('.scan-host-row')
-    expect(rows).toHaveLength(3)
-
-    // .18 connect_results ok → 已连接，无操作按钮
-    const row18 = rows.find((r) => r.text().includes('192.168.8.18'))!
-    expect(row18.find('.stub-tag').text()).toBe('已连接')
-    expect(row18.findAll('button')).toHaveLength(0)
+    // 独立卡片（设备表格上方），已连接行（.18）不进入记录
+    const card = wrapper.find('.scan-record-card')
+    expect(card.exists()).toBe(true)
+    expect(card.find('.scan-record-title').text()).toBe('扫描记录')
+    const rows = wrapper.findAll('.scan-record-row')
+    expect(rows).toHaveLength(2)
+    expect(rows.some((r) => r.text().includes('192.168.8.18'))).toBe(false)
 
     // .25 connect_failed → 连接失败（悬停 message）+ 重试按钮
     const row25 = rows.find((r) => r.text().includes('192.168.8.25'))!
@@ -544,10 +545,13 @@ describe('Dashboard', () => {
     expect(row30.find('.stub-tag').text()).toBe('未连接')
     expect(row30.findAll('button').find((b) => b.text() === '连接')).toBeDefined()
 
+    // alert 仅保留摘要文本，不再内嵌清单
+    expect(wrapper.find('.scan-result .scan-record-row').exists()).toBe(false)
+
     wrapper.unmount()
   })
 
-  it('开放主机条目「连接」透传扫描时端口快照，成功后即时转已连接（D9）', async () => {
+  it('记录行「连接」透传扫描端口快照；成功后行移出卡片且持久化修剪（第三批）', async () => {
     mockApi.listDevices.mockResolvedValue([deviceA])
     mockApi.scanSubnet.mockResolvedValue(
       scanFixture({ open_hosts: ['192.168.8.30'], connect_results: [] })
@@ -561,13 +565,17 @@ describe('Dashboard', () => {
 
     // 扫描完成后中途改端口表单：连接动作必须用扫描时的端口快照（防错位）
     await wrapper.find('input.scan-port').setValue('6666')
-    const row30 = wrapper.find('.scan-host-row')
+    const row30 = wrapper.find('.scan-record-row')
     await row30.findAll('button').find((b) => b.text() === '连接')!.trigger('click')
     await flushPromises()
 
     expect(mockApi.connectDevice).toHaveBeenCalledWith('192.168.8.30', 5555)
     expect(h.ElMessage.success).toHaveBeenCalledWith('已连接 192.168.8.30:5555')
-    expect(row30.find('.stub-tag').text()).toBe('已连接')
+    // 成功后行移出：记录为空 → 卡片整体隐藏
+    expect(wrapper.find('.scan-record-card').exists()).toBe(false)
+    // localStorage 同步修剪
+    const data = JSON.parse(localStorage.getItem('oscrpy-scan-record')!)
+    expect(data.hosts).toEqual([])
 
     wrapper.unmount()
   })
@@ -668,6 +676,101 @@ describe('Dashboard', () => {
     expect(mockApi.disconnectDevice).toHaveBeenCalledTimes(2)
     expect(h.ElMessage.warning).toHaveBeenCalled()
     expect(h.ElMessage.success).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  // ==================== 方案 36 第三批：扫描记录独立卡片 + localStorage ====================
+
+  it('扫描完成后写入 localStorage：label/端口/时间/未连接主机清单（第三批）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(scanFixture())
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    const raw = localStorage.getItem('oscrpy-scan-record')
+    expect(raw).toBeTruthy()
+    const data = JSON.parse(raw!)
+    expect(data.label).toBe('192.168.8.0/24')
+    expect(data.port).toBe(5555)
+    expect(typeof data.scannedAt).toBe('number')
+    // 已连接（.18 ok）不入记录；失败主机带原因
+    expect(data.hosts).toEqual([{ ip: '192.168.8.25', failed: '握手超时' }])
+
+    wrapper.unmount()
+  })
+
+  it('页载恢复扫描记录：卡片呈现、端口快照取记录内端口（第三批）', async () => {
+    localStorage.setItem(
+      'oscrpy-scan-record',
+      JSON.stringify({
+        label: '10.0.0.0/24',
+        port: 6666,
+        scannedAt: 1700000000000,
+        hosts: [{ ip: '10.0.0.5' }],
+      })
+    )
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.connectDevice.mockResolvedValue({ success: true, device_id: '10.0.0.5:6666' })
+    const wrapper = await mountDashboard()
+
+    const card = wrapper.find('.scan-record-card')
+    expect(card.exists()).toBe(true)
+    expect(card.find('.scan-record-meta').text()).toContain('10.0.0.0/24')
+    expect(card.find('.scan-record-meta').text()).toContain('6666')
+    expect(card.find('.scan-record-row').text()).toContain('10.0.0.5')
+
+    // 恢复出口：行内连接用记录里存的端口（非表单当前 5555）
+    await card
+      .find('.scan-record-row')
+      .findAll('button')
+      .find((b) => b.text() === '连接')!
+      .trigger('click')
+    await flushPromises()
+    expect(mockApi.connectDevice).toHaveBeenCalledWith('10.0.0.5', 6666)
+
+    wrapper.unmount()
+  })
+
+  it('「清除记录」删除卡片与 localStorage（第三批）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30'], connect_results: [] })
+    )
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.scan-record-card').exists()).toBe(true)
+
+    await wrapper.findAll('button').find((b) => b.text() === '清除记录')!.trigger('click')
+    expect(wrapper.find('.scan-record-card').exists()).toBe(false)
+    expect(localStorage.getItem('oscrpy-scan-record')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('屏幕列对齐：缩略图容器四态同尺寸居中，刷新按钮角标叠加不撑高行（第三批）', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA, deviceB])
+    const wrapper = await mountDashboard()
+    await flushPromises()
+
+    const cells = wrapper.findAll('.stub-row .thumb-cell')
+    expect(cells.length).toBeGreaterThan(0)
+    for (const cell of cells) {
+      const style = cell.attributes('style') ?? ''
+      expect(style).toContain('width: 96px')
+      expect(style).toContain('height: 72px')
+    }
+
+    // 刷新按钮角标叠加（absolute 定位），不参与流式布局（避免撑高行导致参差）
+    const refreshBtn = wrapper.find('.stub-row[data-id="dev-a"] .thumb-refresh')
+    expect(refreshBtn.exists()).toBe(true)
+    expect(refreshBtn.attributes('style') ?? '').toContain('position: absolute')
 
     wrapper.unmount()
   })

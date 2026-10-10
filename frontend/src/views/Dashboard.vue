@@ -84,33 +84,39 @@
       <p v-if="scanResult.truncated">
         开放主机过多，仅连接前 64 台（其余保留在开放清单中）。
       </p>
-      <!-- 方案 36 增补 D9：开放主机可交互清单（已连接 / 连接失败 / 未连接） -->
-      <ul v-if="scanResult.open_hosts.length > 0" class="scan-hosts">
-        <li v-for="ip in scanResult.open_hosts" :key="ip" class="scan-host-row">
-          <span class="scan-host-ip">{{ ip }}</span>
-          <el-tag v-if="hostState(ip) === 'connected'" type="success" size="small">
-            已连接
-          </el-tag>
+    </el-alert>
+
+    <!-- 方案 36 第三批：扫描记录独立卡片（仅未连接主机，localStorage 持久化） -->
+    <div v-if="recordHosts.length > 0" class="scan-record-card">
+      <div class="scan-record-head">
+        <span class="scan-record-title">扫描记录</span>
+        <span v-if="scanRecord" class="scan-record-meta">
+          {{ scanRecord.label }} : {{ scanRecord.port }} · {{ recordTimeText }}
+        </span>
+        <el-button size="small" @click="clearScanRecord">清除记录</el-button>
+      </div>
+      <ul class="scan-record-hosts">
+        <li v-for="entry in recordHosts" :key="entry.ip" class="scan-record-row">
+          <span class="scan-host-ip">{{ entry.ip }}</span>
           <el-tag
-            v-else-if="hostState(ip) === 'failed'"
+            v-if="hostState(entry.ip) === 'failed'"
             type="danger"
             size="small"
-            :title="hostFailureMessage(ip)"
+            :title="hostFailureMessage(entry.ip)"
           >
             连接失败
           </el-tag>
           <el-tag v-else type="info" size="small">未连接</el-tag>
           <el-button
-            v-if="hostState(ip) !== 'connected'"
             size="small"
-            :loading="hostConnectingIp === ip"
-            @click="connectHost(ip)"
+            :loading="hostConnectingIp === entry.ip"
+            @click="connectHost(entry.ip)"
           >
-            {{ hostState(ip) === 'failed' ? '重试' : '连接' }}
+            {{ hostState(entry.ip) === 'failed' ? '重试' : '连接' }}
           </el-button>
         </li>
       </ul>
-    </el-alert>
+    </div>
 
     <!-- 连接提示 -->
     <el-alert
@@ -154,7 +160,10 @@
       <el-table-column prop="id" label="设备ID" min-width="180" />
       <el-table-column label="屏幕" width="120">
         <template #default="{ row }">
-          <div class="thumb-cell">
+          <div
+            class="thumb-cell"
+            style="position: relative; width: 96px; height: 72px; margin: 0 auto"
+          >
             <template v-if="store.thumbnails[row.id]">
               <!-- 快照时间用原生 title（免 el-tooltip） -->
               <el-image
@@ -170,6 +179,7 @@
                 size="small"
                 text
                 title="刷新缩略图"
+                style="position: absolute; top: 2px; right: 2px"
                 @click="store.loadThumbnail(row.id, true)"
               >
                 <el-icon><Refresh /></el-icon>
@@ -316,6 +326,20 @@ const scanPort = ref(5555)
 const hostConnectedIps = ref(new Set<string>())
 const hostConnectingIp = ref<string | null>(null)
 
+// ===== 扫描记录（方案 36 第三批）：未连接清单卡通 + localStorage 持久化 =====
+interface ScanRecordHost {
+  ip: string
+  failed?: string
+}
+interface ScanRecordData {
+  label: string
+  port: number
+  scannedAt: number
+  hosts: ScanRecordHost[]
+}
+const SCAN_RECORD_KEY = 'oscrpy-scan-record'
+const scanRecord = ref<ScanRecordData | null>(null)
+
 // ===== 设备多选与批量断开（方案 36 增补 D10） =====
 const tableRef = ref()
 const selectedDevices = ref<DeviceInfo[]>([])
@@ -342,6 +366,8 @@ const formRules: FormRules = {
 
 // ===== 生命周期 =====
 onMounted(async () => {
+  // 第三批：扫描记录优先恢复（端口号快照随记录恢复，供 hostState 判定）
+  restoreScanRecord()
   // SSE 订阅先就位（方案 35 D6）：列表刷新慢不推迟事件订阅
   store.startSSE()
   await store.fetchDevices()
@@ -391,7 +417,9 @@ async function handleScan() {
   hostConnectedIps.value = new Set() // 新一次扫描清空上次手动连接集合（D9）
   scanPort.value = scanForm.port // D9：端口显式快照，结果条目连接用快照值
   try {
-    scanResult.value = await store.scanSubnet(cidr, !scanForm.scanOnly, scanForm.port)
+    const result = await store.scanSubnet(cidr, !scanForm.scanOnly, scanForm.port)
+    scanResult.value = result
+    saveScanRecord()
   } catch (e) {
     ElMessage.error(`扫描失败: ${extractApiError(e, '未知错误')}`)
   } finally {
@@ -423,11 +451,73 @@ async function connectHost(ip: string) {
     await store.connectDevice(ip, scanPort.value)
     hostConnectedIps.value = new Set([...hostConnectedIps.value, ip])
     ElMessage.success(`已连接 ${ip}:${scanPort.value}`)
+    persistScanRecord()
   } catch (e) {
     ElMessage.error(`连接失败: ${extractApiError(e, '未知错误')}`)
   } finally {
     hostConnectingIp.value = null
   }
+}
+
+/** 第三批：待连接清单（记录中剔除已连接主机；卡片为空时整体隐藏） */
+const recordHosts = computed(() =>
+  (scanRecord.value?.hosts ?? []).filter((h) => hostState(h.ip) !== 'connected')
+)
+
+/** 第三批：记录扫描时间（HH:MM:SS） */
+const recordTimeText = computed(() =>
+  scanRecord.value ? new Date(scanRecord.value.scannedAt).toLocaleTimeString() : ''
+)
+
+/** 第三批：扫描完成后落盘（已连接主机不入记录，失败主机带原因） */
+function saveScanRecord() {
+  const r = scanResult.value
+  if (!r) return
+  const hosts: ScanRecordHost[] = r.open_hosts
+    .filter((ip) => hostState(ip) !== 'connected')
+    .map((ip) => {
+      const attempt = r.connect_results.find((a) => a.ip === ip)
+      const entry: ScanRecordHost = { ip }
+      if (attempt && !attempt.ok && attempt.message) entry.failed = attempt.message
+      return entry
+    })
+  scanRecord.value = {
+    label: r.label,
+    port: scanPort.value,
+    scannedAt: Date.now(),
+    hosts,
+  }
+  localStorage.setItem(SCAN_RECORD_KEY, JSON.stringify(scanRecord.value))
+}
+
+/** 第三批：页载恢复记录（端口快照随记录恢复，损坏数据静默清理） */
+function restoreScanRecord() {
+  try {
+    const raw = localStorage.getItem(SCAN_RECORD_KEY)
+    if (!raw) return
+    const data = JSON.parse(raw) as ScanRecordData
+    if (!Array.isArray(data.hosts)) return
+    scanRecord.value = data
+    scanPort.value = data.port
+  } catch {
+    localStorage.removeItem(SCAN_RECORD_KEY)
+  }
+}
+
+/** 第三批：连接成功后修剪记录并同步落盘（已连接主机移出清单） */
+function persistScanRecord() {
+  if (!scanRecord.value) return
+  scanRecord.value = {
+    ...scanRecord.value,
+    hosts: scanRecord.value.hosts.filter((h) => hostState(h.ip) !== 'connected'),
+  }
+  localStorage.setItem(SCAN_RECORD_KEY, JSON.stringify(scanRecord.value))
+}
+
+/** 第三批：清除记录（卡片 + localStorage） */
+function clearScanRecord() {
+  scanRecord.value = null
+  localStorage.removeItem(SCAN_RECORD_KEY)
 }
 
 /** 强制重拉全表设备缩略图（绕过 TTL） */
@@ -606,18 +696,45 @@ async function handleBatchDisconnect() {
   margin: 0.25rem 0;
 }
 
-/* 方案 36 增补 D9：开放主机可交互清单 */
-.scan-hosts {
-  list-style: none;
-  margin: 0.5rem 0 0;
-  padding: 0;
+/* 方案 36 第三批：扫描记录独立卡片 */
+.scan-record-card {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
 }
 
-.scan-host-row {
+.scan-record-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.scan-record-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.scan-record-meta {
+  font-size: 12px;
+  color: #909399;
+}
+
+.scan-record-hosts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+}
+
+.scan-record-row {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  margin: 0 0.75rem 0.5rem 0;
 }
 
 /* 方案 36 增补 D10：批量断开工具条 */
