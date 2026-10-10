@@ -30,6 +30,7 @@ import asyncio
 import time
 from contextlib import aclosing
 from typing import Any, AsyncGenerator, Optional, cast
+from uuid import uuid4
 
 from fastapi import WebSocket
 
@@ -101,7 +102,7 @@ class DebugService:
         """
         创建新的调试会话。
 
-        会话 ID 生成为 "{device_id}_{user_id}_{timestamp}"。
+        会话 ID 为不透明随机标识（uuid4 前 12 位十六进制），设备/用户信息不进入 ID。
         logcat 采集不再随会话创建启动：订阅者发 paused=False
         （开启录制）时才惰性启动（方案 17 实施项 5）。
 
@@ -116,7 +117,7 @@ class DebugService:
             raise InvalidIdentifierError("device_id")
         logger.info("creating_debug_session", device=device_id, user=user_id)
         await self.writer.start()
-        session_id = f"{device_id}_{user_id}_{int(time.time())}"
+        session_id = uuid4().hex[:12]
         session = DebugSession(
             id=session_id,
             device_id=device_id,

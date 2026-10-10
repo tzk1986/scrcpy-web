@@ -236,3 +236,21 @@ async def test_create_session_rejects_invalid_device_id():
         assert svc.sessions == {}  # 无副作用：会话未创建
     finally:
         await svc.writer.stop()
+
+
+async def test_create_session_id_is_opaque_random():
+    """H2 修复：session_id 为随机十六进制，不含 device_id/user_id/时间戳，且两次不同。"""
+    import re
+
+    adb = HangingAdb()
+    svc = DebugService(adb=adb, repo=Repo())
+    try:
+        s1 = await svc.create_session("dev1", "u1")
+        s2 = await svc.create_session("dev1", "u1")
+        assert re.fullmatch(r"[0-9a-f]{12}", s1.id)
+        assert "dev1" not in s1.id and "u1" not in s1.id
+        assert s1.id != s2.id
+    finally:
+        await svc.close_session(s1.id)
+        await svc.close_session(s2.id)
+        await svc.writer.stop()
