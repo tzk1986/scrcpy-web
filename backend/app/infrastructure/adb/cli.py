@@ -25,6 +25,7 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 """
 
 import asyncio
+from ipaddress import IPv4Network
 from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
@@ -33,7 +34,7 @@ from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.domain.device import DeviceInfo
 from app.domain.ports import ShellSession
-from app.infrastructure.adb.reachability import probe_tcp
+from app.infrastructure.adb.reachability import probe_tcp, scan_open_hosts
 
 logger = get_logger(__name__)
 
@@ -320,7 +321,7 @@ class AdbCliDriver:
             logger.debug("device_not_connected", device=device_id)
             return False
 
-    async def connect_tcp(self, ip: str, port: int = 5555) -> str:
+    async def connect_tcp(self, ip: str, port: int = 5555, timeout: int | None = None) -> str:
         """
         通过 TCP/IP 连接到设备。
 
@@ -329,6 +330,8 @@ class AdbCliDriver:
         参数：
             ip: 设备的 IP 地址。
             port: ADB 端口（默认 5555）。
+            timeout: 覆盖 adb connect 命令超时（秒）；None 用配置默认（30s）。
+                扫描编排路径传短超时（方案 36 D4），避免非 adb 服务拖满默认值。
 
         返回：
             设备 ID（格式为 "ip:port"）。
@@ -344,7 +347,7 @@ class AdbCliDriver:
         await probe_tcp(ip, port, settings().adb.probe_timeout)
 
         try:
-            output = await self._run("connect", device_id)
+            output = await self._run("connect", device_id, timeout=timeout)
             if "connected" in output.lower():
                 logger.info("tcp_connected", device=device_id)
                 return device_id
@@ -380,6 +383,20 @@ class AdbCliDriver:
         except AdbError as e:
             logger.warning("tcp_disconnect_failed", device=device_id, error=str(e))
             # 断开失败不是严重错误，只记录警告
+
+    async def scan_hosts(
+        self,
+        network: IPv4Network,
+        port: int = 5555,
+        timeout: float | None = None,
+        concurrency: int | None = None,
+    ) -> list[str]:
+        """
+        并发探测网段内 TCP 端口开放的主机（方案 36）。
+
+        返回开放主机 IP 列表（数值序）；探测细节见 reachability.scan_open_hosts。
+        """
+        return await scan_open_hosts(network, port=port, timeout=timeout, concurrency=concurrency)
 
     async def stream_logcat(self, device_id: str) -> AsyncIterator[str]:
         """

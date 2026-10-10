@@ -111,6 +111,7 @@ class AdbConfig(BaseSettings):
     timeout: int = 30
     probe_timeout: float = 1.5
     reconnect_interval: int = 5
+    scan_concurrency: int = 254  # 网段扫描 TCP 探测并发数（方案 36）
     use_conpty: bool = True  # Windows 交互 shell 走 ConPTY 伪控制台，不可用时自动降级管道
 
     model_config = SettingsConfigDict(

@@ -24,6 +24,7 @@
 """
 
 from dataclasses import dataclass
+from ipaddress import IPv4Network
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from app.domain.device import DeviceInfo
@@ -364,9 +365,12 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def connect_tcp(self, ip: str, port: int = 5555) -> str:
+    async def connect_tcp(self, ip: str, port: int = 5555, timeout: int | None = None) -> str:
         """
         通过 TCP/IP 连接设备，返回 "ip:port" 形式的设备 ID。
+
+        参数：
+            timeout: 覆盖 adb connect 命令超时（秒）；None 用配置默认（方案 36 D4）。
 
         异常：
             AdbError: 连接失败时。
@@ -375,6 +379,26 @@ class AdbDriver(Protocol):
 
     async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         """断开 TCP/IP 连接（失败仅记警告，不抛出）。"""
+        ...
+
+    async def scan_hosts(
+        self,
+        network: IPv4Network,
+        port: int = 5555,
+        timeout: float | None = None,
+        concurrency: int | None = None,
+    ) -> list[str]:
+        """
+        并发 TCP 探测网段内端口开放的主机（方案 36 D1）。
+
+        参数：
+            network: 已解析的 IPv4 网段；探测 network.hosts()（不含网络/广播地址）。
+            timeout: 单台探测超时（秒）；None 读配置 adb.probe_timeout。
+            concurrency: 并发上限；None 读配置 adb.scan_concurrency。
+
+        返回：
+            开放主机的 IP 列表（数值序）。
+        """
         ...
 
     async def create_shell(self, device_id: str) -> "ShellSession":

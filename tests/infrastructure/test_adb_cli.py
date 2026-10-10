@@ -15,6 +15,7 @@ ADB CLI 驱动测试
 """
 
 import pytest
+from ipaddress import ip_network
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.infrastructure.adb.cli import AdbCliDriver
@@ -313,6 +314,50 @@ class TestTcpConnection:
             driver = AdbCliDriver()
             await driver.disconnect_tcp("192.168.1.5", 5555)
             exec_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_tcp_passes_timeout_to_run(self):
+        """扫描编排路径：connect_tcp 的 timeout 透传给 _run（方案 36 D4）。"""
+        driver = AdbCliDriver()
+        run_mock = AsyncMock(return_value="connected to 192.168.1.5:5555")
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+            patch.object(driver, '_run', new=run_mock),
+        ):
+            device_id = await driver.connect_tcp("192.168.1.5", 5555, timeout=5)
+
+        assert device_id == "192.168.1.5:5555"
+        run_mock.assert_awaited_once_with("connect", "192.168.1.5:5555", timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_connect_tcp_default_timeout_stays_none(self):
+        """缺省不传 timeout → _run 收到 None（回落配置 30s，既有语义不变）。"""
+        driver = AdbCliDriver()
+        run_mock = AsyncMock(return_value="already connected to 192.168.1.5:5555")
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+            patch.object(driver, '_run', new=run_mock),
+        ):
+            device_id = await driver.connect_tcp("192.168.1.5", 5555)
+
+        assert device_id == "192.168.1.5:5555"
+        run_mock.assert_awaited_once_with("connect", "192.168.1.5:5555", timeout=None)
+
+
+class TestScanHosts:
+    """测试网段扫描薄包装（方案 36 D1）"""
+
+    @pytest.mark.asyncio
+    async def test_scan_hosts_delegates_to_reachability(self):
+        """scan_hosts 委托 reachability.scan_open_hosts，参数原样透传。"""
+        driver = AdbCliDriver()
+        network = ip_network("192.168.8.0/24")
+        scan_mock = AsyncMock(return_value=["192.168.8.18", "192.168.8.25"])
+        with patch('app.infrastructure.adb.cli.scan_open_hosts', new=scan_mock):
+            result = await driver.scan_hosts(network, port=5556, timeout=0.8, concurrency=32)
+
+        assert result == ["192.168.8.18", "192.168.8.25"]
+        scan_mock.assert_awaited_once_with(network, port=5556, timeout=0.8, concurrency=32)
 
 
 # ---------------------------------------------------------------------------
