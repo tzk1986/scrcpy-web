@@ -59,6 +59,14 @@ metrics:
     rx_rate_kbps:   { enabled: false, above: 0.0, consecutive: 3, clear_margin: 0.0, clear_consecutive: 3, cooldown: 60 }
     tx_rate_kbps:   { enabled: false, above: 0.0, consecutive: 3, clear_margin: 0.0, clear_consecutive: 3, cooldown: 60 }
 
+recording:
+  dir: ./data/recordings        # 主机落盘目录（相对仓库根运行态解析）
+  bit_rate: 4M                  # screenrecord 码率（默认）
+  time_limit: 60                # 设备端 --time-limit 兜底（秒，前端倒计时同口径）
+  retention_days: 3             # 双限-时间（天）
+  max_total_mb: 512             # 双限-容量（目录总字节上限）
+  degraded_size: 256x144        # err=-38 降档分辨率
+
 security:
   cors_origins:
     - http://localhost:8080

@@ -222,6 +222,21 @@ class MetricsConfig(BaseSettings):
     thresholds: MetricAlertsConfig = Field(default_factory=MetricAlertsConfig)
 
 
+class RecordingConfig(BaseSettings):
+    """录屏配置节（方案 37 子项 B）。
+
+    注意：dir 保持配置期相对路径原样（勿加路径归一 validator），
+    运行态解析（锚定 app_base_dir()）属录制服务（B2）职责。
+    """
+
+    dir: str = "./data/recordings"  # 主机落盘目录（相对仓库根运行态解析）
+    bit_rate: str = "4M"            # screenrecord 码率（默认）
+    time_limit: int = 60            # 设备端 --time-limit 兜底（秒，前端倒计时同口径）
+    retention_days: int = 3         # 双限-时间（天）
+    max_total_mb: int = 512         # 双限-容量（目录总字节上限）
+    degraded_size: str = "256x144"  # err=-38 降档分辨率
+
+
 class SecurityConfig(BaseSettings):
     cors_origins: list[str] = ["http://localhost:8080"]
 
@@ -234,6 +249,7 @@ class Settings(BaseSettings):
     stream: StreamConfig = Field(default_factory=StreamConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    recording: RecordingConfig = Field(default_factory=RecordingConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
 
     model_config = SettingsConfigDict(
