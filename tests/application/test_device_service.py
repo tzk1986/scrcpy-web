@@ -9,18 +9,24 @@
     - APK 安装（install_apk, batch_install）
     - 截图（screenshot）
     - TCP/IP 连接管理（connect_tcp, disconnect_tcp）
+    - 网段扫描连接（scan_and_connect，方案 36）
     - 后台设备刷新（start, stop, _refresh_loop）
     - 事件回调机制（on_device_connected, on_device_disconnected）
 """
 
 import asyncio
 import time
+from ipaddress import ip_network
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
-from app.application.device_service import DeviceService
-from app.core.exceptions import AdbError
+from app.application.device_service import (
+    MAX_CONNECT,
+    DeviceService,
+    _SCAN_CONNECT_TIMEOUT,
+)
+from app.core.exceptions import AdbError, DeviceUnreachableError, ScanBusyError
 from app.domain.device import DeviceInfo
 
 
@@ -45,6 +51,7 @@ def mock_adb():
     adb.screenshot_raw_gzip = AsyncMock(return_value=b"\x1f\x8bGZIP")
     adb.connect_tcp = AsyncMock(return_value="192.168.1.5:5555")
     adb.disconnect_tcp = AsyncMock()
+    adb.scan_hosts = AsyncMock(return_value=[])
     return adb
 
 
@@ -393,7 +400,7 @@ class TestConnectTcp:
         result = await service.connect_tcp("192.168.1.5", 5555)
 
         assert result == "192.168.1.5:5555"
-        mock_adb.connect_tcp.assert_called_once_with("192.168.1.5", 5555)
+        mock_adb.connect_tcp.assert_called_once_with("192.168.1.5", 5555, timeout=None)
         mock_adb.get_device_info.assert_called_once_with("192.168.1.5:5555")
         mock_repo.save.assert_called_once_with(device)
 
@@ -438,6 +445,124 @@ class TestDisconnectTcp:
 
         assert "192.168.1.5:5555" not in service._info_cooldown
         assert "192.168.1.5:5555" not in service._info_tasks
+
+
+# ---------------------------------------------------------------------------
+# 网段扫描连接测试（方案 36）
+# ---------------------------------------------------------------------------
+
+class TestScanAndConnect:
+    """测试 scan_and_connect 编排（D2）"""
+
+    @pytest.mark.asyncio
+    async def test_scan_classifies_connect_results(self, service, mock_adb):
+        """4 成功 / 2 不可达 / 2 其余失败 → ok=4、unreachable=2、connect_failed=2。"""
+        hosts = [f"192.168.8.{i}" for i in range(1, 9)]
+        mock_adb.scan_hosts.return_value = hosts
+        mock_adb.get_device_info.side_effect = lambda device_id: _make_device(device_id)
+        mock_adb.connect_tcp.side_effect = [
+            "192.168.8.1:5555",
+            "192.168.8.2:5555",
+            "192.168.8.3:5555",
+            "192.168.8.4:5555",
+            DeviceUnreachableError("192.168.8.5", 5555, "连接超时"),
+            DeviceUnreachableError("192.168.8.6", 5555, "连接被拒绝"),
+            AdbError("failed to connect to 192.168.8.7:5555"),
+            AdbError("ADB command timed out after 5s"),
+        ]
+
+        result = await service.scan_and_connect(ip_network("192.168.8.0/28"))
+
+        assert result.cidr == "192.168.8.0/28"
+        assert result.probed == 14
+        assert result.open_hosts == hosts
+        assert result.truncated is False
+
+        oks = [r for r in result.connect_results if r.ok]
+        unreachable = [r for r in result.connect_results if r.reason == "unreachable"]
+        failed = [r for r in result.connect_results if r.reason == "connect_failed"]
+        assert len(oks) == 4
+        assert len(unreachable) == 2
+        assert len(failed) == 2
+        assert all(r.device_id == f"{r.ip}:5555" for r in oks)
+        assert all(r.message for r in unreachable + failed)
+
+    @pytest.mark.asyncio
+    async def test_scan_truncates_at_max_connect(self, service, mock_adb):
+        """开放主机超过 MAX_CONNECT：仅连前 64 台，truncated=True，open_hosts 保留全量。"""
+        assert MAX_CONNECT == 64
+        hosts = [f"192.168.8.{i}" for i in range(1, 66)]  # 65 台
+        mock_adb.scan_hosts.return_value = hosts
+        mock_adb.get_device_info.side_effect = lambda device_id: _make_device(device_id)
+
+        result = await service.scan_and_connect(ip_network("192.168.8.0/25"))
+
+        assert result.truncated is True
+        assert result.open_hosts == hosts
+        assert len(result.connect_results) == MAX_CONNECT
+        assert mock_adb.connect_tcp.await_count == MAX_CONNECT
+        assert [r.ip for r in result.connect_results] == hosts[:MAX_CONNECT]
+
+    @pytest.mark.asyncio
+    async def test_scan_busy_then_recovers(self, service, mock_adb):
+        """互斥：扫描进行中重复请求抛 ScanBusyError；结束后可再次扫描（finally 复位）。"""
+        release = asyncio.Event()
+
+        async def fake_scan(network, port=5555, timeout=None, concurrency=None):
+            await release.wait()
+            return []
+
+        mock_adb.scan_hosts.side_effect = fake_scan
+
+        first = asyncio.create_task(service.scan_and_connect(ip_network("192.168.8.0/29")))
+        await asyncio.sleep(0)  # 首个任务进入并置位 _scan_inflight
+        with pytest.raises(ScanBusyError):
+            await service.scan_and_connect(ip_network("192.168.8.0/29"))
+
+        release.set()
+        result = await first
+        assert result.open_hosts == []
+
+        result2 = await service.scan_and_connect(ip_network("192.168.8.0/29"))
+        assert result2.open_hosts == []
+
+    @pytest.mark.asyncio
+    async def test_scan_connect_false_skips_connect(self, service, mock_adb):
+        """connect=False：仅探测返回，connect_tcp 零调用、不截断。"""
+        mock_adb.scan_hosts.return_value = ["192.168.8.1", "192.168.8.2", "192.168.8.3"]
+
+        result = await service.scan_and_connect(ip_network("192.168.8.0/29"), connect=False)
+
+        assert result.open_hosts == ["192.168.8.1", "192.168.8.2", "192.168.8.3"]
+        assert result.connect_results == []
+        assert result.truncated is False
+        mock_adb.connect_tcp.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scan_connect_timeout_passthrough(self, service, mock_adb):
+        """连接阶段 adb connect 全部带短超时（_SCAN_CONNECT_TIMEOUT=5），防拖满 30s。"""
+        assert _SCAN_CONNECT_TIMEOUT == 5
+        mock_adb.scan_hosts.return_value = ["192.168.8.1", "192.168.8.2"]
+        mock_adb.get_device_info.side_effect = lambda device_id: _make_device(device_id)
+
+        await service.scan_and_connect(ip_network("192.168.8.0/29"))
+
+        assert mock_adb.connect_tcp.await_count == 2
+        for c in mock_adb.connect_tcp.await_args_list:
+            assert c.kwargs["timeout"] == _SCAN_CONNECT_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_scan_stage2_failures_do_not_upset(self, service, mock_adb):
+        """连接阶段全部抛异常：仍正常返回，逐台 connect_failed（return_exceptions 语义）。"""
+        mock_adb.scan_hosts.return_value = ["192.168.8.1", "192.168.8.2"]
+        mock_adb.connect_tcp.side_effect = AdbError("boom")
+
+        result = await service.scan_and_connect(ip_network("192.168.8.0/29"))
+
+        assert len(result.connect_results) == 2
+        assert all(
+            (not r.ok) and r.reason == "connect_failed" for r in result.connect_results
+        )
 
 
 # ---------------------------------------------------------------------------

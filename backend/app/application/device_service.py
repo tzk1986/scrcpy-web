@@ -16,6 +16,7 @@
     - install_apk():    在单个设备上安装 APK
     - batch_install():  在多个设备上安装同一个 APK（并发执行，信号量上限 5）
     - screenshot():     截取设备屏幕为 PNG 字节
+    - scan_and_connect(): 网段扫描开放主机并批量连接（方案 36）
     - start():          启动后台设备状态自动刷新
     - stop():           停止后台刷新
     - on_device_connected():    注册设备连接回调
@@ -30,9 +31,11 @@
 
 import asyncio
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from ipaddress import IPv4Network
 from typing import Awaitable, Callable, Optional
 
+from app.core.exceptions import DeviceUnreachableError, ScanBusyError
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
 from app.domain.ports import AdbDriver, DeviceRepository
@@ -45,6 +48,39 @@ _COOLDOWN_SECONDS = 30
 
 # 设备信息查询的设备级并发上限（方案 35 D1）：防设备数增长后进程失控。
 _INFO_CONCURRENCY = 8
+
+# 单次扫描最多连接的开放主机数（方案 36 D2 截断保护）：
+# 超出部分仍列入开放清单但不连接，结果 truncated=True。
+MAX_CONNECT = 64
+
+# 扫描路径 adb connect 单台超时（秒，方案 36 D4）：非 adb 服务在握手阶段
+# 静默时可拖满默认 30s，加此短超时后 64 台/16 并发最坏 ≈20s，全链 ≤30s。
+_SCAN_CONNECT_TIMEOUT = 5
+
+# 扫描路径连接阶段的并发上限（方案 36 D2）：本地信号量，防开放主机过多失控。
+_SCAN_CONNECT_CONCURRENCY = 16
+
+
+@dataclass
+class ConnectAttempt:
+    """单台开放主机的一次连接尝试结果（方案 36 D2）。"""
+
+    ip: str
+    ok: bool
+    device_id: str | None = None
+    reason: str | None = None   # 失败分类：unreachable / connect_failed
+    message: str | None = None  # 失败摘要（异常短文本，前端回显）
+
+
+@dataclass
+class ScanResult:
+    """网段扫描 + 批量连接的结果（方案 36 D2）。"""
+
+    cidr: str
+    probed: int
+    open_hosts: list[str]
+    connect_results: list[ConnectAttempt]
+    truncated: bool = False
 
 
 class DeviceService:
@@ -66,6 +102,7 @@ class DeviceService:
         self._info_semaphore = asyncio.Semaphore(_INFO_CONCURRENCY)
         self._info_cooldown: dict[str, float] = {}  # device_id → 冷却截止（time.monotonic）
         self._info_tasks: dict[str, asyncio.Task[Optional[DeviceInfo]]] = {}
+        self._scan_inflight = False  # 网段扫描互斥（方案 36 D2）
 
     async def list_devices(self) -> list[DeviceInfo]:
         """
@@ -235,13 +272,15 @@ class DeviceService:
         """
         return await self.adb.screenshot_raw_gzip(device_id)
 
-    async def connect_tcp(self, ip: str, port: int = 5555) -> str:
+    async def connect_tcp(self, ip: str, port: int = 5555, timeout: int | None = None) -> str:
         """
         通过 TCP/IP 连接到设备。
 
         参数：
             ip: 设备的 IP 地址。
             port: ADB 端口（默认 5555）。
+            timeout: 覆盖 adb connect 命令超时（秒）；None 用配置默认
+                （扫描编排路径传短超时，方案 36 D4）。
 
         返回：
             设备 ID（格式为 "ip:port"）。
@@ -249,7 +288,7 @@ class DeviceService:
         异常：
             AdbError: 连接失败时。
         """
-        device_id = await self.adb.connect_tcp(ip, port)
+        device_id = await self.adb.connect_tcp(ip, port, timeout=timeout)
         # 连接成功后获取设备信息并保存；信息查询失败不阻断连接本身
         # （方案 35 D6：get_device_info 命令走 5s 短超时，失败仅告警）
         try:
@@ -259,6 +298,88 @@ class DeviceService:
             return device_id
         await self.repo.save(info)
         return device_id
+
+    async def scan_and_connect(
+        self, network: IPv4Network, connect: bool = True, port: int = 5555
+    ) -> ScanResult:
+        """
+        扫描网段内 TCP 开放主机并批量 adb 连接（方案 36 D2）。
+
+        阶段 1 经 AdbDriver.scan_hosts 并发探测；阶段 2（connect=True）对最多
+        MAX_CONNECT 台开放主机并发 connect_tcp（短超时 + 并发上限 16），单台
+        失败逐台分类不打断整体（return_exceptions 语义，防孤儿 adb 进程）。
+        同一时间仅允许一个扫描在途（重复请求抛 ScanBusyError）。
+
+        参数：
+            network: 已解析的 IPv4 网段（解析/校验在接口层）。
+            connect: False 时仅探测不连接。
+            port: ADB 端口（默认 5555）。
+
+        返回：
+            ScanResult（开放清单全量；connect_results 对应实际尝试的 ≤64 台）。
+
+        异常：
+            ScanBusyError: 已有扫描任务进行中。
+        """
+        if self._scan_inflight:
+            raise ScanBusyError()
+        self._scan_inflight = True
+        try:
+            cidr = str(network)
+            probed = len(list(network.hosts()))
+            started = time.monotonic()
+            logger.info("scan_started", cidr=cidr, connect=connect, port=port)
+
+            open_hosts = await self.adb.scan_hosts(network, port)
+
+            connect_results: list[ConnectAttempt] = []
+            truncated = False
+            if connect and open_hosts:
+                truncated = len(open_hosts) > MAX_CONNECT
+                candidates = open_hosts[:MAX_CONNECT]
+                semaphore = asyncio.Semaphore(_SCAN_CONNECT_CONCURRENCY)
+
+                async def connect_one(ip: str) -> ConnectAttempt:
+                    async with semaphore:
+                        try:
+                            device_id = await self.connect_tcp(
+                                ip, port, timeout=_SCAN_CONNECT_TIMEOUT
+                            )
+                        except DeviceUnreachableError as e:
+                            return ConnectAttempt(
+                                ip=ip, ok=False, reason="unreachable", message=e.message
+                            )
+                        except Exception as e:
+                            return ConnectAttempt(
+                                ip=ip, ok=False, reason="connect_failed", message=str(e)
+                            )
+                        return ConnectAttempt(ip=ip, ok=True, device_id=device_id)
+
+                gathered = await asyncio.gather(
+                    *(connect_one(ip) for ip in candidates), return_exceptions=True
+                )
+                connect_results = [r for r in gathered if isinstance(r, ConnectAttempt)]
+
+            ok_count = sum(1 for r in connect_results if r.ok)
+            logger.info(
+                "scan_finished",
+                cidr=cidr,
+                probed=probed,
+                open=len(open_hosts),
+                connected=ok_count,
+                failed=len(connect_results) - ok_count,
+                truncated=truncated,
+                elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            )
+            return ScanResult(
+                cidr=cidr,
+                probed=probed,
+                open_hosts=open_hosts,
+                connect_results=connect_results,
+                truncated=truncated,
+            )
+        finally:
+            self._scan_inflight = False
 
     async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         """

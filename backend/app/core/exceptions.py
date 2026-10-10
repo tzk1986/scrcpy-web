@@ -15,7 +15,10 @@
     ├── PermissionDeniedError    — 调用者无权限执行该操作（403）
     ├── AdbError                 — ADB 子进程返回非零退出码（400）
     ├── DeviceUnreachableError   — TCP 可达性预检失败（400，connect/disconnect 前置）
-    └── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）
+    ├── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）
+    ├── RecordingDisabledError   — 录制总开关关闭时请求开启（400）
+    ├── ScanBusyError            — 已有扫描进行中，重复请求被拒（409，方案 36）
+    └── InvalidScanRangeError    — 扫描网段非法或超上限（422，方案 36）
 
 所有异常都携带一个机器可读的 ``code`` 字段（如 "DEVICE_NOT_FOUND"）
 以及一个人可读的 ``message``。这让前端可以根据 ``error.code`` 进行
@@ -109,6 +112,27 @@ class RecordingDisabledError(OpenScrcpyException):
         super().__init__(
             "Metrics recording is disabled by configuration",
             code="RECORDING_DISABLED",
+        )
+
+
+class ScanBusyError(OpenScrcpyException):
+    """扫描互斥：已有网段扫描任务进行中，重复请求被拒绝（方案 36）。"""
+
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__("已有扫描任务进行中，请等待其完成后再试", code="SCAN_BUSY")
+
+
+class InvalidScanRangeError(OpenScrcpyException):
+    """扫描网段非法或超出支持范围（仅 IPv4 /22-/32，方案 36）。"""
+
+    status_code = 422
+
+    def __init__(self, cidr: str) -> None:
+        super().__init__(
+            f"扫描网段 {cidr!r} 非法或超出支持范围（仅支持 IPv4，前缀 /22 至 /32）",
+            code="INVALID_SCAN_RANGE",
         )
 
 
