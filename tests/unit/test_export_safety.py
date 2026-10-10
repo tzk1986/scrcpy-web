@@ -1,5 +1,4 @@
 # tests/unit/test_export_safety.py
-import pytest
 from app.interfaces.http.export_safety import sanitize_export_filename
 
 def test_path_traversal_neutralized():

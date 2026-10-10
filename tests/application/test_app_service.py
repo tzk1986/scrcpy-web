@@ -841,3 +841,17 @@ async def test_launch_app_rejects_injected_package():
     with pytest.raises(InvalidIdentifierError):
         await service.launch_app("dev", "com.a && rm -rf")
     assert fake.cmds == []
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["stop_app", "clear_app_data", "get_app_info", "get_app_memory"],
+)
+async def test_remaining_public_methods_reject_injected_package(method_name):
+    """M-3 补强：其余 4 个公开方法同样拒斥注入包名，且未触达设备。"""
+    fake = FakeAdb()
+    service = AppService(fake)
+    method = getattr(service, method_name)
+    with pytest.raises(InvalidIdentifierError):
+        await method("dev", "com.a;reboot")
+    assert fake.cmds == []

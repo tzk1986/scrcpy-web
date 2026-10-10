@@ -10,7 +10,10 @@ def test_validate_argv_accepts_device_id_forms():
 
 
 def test_validate_argv_rejects_cmd_metachars():
-    for bad in ("x&calc", "a|b", "a>b", "a<b", "a^b", "a%b", 'a"b', "a(b)", "a!b", "a\nb"):
+    for bad in (
+        "x&calc", "a|b", "a>b", "a<b", "a^b", "a%b", 'a"b', "a(b)", "a!b",
+        "a\nb", "a\rb", "a\x00b",
+    ):
         with pytest.raises(ValueError):
             _validate_argv(["-s", bad, "shell", "-tt"])
 

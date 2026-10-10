@@ -9,7 +9,7 @@ def test_valid_device_ids():
 
 
 def test_invalid_device_ids():
-    for v in ("x&calc", "a b", "a;b", "a|b", "", "a/b", 'a"b', "a%b"):
+    for v in ("x&calc", "a b", "a;b", "a|b", "", "a/b", 'a"b', "a%b", "设备1"):
         assert not is_valid_device_id(v), v
 
 
