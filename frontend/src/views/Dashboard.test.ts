@@ -136,7 +136,9 @@ const ElTableColumnStub = defineComponent({
     const tableData = inject<(() => Array<Record<string, unknown>>) | undefined>('tableData')
     return () => {
       const slot = slots.default
-      if (!slot || !tableData) return null
+      // 无 default slot 的列（如 type=selection）仍渲染根元素：
+      // type/selectable 等 props 经 fallthrough attrs 可达，供测试断言
+      if (!slot || !tableData) return vueH('div', { class: 'stub-column stub-no-slot' })
       return vueH(
         'div',
         { class: 'stub-column' },
@@ -571,6 +573,24 @@ describe('Dashboard', () => {
   })
 
   // ==================== 方案 36 增补 D10：选择 + 批量断开 ====================
+
+  it('selection 列 selectable 按行对象行使 TCP 判定：USB 不可勾选、TCP 可勾选（D10）', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA, deviceB])
+    const wrapper = await mountDashboard()
+
+    const cols = wrapper.findAllComponents({ name: 'ElTableColumn' })
+    const selectionCol = cols.find((c) => c.attributes('type') === 'selection')
+    expect(selectionCol).toBeDefined()
+    // ElTableColumnStub 未声明 props：selectable 函数经 fallthrough attrs 可达，
+    // 直接以 EP 真实调用形态（传 row 对象）执行断言
+    const selectable = (selectionCol!.vm.$attrs as { selectable: (row: unknown) => boolean })
+      .selectable
+    expect(typeof selectable).toBe('function')
+    expect(selectable(deviceA)).toBe(false)
+    expect(selectable(deviceB)).toBe(true)
+
+    wrapper.unmount()
+  })
 
   it('选择 TCP 设备出现工具条；批量断开经确认逐台调用并清除选择（D10）', async () => {
     mockApi.listDevices.mockResolvedValue([deviceA, deviceB])

@@ -148,8 +148,9 @@
       v-loading="store.loading"
       @selection-change="handleSelectionChange"
     >
-      <!-- D10：选择列，仅 TCP 设备可勾选（USB 无 TCP 断开语义） -->
-      <el-table-column type="selection" :selectable="isTcpDevice" width="40" />
+      <!-- D10：选择列，仅 TCP 设备可勾选（USB 无 TCP 断开语义）；EP 回调传行对象，
+           经 rowSelectable 取 id 后与行内「断开」按钮同一判定口径 -->
+      <el-table-column type="selection" :selectable="rowSelectable" width="40" />
       <el-table-column prop="id" label="设备ID" min-width="180" />
       <el-table-column label="屏幕" width="120">
         <template #default="{ row }">
@@ -496,10 +497,15 @@ async function handleDisconnect(deviceId: string) {
   }
 }
 
-/** 判断设备是否为 TCP/IP 连接 */
+/** 判断设备 ID 是否为 TCP/IP 连接 */
 function isTcpDevice(deviceId: string): boolean {
   // TCP/IP 设备 ID 格式为 "ip:port" 或 "ip"
   return /^(\d{1,3}\.){3}\d{1,3}(:\d+)?$/.test(deviceId)
+}
+
+/** D10：selection 列 selectable 回调（EP 传行对象，与行内「断开」同口径） */
+function rowSelectable(row: DeviceInfo): boolean {
+  return isTcpDevice(row.id)
 }
 
 // ===== 设备多选与批量断开（方案 36 增补 D10） =====
