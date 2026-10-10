@@ -67,4 +67,5 @@ tests/e2e/report/
 memory/
 .review-scratch/
 .scratch/
+scratch/
 .superpowers/
