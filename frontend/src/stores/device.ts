@@ -23,7 +23,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api, type ScanResult } from '@/services/api'
 
 // 缩略图缓存 TTL（方案 36 D5）：命中直接显示，过期/缺失才重拉
@@ -50,6 +50,12 @@ export interface DeviceInfo {
    * adb 响应慢），当前信息可能为缓存/默认值。光源为列表响应即出即用。
    */
   slow?: boolean
+}
+
+/** 批量断开回执（方案 36 增补 D10）：成功 ID 与失败明细（含单条错误消息）。 */
+export interface BatchDisconnectResult {
+  ok: string[]
+  failed: { id: string; message: string }[]
 }
 
 /**
@@ -160,6 +166,35 @@ export const useDeviceStore = defineStore('device', () => {
       error.value = (e as Error).message
       throw e
     }
+  }
+
+  /**
+   * 批量断开（方案 36 增补 D10）：顺序逐台调 api.disconnectDevice
+   * （不复用 disconnectDevice——后者每台各触发一次静默重拉），单台失败
+   * 不中断；成功项本地移除 + 缩略图清理（含在途作废）+ 仅一次静默重拉。
+   *
+   * @param deviceIds - 待断开的设备 ID 列表（调用方保证均为 TCP 设备）
+   * @returns 回执 { ok, failed }，failed 项含单条错误消息
+   */
+  async function batchDisconnect(deviceIds: string[]): Promise<BatchDisconnectResult> {
+    const ok: string[] = []
+    const failed: { id: string; message: string }[] = []
+    for (const id of deviceIds) {
+      try {
+        const result = await api.disconnectDevice(id)
+        if (result.success) {
+          devices.value = devices.value.filter((d) => d.id !== id)
+          removeThumbnail(id)
+          ok.push(id)
+        } else {
+          failed.push({ id, message: '断开失败' })
+        }
+      } catch (e) {
+        failed.push({ id, message: (e as Error).message })
+      }
+    }
+    if (ok.length > 0) void fetchDevices({ silent: true })
+    return { ok, failed }
   }
 
   /**
@@ -340,6 +375,23 @@ export const useDeviceStore = defineStore('device', () => {
     return Promise.all(deviceIds.map((id) => loadThumbnail(id, force)))
   }
 
+  // 缩略图自动加载（方案 36 增补 D7）：设备列表变化即加载在线设备缩略图，
+  // 免手动点击。key 串含 id:status——SSE 增删与整体替换都会触发；负荷控制
+  // 复用 loadThumbnail 的 TTL 缓存 + 并发池 3 + in-flight 去重；失败设备
+  // 跳过不自动重试（仅手动点击/刷新重拉）。
+  const thumbAutoKey = computed(() =>
+    devices.value
+      .map((d) => `${d.id}:${d.status}`)
+      .sort()
+      .join('|')
+  )
+  watch(thumbAutoKey, () => {
+    for (const d of devices.value) {
+      if (d.status !== 'online' || thumbFailed.value[d.id]) continue
+      void loadThumbnail(d.id)
+    }
+  })
+
   /**
    * 在指定设备上安装 APK。
    */
@@ -368,6 +420,7 @@ export const useDeviceStore = defineStore('device', () => {
     fetchDevices,
     connectDevice,
     disconnectDevice,
+    batchDisconnect,
     scanSubnet,
     loadThumbnail,
     loadThumbnails,

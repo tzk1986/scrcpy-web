@@ -389,7 +389,7 @@ describe('device store - 其他操作', () => {
 
 function scanResult(overrides: Record<string, unknown> = {}) {
   return {
-    cidr: '192.168.8.0/24',
+    label: '192.168.8.0/24',
     probed: 254,
     open_hosts: ['192.168.8.18', '192.168.8.25'],
     connect_results: [
@@ -456,6 +456,119 @@ describe('device store - scanSubnet（方案 36）', () => {
 
     await expect(store.scanSubnet('192.168.8.0/24')).rejects.toThrow('已有扫描任务进行中')
     expect(store.error).toBe('已有扫描任务进行中')
+    expect(mockApi.listDevices).not.toHaveBeenCalled()
+  })
+})
+
+describe('device store - 缩略图自动加载（方案 36 增补 D7）', () => {
+  it('列表加载后自动加载 online 设备缩略图，offline 不加载', async () => {
+    const store = useDeviceStore()
+    mockApi.listDevices.mockResolvedValueOnce([
+      dev('a', { status: 'online' }),
+      dev('b', { status: 'offline' }),
+    ])
+
+    await store.fetchDevices()
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(1))
+    expect(mockApi.screenshot).toHaveBeenCalledWith('a')
+  })
+
+  it('新设备经 SSE 接入即自动加载（无需重拉列表）', async () => {
+    const store = useDeviceStore()
+    store.startSSE()
+
+    lastEventSource().onmessage!({
+      data: JSON.stringify({ type: 'connected', device: dev('n', { status: 'online' }) }),
+    })
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledWith('n'))
+  })
+
+  it('失败设备不自动重试；列表再变（新设备加入）只加载新设备', async () => {
+    const store = useDeviceStore()
+    mockApi.screenshot.mockRejectedValueOnce(new Error('offline'))
+    mockApi.listDevices.mockResolvedValueOnce([dev('a', { status: 'online' })])
+    await store.fetchDevices()
+    await vi.waitFor(() => expect(store.thumbFailed['a']).toBe(true))
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(1)
+
+    mockApi.screenshot.mockResolvedValue(new Blob(['png']))
+    mockApi.listDevices.mockResolvedValueOnce([dev('a', { status: 'online' }), dev('b', { status: 'online' })])
+    await store.fetchDevices()
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(2))
+    expect(mockApi.screenshot).toHaveBeenCalledWith('b')
+  })
+
+  it('TTL 内已缓存设备不重拉：列表替换后仅补缺', async () => {
+    const store = useDeviceStore()
+    mockApi.listDevices.mockResolvedValueOnce([dev('a', { status: 'online' })])
+    await store.fetchDevices()
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(1))
+
+    mockApi.listDevices.mockResolvedValueOnce([
+      dev('a', { status: 'online' }),
+      dev('b', { status: 'online' }),
+    ])
+    await store.fetchDevices()
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(2))
+    expect(mockApi.screenshot).toHaveBeenNthCalledWith(2, 'b')
+  })
+})
+
+describe('device store - batchDisconnect（方案 36 增补 D10）', () => {
+  it('顺序逐台断开：本地移除 + 缩略图清理，成功全量仅一次静默重拉', async () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a'), dev('b'), dev('c')]
+    store.thumbnails = { b: { url: 'blob:thumb-b', ts: 1 } }
+    // 挂起静默重拉：断言专注本地移除（同 disconnectDevice 测试口径）
+    mockApi.listDevices.mockImplementation(() => new Promise<DeviceInfo[]>(() => {}))
+
+    const result = await store.batchDisconnect(['a', 'b', 'c'])
+
+    expect(result).toEqual({ ok: ['a', 'b', 'c'], failed: [] })
+    expect(mockApi.disconnectDevice).toHaveBeenNthCalledWith(1, 'a')
+    expect(mockApi.disconnectDevice).toHaveBeenNthCalledWith(2, 'b')
+    expect(mockApi.disconnectDevice).toHaveBeenNthCalledWith(3, 'c')
+    expect(store.devices.map((d) => d.id)).toEqual([]) // 本地移除立即生效
+    expect(store.thumbnails['b']).toBeUndefined() // 缩略图条目清理
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith('blob:thumb-b')
+    expect(mockApi.listDevices).toHaveBeenCalledTimes(1) // 仅一次静默重拉
+  })
+
+  it('单台失败不中断：后续继续执行，失败项入 failed 带消息', async () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a'), dev('b')]
+    mockApi.disconnectDevice
+      .mockResolvedValueOnce({ success: true })
+      .mockRejectedValueOnce(new Error('adb offline'))
+    mockApi.listDevices.mockImplementation(() => new Promise<DeviceInfo[]>(() => {}))
+
+    const result = await store.batchDisconnect(['a', 'b'])
+
+    expect(result).toEqual({ ok: ['a'], failed: [{ id: 'b', message: 'adb offline' }] })
+    expect(mockApi.disconnectDevice).toHaveBeenCalledTimes(2)
+    expect(store.devices.map((d) => d.id)).toEqual(['b']) // 失败设备保留
+    expect(mockApi.listDevices).toHaveBeenCalledTimes(1)
+  })
+
+  it('success=false 计入 failed 且不重拉', async () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a')]
+    mockApi.disconnectDevice.mockResolvedValueOnce({ success: false })
+
+    const result = await store.batchDisconnect(['a'])
+
+    expect(result).toEqual({ ok: [], failed: [{ id: 'a', message: '断开失败' }] })
+    expect(store.devices.map((d) => d.id)).toEqual(['a'])
+    expect(mockApi.listDevices).not.toHaveBeenCalled()
+  })
+
+  it('空列表快速返回全空回执，不触达 API', async () => {
+    const store = useDeviceStore()
+
+    const result = await store.batchDisconnect([])
+
+    expect(result).toEqual({ ok: [], failed: [] })
+    expect(mockApi.disconnectDevice).not.toHaveBeenCalled()
     expect(mockApi.listDevices).not.toHaveBeenCalled()
   })
 })
