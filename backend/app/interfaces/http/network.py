@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 
 from app.application.network_service import NetworkService
 from app.deps import get_network_service
+from app.interfaces.http.export_safety import sanitize_export_filename
 
 router = APIRouter(prefix="/api/network", tags=["network"])
 
@@ -162,8 +163,8 @@ async def export_stats(
         raise HTTPException(status_code=404, detail="NO_DATA")
 
     # 文件名净化：device_id 含 ':'（如 192.168.8.18:5555），直接拼入
-    # 在 Windows 上非法（方案 18 §3.3）
-    safe_device = device_id.replace(":", "_")
+    # 在 Windows 上非法（方案 18 §3.3）——统一净化函数覆盖 ':' 与其余非法字符（方案 37 A3）
+    safe_device = sanitize_export_filename(device_id)
     ts = int(time.time())
 
     if format == "csv":

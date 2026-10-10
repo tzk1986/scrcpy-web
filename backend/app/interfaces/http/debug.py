@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from app.application.debug_service import DebugService
 from app.core.exceptions import SessionNotFoundError
 from app.deps import get_debug_service
+from app.interfaces.http.export_safety import sanitize_export_filename
 
 router = APIRouter(prefix="/api/debug", tags=["debug"])
 
@@ -151,11 +152,11 @@ async def export_logs(
             ])
         content = output.getvalue()
         media_type = "text/csv"
-        filename = f"logs_{session_id}.csv"
+        filename = f"logs_{sanitize_export_filename(session_id)}.csv"
     else:
         content = json.dumps(logs, indent=2, ensure_ascii=False)
         media_type = "application/json"
-        filename = f"logs_{session_id}.json"
+        filename = f"logs_{sanitize_export_filename(session_id)}.json"
 
     return StreamingResponse(
         io.BytesIO(content.encode("utf-8")),
