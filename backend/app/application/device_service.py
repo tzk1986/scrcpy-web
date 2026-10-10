@@ -32,7 +32,6 @@
 import asyncio
 import time
 from dataclasses import dataclass, replace
-from ipaddress import IPv4Network
 from typing import Awaitable, Callable, Optional
 
 from app.core.exceptions import DeviceUnreachableError, ScanBusyError
@@ -76,7 +75,7 @@ class ConnectAttempt:
 class ScanResult:
     """网段扫描 + 批量连接的结果（方案 36 D2）。"""
 
-    cidr: str
+    label: str                   # 扫描目标原样描述（CIDR/单 IP/区间，接口层解析后传入）
     probed: int
     open_hosts: list[str]
     connect_results: list[ConnectAttempt]
@@ -300,10 +299,10 @@ class DeviceService:
         return device_id
 
     async def scan_and_connect(
-        self, network: IPv4Network, connect: bool = True, port: int = 5555
+        self, label: str, targets: list[str], connect: bool = True, port: int = 5555
     ) -> ScanResult:
         """
-        扫描网段内 TCP 开放主机并批量 adb 连接（方案 36 D2）。
+        扫描目标主机列表中 TCP 开放主机并批量 adb 连接（方案 36 D2 + 增补 D11）。
 
         阶段 1 经 AdbDriver.scan_hosts 并发探测；阶段 2（connect=True）对最多
         MAX_CONNECT 台开放主机并发 connect_tcp（短超时 + 并发上限 16），单台
@@ -311,7 +310,8 @@ class DeviceService:
         同一时间仅允许一个扫描在途（重复请求抛 ScanBusyError）。
 
         参数：
-            network: 已解析的 IPv4 网段（解析/校验在接口层）。
+            label: 扫描目标的原样描述（CIDR/单 IP/区间；解析/校验在接口层）。
+            targets: 已展开为数值升序的探测主机列表。
             connect: False 时仅探测不连接。
             port: ADB 端口（默认 5555）。
 
@@ -325,12 +325,11 @@ class DeviceService:
             raise ScanBusyError()
         self._scan_inflight = True
         try:
-            cidr = str(network)
-            probed = len(list(network.hosts()))
+            probed = len(targets)
             started = time.monotonic()
-            logger.info("scan_started", cidr=cidr, connect=connect, port=port)
+            logger.info("scan_started", label=label, connect=connect, port=port)
 
-            open_hosts = await self.adb.scan_hosts(network, port)
+            open_hosts = await self.adb.scan_hosts(targets, port)
 
             connect_results: list[ConnectAttempt] = []
             truncated = False
@@ -368,12 +367,12 @@ class DeviceService:
                         connect_results.append(r)
                     else:
                         # 终评 M-5：BaseException 穿透（如任务取消）会静默丢台，留痕
-                        logger.warning("scan_attempt_dropped", cidr=cidr, error=repr(r))
+                        logger.warning("scan_attempt_dropped", label=label, error=repr(r))
 
             ok_count = sum(1 for r in connect_results if r.ok)
             logger.info(
                 "scan_finished",
-                cidr=cidr,
+                label=label,
                 probed=probed,
                 open=len(open_hosts),
                 connected=ok_count,
@@ -382,7 +381,7 @@ class DeviceService:
                 elapsed_ms=round((time.monotonic() - started) * 1000, 1),
             )
             return ScanResult(
-                cidr=cidr,
+                label=label,
                 probed=probed,
                 open_hosts=open_hosts,
                 connect_results=connect_results,

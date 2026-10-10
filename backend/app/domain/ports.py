@@ -24,7 +24,6 @@
 """
 
 from dataclasses import dataclass
-from ipaddress import IPv4Network
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from app.domain.device import DeviceInfo
@@ -383,16 +382,16 @@ class AdbDriver(Protocol):
 
     async def scan_hosts(
         self,
-        network: IPv4Network,
+        hosts: list[str],
         port: int = 5555,
         timeout: float | None = None,
         concurrency: int | None = None,
     ) -> list[str]:
         """
-        并发 TCP 探测网段内端口开放的主机（方案 36 D1）。
+        并发 TCP 探测主机列表中端口开放的主机（方案 36 D1）。
 
         参数：
-            network: 已解析的 IPv4 网段；探测 network.hosts()（不含网络/广播地址）。
+            hosts: 已展开为数值升序的 IPv4 主机列表（网段/区间展开在接口层）。
             timeout: 单台探测超时（秒）；None 读配置 adb.probe_timeout。
             concurrency: 并发上限；None 读配置 adb.scan_concurrency。
 

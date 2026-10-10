@@ -13,7 +13,6 @@
 import asyncio
 import socket
 import time
-from ipaddress import IPv4Network
 
 from app.core.config import settings
 from app.core.exceptions import DeviceUnreachableError
@@ -59,15 +58,15 @@ async def probe_tcp(host: str, port: int, timeout: float) -> None:
 
 
 async def scan_open_hosts(
-    network: IPv4Network,
+    hosts: list[str],
     port: int = 5555,
     timeout: float | None = None,
     concurrency: int | None = None,
 ) -> list[str]:
     """
-    并发 TCP 探测网段内所有主机（network.hosts()，不含网络/广播地址）。
+    并发 TCP 探测主机列表（调用方已按网段/区间展开为数值升序）。
 
-    返回开放 port 的主机 IP 列表（ipaddress 数值序，gather 保序）。
+    返回开放 port 的主机 IP 列表（保持输入顺序，gather 保序）。
     单台失败（超时/拒绝/DNS/网络错误）静默吞掉——不逐台打日志（复用
     probe_tcp 会让 /24 扫描产生上百条 warning），结束仅一条汇总日志。
     timeout/concurrency 为 None 时惰性读取 settings（测试可逃离全局配置）。
@@ -93,13 +92,11 @@ async def scan_open_hosts(
                 pass
             return host
 
-    hosts = [str(ip) for ip in network.hosts()]
     started = time.perf_counter()
     results = await asyncio.gather(*(probe(host) for host in hosts))
     open_hosts = [host for host in results if host is not None]
     logger.info(
         "scan_completed",
-        cidr=str(network),
         port=port,
         probed=len(hosts),
         found=len(open_hosts),

@@ -39,6 +39,11 @@ async def _accept_and_close(reader: asyncio.StreamReader, writer: asyncio.Stream
     writer.close()
 
 
+def _hosts(cidr: str) -> list[str]:
+    """CIDR 展开为 hosts 列表（数值升序，与接口层 behavior 一致）。"""
+    return [str(ip) for ip in ip_network(cidr).hosts()]
+
+
 @pytest.mark.asyncio
 async def test_probe_reachable():
     """真实监听端口可达时，probe_tcp 正常返回 None。"""
@@ -101,7 +106,7 @@ class TestScanOpenHosts:
 
         with patch("asyncio.open_connection", new=fake_open_connection):
             result = await scan_open_hosts(
-                ip_network("192.168.8.0/24"), port=5555, timeout=1.0, concurrency=254
+                _hosts("192.168.8.0/24"), port=5555, timeout=1.0, concurrency=254
             )
 
         assert result == ["192.168.8.2", "192.168.8.10", "192.168.8.200"]
@@ -125,7 +130,7 @@ class TestScanOpenHosts:
 
         with patch("asyncio.open_connection", new=fake_open_connection):
             result = await scan_open_hosts(
-                ip_network("192.168.8.0/28"), port=5555, timeout=1.0, concurrency=2
+                _hosts("192.168.8.0/28"), port=5555, timeout=1.0, concurrency=2
             )
 
         assert result == []
@@ -146,7 +151,7 @@ class TestScanOpenHosts:
 
         with patch("asyncio.open_connection", new=fake_open_connection):
             result = await scan_open_hosts(
-                ip_network("192.168.8.0/29"), port=5555, timeout=0.05, concurrency=8
+                _hosts("192.168.8.0/29"), port=5555, timeout=0.05, concurrency=8
             )
 
         assert result == ["192.168.8.1"]
@@ -164,7 +169,7 @@ class TestScanOpenHosts:
             "app.infrastructure.adb.reachability.logger"
         ) as mock_logger:
             result = await scan_open_hosts(
-                ip_network("192.168.8.0/24"), port=5555, timeout=1.0, concurrency=254
+                _hosts("192.168.8.0/24"), port=5555, timeout=1.0, concurrency=254
             )
 
         assert result == ["192.168.8.18"]
@@ -212,7 +217,7 @@ class TestScanOpenHosts:
         with patch("asyncio.open_connection", new=fake_open_connection), patch(
             "asyncio.wait_for", new=spy_wait_for
         ):
-            result = await scan_open_hosts(ip_network("192.168.8.0/28"), port=5555)
+            result = await scan_open_hosts(_hosts("192.168.8.0/28"), port=5555)
 
         assert result == []
         assert waits == [0.5] * 14

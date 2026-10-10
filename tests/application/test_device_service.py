@@ -451,6 +451,12 @@ class TestDisconnectTcp:
 # 网段扫描连接测试（方案 36）
 # ---------------------------------------------------------------------------
 
+def _scan_args(cidr: str) -> tuple[str, list[str]]:
+    """CIDR → (label, targets)：label 取归一化网段字符串，targets 数值升序展开。"""
+    network = ip_network(cidr)
+    return str(network), [str(ip) for ip in network.hosts()]
+
+
 class TestScanAndConnect:
     """测试 scan_and_connect 编排（D2）"""
 
@@ -471,9 +477,9 @@ class TestScanAndConnect:
             AdbError("ADB command timed out after 5s"),
         ]
 
-        result = await service.scan_and_connect(ip_network("192.168.8.0/28"))
+        result = await service.scan_and_connect(*_scan_args("192.168.8.0/28"))
 
-        assert result.cidr == "192.168.8.0/28"
+        assert result.label == "192.168.8.0/28"
         assert result.probed == 14
         assert result.open_hosts == hosts
         assert result.truncated is False
@@ -495,7 +501,7 @@ class TestScanAndConnect:
         mock_adb.scan_hosts.return_value = hosts
         mock_adb.get_device_info.side_effect = lambda device_id: _make_device(device_id)
 
-        result = await service.scan_and_connect(ip_network("192.168.8.0/25"))
+        result = await service.scan_and_connect(*_scan_args("192.168.8.0/25"))
 
         assert result.truncated is True
         assert result.open_hosts == hosts
@@ -508,22 +514,22 @@ class TestScanAndConnect:
         """互斥：扫描进行中重复请求抛 ScanBusyError；结束后可再次扫描（finally 复位）。"""
         release = asyncio.Event()
 
-        async def fake_scan(network, port=5555, timeout=None, concurrency=None):
+        async def fake_scan(hosts, port=5555, timeout=None, concurrency=None):
             await release.wait()
             return []
 
         mock_adb.scan_hosts.side_effect = fake_scan
 
-        first = asyncio.create_task(service.scan_and_connect(ip_network("192.168.8.0/29")))
+        first = asyncio.create_task(service.scan_and_connect(*_scan_args("192.168.8.0/29")))
         await asyncio.sleep(0)  # 首个任务进入并置位 _scan_inflight
         with pytest.raises(ScanBusyError):
-            await service.scan_and_connect(ip_network("192.168.8.0/29"))
+            await service.scan_and_connect(*_scan_args("192.168.8.0/29"))
 
         release.set()
         result = await first
         assert result.open_hosts == []
 
-        result2 = await service.scan_and_connect(ip_network("192.168.8.0/29"))
+        result2 = await service.scan_and_connect(*_scan_args("192.168.8.0/29"))
         assert result2.open_hosts == []
 
     @pytest.mark.asyncio
@@ -531,7 +537,7 @@ class TestScanAndConnect:
         """connect=False：仅探测返回，connect_tcp 零调用、不截断。"""
         mock_adb.scan_hosts.return_value = ["192.168.8.1", "192.168.8.2", "192.168.8.3"]
 
-        result = await service.scan_and_connect(ip_network("192.168.8.0/29"), connect=False)
+        result = await service.scan_and_connect(*_scan_args("192.168.8.0/29"), connect=False)
 
         assert result.open_hosts == ["192.168.8.1", "192.168.8.2", "192.168.8.3"]
         assert result.connect_results == []
@@ -545,7 +551,7 @@ class TestScanAndConnect:
         mock_adb.scan_hosts.return_value = ["192.168.8.1", "192.168.8.2"]
         mock_adb.get_device_info.side_effect = lambda device_id: _make_device(device_id)
 
-        await service.scan_and_connect(ip_network("192.168.8.0/29"))
+        await service.scan_and_connect(*_scan_args("192.168.8.0/29"))
 
         assert mock_adb.connect_tcp.await_count == 2
         for c in mock_adb.connect_tcp.await_args_list:
@@ -557,7 +563,7 @@ class TestScanAndConnect:
         mock_adb.scan_hosts.return_value = ["192.168.8.1", "192.168.8.2"]
         mock_adb.connect_tcp.side_effect = AdbError("boom")
 
-        result = await service.scan_and_connect(ip_network("192.168.8.0/29"))
+        result = await service.scan_and_connect(*_scan_args("192.168.8.0/29"))
 
         assert len(result.connect_results) == 2
         assert all(
@@ -569,8 +575,8 @@ class TestScanAndConnect:
         """/22 上界 1022 台、/32 退化 1 台：probed 与 hosts() 语义一致（终评 M-7/A-5）。"""
         mock_adb.scan_hosts.return_value = []
 
-        r22 = await service.scan_and_connect(ip_network("192.168.8.0/22"), connect=False)
-        r32 = await service.scan_and_connect(ip_network("192.168.8.5/32"), connect=False)
+        r22 = await service.scan_and_connect(*_scan_args("192.168.8.0/22"), connect=False)
+        r32 = await service.scan_and_connect(*_scan_args("192.168.8.5/32"), connect=False)
 
         assert r22.probed == 1022
         assert r32.probed == 1
@@ -581,7 +587,7 @@ class TestScanAndConnect:
         mock_adb.scan_hosts.return_value = ["192.168.8.1"]
         mock_adb.connect_tcp.side_effect = AdbError("x" * 300)
 
-        result = await service.scan_and_connect(ip_network("192.168.8.0/24"))
+        result = await service.scan_and_connect(*_scan_args("192.168.8.0/24"))
 
         attempt = result.connect_results[0]
         assert attempt.reason == "connect_failed"
@@ -613,7 +619,7 @@ class TestScanAndConnect:
         mock_adb.scan_hosts.return_value = ["192.168.8.1"]
         mock_adb.connect_tcp.side_effect = _Boom()
 
-        result = await service.scan_and_connect(ip_network("192.168.8.0/24"))
+        result = await service.scan_and_connect(*_scan_args("192.168.8.0/24"))
 
         assert result.connect_results == []
         assert warnings.count("scan_attempt_dropped") == 1

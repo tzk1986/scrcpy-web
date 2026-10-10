@@ -25,7 +25,6 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 """
 
 import asyncio
-from ipaddress import IPv4Network
 from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
@@ -386,17 +385,17 @@ class AdbCliDriver:
 
     async def scan_hosts(
         self,
-        network: IPv4Network,
+        hosts: list[str],
         port: int = 5555,
         timeout: float | None = None,
         concurrency: int | None = None,
     ) -> list[str]:
         """
-        并发探测网段内 TCP 端口开放的主机（方案 36）。
+        并发探测主机列表中 TCP 端口开放的主机（方案 36）。
 
         返回开放主机 IP 列表（数值序）；探测细节见 reachability.scan_open_hosts。
         """
-        return await scan_open_hosts(network, port=port, timeout=timeout, concurrency=concurrency)
+        return await scan_open_hosts(hosts, port=port, timeout=timeout, concurrency=concurrency)
 
     async def stream_logcat(self, device_id: str) -> AsyncIterator[str]:
         """

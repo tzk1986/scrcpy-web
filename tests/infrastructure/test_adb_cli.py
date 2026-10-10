@@ -351,13 +351,13 @@ class TestScanHosts:
     async def test_scan_hosts_delegates_to_reachability(self):
         """scan_hosts 委托 reachability.scan_open_hosts，参数原样透传。"""
         driver = AdbCliDriver()
-        network = ip_network("192.168.8.0/24")
+        hosts = [str(ip) for ip in ip_network("192.168.8.0/24").hosts()]
         scan_mock = AsyncMock(return_value=["192.168.8.18", "192.168.8.25"])
         with patch('app.infrastructure.adb.cli.scan_open_hosts', new=scan_mock):
-            result = await driver.scan_hosts(network, port=5556, timeout=0.8, concurrency=32)
+            result = await driver.scan_hosts(hosts, port=5556, timeout=0.8, concurrency=32)
 
         assert result == ["192.168.8.18", "192.168.8.25"]
-        scan_mock.assert_awaited_once_with(network, port=5556, timeout=0.8, concurrency=32)
+        scan_mock.assert_awaited_once_with(hosts, port=5556, timeout=0.8, concurrency=32)
 
 
 # ---------------------------------------------------------------------------

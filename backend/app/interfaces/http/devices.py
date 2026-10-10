@@ -22,7 +22,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from ipaddress import IPv4Network, ip_network
+from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -232,34 +232,94 @@ async def scan_devices(
     service: DeviceService = Depends(get_device_service),
 ) -> ScanResult:
     """
-    扫描网段内 TCP 开放主机并批量连接（方案 36）。
+    扫描网段/区间内 TCP 开放主机并批量连接（方案 36 + 增补 D11）。
 
     参数：
-        cidr: 目标网段（查询参数，IPv4，前缀 /22-/32；host 位非零自动归一化）。
+        cidr: 扫描目标（查询参数），三形态（详见 _parse_scan_targets）：
+            单 IP「192.168.8.18」/ CIDR「192.168.8.0/24」（/22-/32，host 位
+            非零自动归一化）/ 起止区间「192.168.8.10-100」（简写）或
+            「192.168.8.10-192.168.9.20」（完整，含两端，≤1022 台）。
         connect: 是否对开放主机执行 adb 连接（查询参数，默认 true）。
         port: ADB 端口（查询参数，默认 5555）。
 
     返回：
         ScanResult：开放清单全量（数值序）+ 实际尝试的连接结果（≤64 台）
-        + truncated 截断标记。
+        + truncated 截断标记；label 为目标原样输入。
 
     异常：
-        InvalidScanRangeError: CIDR 非法/超上限（422 INVALID_SCAN_RANGE）。
+        InvalidScanRangeError: 目标非法/超上限（422 INVALID_SCAN_RANGE）。
         ScanBusyError: 已有扫描进行中（409 SCAN_BUSY）。
     """
-    network = _parse_scan_cidr(cidr)
-    return await service.scan_and_connect(network, connect=connect, port=port)
+    label, targets = _parse_scan_targets(cidr)
+    return await service.scan_and_connect(label, targets, connect=connect, port=port)
 
 
-def _parse_scan_cidr(cidr: str) -> IPv4Network:
-    """解析并校验扫描网段：IPv4 且前缀 /22-/32，否则 InvalidScanRangeError。"""
+_MAX_SCAN_TARGETS = 1022  # 与 CIDR /22 的 hosts() 数量对齐（方案 36 增补 D11）
+
+
+def _parse_scan_targets(raw: str) -> tuple[str, list[str]]:
+    """
+    解析扫描目标为 (label, targets)（方案 36 增补 D11）。
+
+    label 取原输入（strip 后）；targets 为数值升序的 IPv4 主机列表。
+
+    三形态：
+        - CIDR：「a.b.c.d/nn」，/22-/32，host 位非零归一化后展开 hosts()；
+        - 单 IP：「a.b.c.d」，仅该主机；
+        - 区间：「ip-末段数字」（同段简写，前缀取自左端）或「ip1-ip2」
+          （完整，可跨段）；两端合法 IPv4、end ≥ start、不含 `/`、
+          总数 ≤ 1022；简写右端须 0-255 且无前导零（防 int("010") 静默通过）。
+
+    非法/超上限 → InvalidScanRangeError。
+    """
+    label = raw.strip()
+    if not label:
+        raise InvalidScanRangeError(raw)
+    if "/" in label:
+        if "-" in label:
+            raise InvalidScanRangeError(raw)
+        try:
+            network = ip_network(label, strict=False)
+        except ValueError:
+            raise InvalidScanRangeError(raw)
+        if not isinstance(network, IPv4Network) or not 22 <= network.prefixlen <= 32:
+            raise InvalidScanRangeError(raw)
+        return label, [str(ip) for ip in network.hosts()]
+    if "-" in label:
+        left, _, right = label.partition("-")
+        left, right = left.strip(), right.strip()
+        try:
+            start = ip_address(left)
+        except ValueError:
+            raise InvalidScanRangeError(raw)
+        if not isinstance(start, IPv4Address):
+            raise InvalidScanRangeError(raw)
+        if "." not in right:
+            # 简写：右端为末段数字，前缀取自左端同段
+            if not (right.isdigit() and 0 <= int(right) <= 255
+                    and len(right) == len(str(int(right)))):
+                raise InvalidScanRangeError(raw)
+            end = ip_address(f"{left.rsplit('.', 1)[0]}.{right}")
+        else:
+            try:
+                end = ip_address(right)
+            except ValueError:
+                raise InvalidScanRangeError(raw)
+            if not isinstance(end, IPv4Address):
+                raise InvalidScanRangeError(raw)
+        if int(end) < int(start):
+            raise InvalidScanRangeError(raw)
+        count = int(end) - int(start) + 1
+        if count > _MAX_SCAN_TARGETS:
+            raise InvalidScanRangeError(raw)
+        return label, [str(ip_address(int(start) + i)) for i in range(count)]
     try:
-        network = ip_network(cidr, strict=False)
+        ip = ip_address(label)
     except ValueError:
-        raise InvalidScanRangeError(cidr)
-    if not isinstance(network, IPv4Network) or not 22 <= network.prefixlen <= 32:
-        raise InvalidScanRangeError(cidr)
-    return network
+        raise InvalidScanRangeError(raw)
+    if not isinstance(ip, IPv4Address):
+        raise InvalidScanRangeError(raw)
+    return label, [str(ip)]
 
 
 @router.post("/connect")

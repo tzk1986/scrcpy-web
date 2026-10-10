@@ -26,13 +26,13 @@ HTTP 请求会永久挂起。因此改为：
 import asyncio
 import gzip
 import json
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 from typing import Any
 
 import pytest
 
 from app.application.device_service import ConnectAttempt, ScanResult
-from app.core.exceptions import AdbError, ScanBusyError
+from app.core.exceptions import AdbError, InvalidScanRangeError, ScanBusyError
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
 from app.interfaces.http import devices as devices_module
@@ -56,6 +56,17 @@ def make_device(device_id: str = DEV, **overrides: Any) -> DeviceInfo:
     return DeviceInfo(**fields)
 
 
+def _hosts(cidr: str) -> list[str]:
+    """CIDR 展开为 hosts 列表（数值升序，与接口层行为一致）。"""
+    return [str(ip) for ip in ip_network(cidr).hosts()]
+
+
+def _ip_range(start: str, end: str) -> list[str]:
+    """起止 IP（含两端）展开为数值升序列表。"""
+    lo, hi = int(ip_address(start)), int(ip_address(end))
+    return [str(ip_address(i)) for i in range(lo, hi + 1)]
+
+
 class FakeDeviceService:
     """
     替身。
@@ -75,7 +86,7 @@ class FakeDeviceService:
         self.raw_error: Exception | None = None
         self.new_device_id = "192.168.1.5:5555"
         self.scan_result = ScanResult(
-            cidr="192.168.8.0/24",
+            label="192.168.8.0/24",
             probed=254,
             open_hosts=["192.168.8.18"],
             connect_results=[
@@ -118,9 +129,9 @@ class FakeDeviceService:
         return self.new_device_id
 
     async def scan_and_connect(
-        self, network: Any, connect: bool = True, port: int = 5555
+        self, label: str, targets: list[str], connect: bool = True, port: int = 5555
     ) -> ScanResult:
-        self.calls.append(("scan_and_connect", network, connect, port))
+        self.calls.append(("scan_and_connect", label, targets, connect, port))
         if self.scan_error is not None:
             raise self.scan_error
         return self.scan_result
@@ -344,14 +355,14 @@ def test_disconnect_device_without_port(fake: FakeDeviceService) -> None:
 # ---------------------------------------------------------------------------
 
 def test_scan_ok_serializes_scan_result(fake: FakeDeviceService) -> None:
-    """/24 合法 + 默认参数：ScanResult 整体序列化为 JSON，network 已解析。"""
+    """/24 合法 + 默认参数：ScanResult 整体序列化为 JSON，targets 已展开。"""
     client = make_client()
     with override(get_device_service, fake):
         response = client.post("/api/devices/scan", params={"cidr": "192.168.8.0/24"})
 
     assert response.status_code == 200
     assert response.json() == {
-        "cidr": "192.168.8.0/24",
+        "label": "192.168.8.0/24",
         "probed": 254,
         "open_hosts": ["192.168.8.18"],
         "connect_results": [
@@ -365,7 +376,9 @@ def test_scan_ok_serializes_scan_result(fake: FakeDeviceService) -> None:
         ],
         "truncated": False,
     }
-    assert fake.calls == [("scan_and_connect", ip_network("192.168.8.0/24"), True, 5555)]
+    assert fake.calls == [
+        ("scan_and_connect", "192.168.8.0/24", _hosts("192.168.8.0/24"), True, 5555)
+    ]
 
 
 def test_scan_passes_query_params(fake: FakeDeviceService) -> None:
@@ -378,17 +391,53 @@ def test_scan_passes_query_params(fake: FakeDeviceService) -> None:
         )
 
     assert response.status_code == 200
-    assert fake.calls == [("scan_and_connect", ip_network("192.168.8.0/28"), False, 5556)]
+    assert fake.calls == [
+        ("scan_and_connect", "192.168.8.0/28", _hosts("192.168.8.0/28"), False, 5556)
+    ]
 
 
 def test_scan_normalizes_host_bits(fake: FakeDeviceService) -> None:
-    """strict=False：host 位非零的 CIDR 归一化为网络地址后透传。"""
+    """strict=False：host 位非零归一化后展开 targets；label 保留原输入（D11）。"""
     client = make_client()
     with override(get_device_service, fake):
         response = client.post("/api/devices/scan", params={"cidr": "192.168.8.5/24"})
 
     assert response.status_code == 200
-    assert fake.calls == [("scan_and_connect", ip_network("192.168.8.0/24"), True, 5555)]
+    assert fake.calls == [
+        ("scan_and_connect", "192.168.8.5/24", _hosts("192.168.8.0/24"), True, 5555)
+    ]
+
+
+def test_scan_range_param_expands_targets(fake: FakeDeviceService) -> None:
+    """区间形态：label 原样透传，targets 按起止展开（数值升序，D11）。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/scan", params={"cidr": "192.168.8.10-20", "connect": "false"}
+        )
+
+    assert response.status_code == 200
+    assert fake.calls == [
+        (
+            "scan_and_connect",
+            "192.168.8.10-20",
+            _ip_range("192.168.8.10", "192.168.8.20"),
+            False,
+            5555,
+        )
+    ]
+
+
+def test_scan_single_ip_param(fake: FakeDeviceService) -> None:
+    """单 IP 形态：仅探测该主机（targets 单元素，D11）。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/scan", params={"cidr": "192.168.8.18"})
+
+    assert response.status_code == 200
+    assert fake.calls == [
+        ("scan_and_connect", "192.168.8.18", ["192.168.8.18"], True, 5555)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -399,10 +448,15 @@ def test_scan_normalizes_host_bits(fake: FakeDeviceService) -> None:
         "192.168.8.0/8",    # 远超上限
         "::/64",            # IPv6 不支持
         "192.168.8.0/33",   # 前缀非法
+        "192.168.8.100-10",           # 区间倒序（D11）
+        "192.168.8.10-256",           # 简写末段超 255（D11）
+        "192.168.8.10-010",           # 简写右端前导零（D11）
+        "192.168.8.0/24-192.168.9.1", # / 与 - 混写（D11）
+        "192.168.8.1-192.168.12.16",  # 区间总数 1040 台超上限（D11）
     ],
 )
 def test_scan_invalid_cidr_422(fake: FakeDeviceService, cidr: str) -> None:
-    """非法/超上限 CIDR → 422 INVALID_SCAN_RANGE，不触达 service。"""
+    """非法/超上限目标（CIDR 或区间形态）→ 422 INVALID_SCAN_RANGE，不触达 service。"""
     client = make_client()
     with override(get_device_service, fake):
         response = client.post("/api/devices/scan", params={"cidr": cidr})
@@ -436,6 +490,77 @@ def test_scan_busy_409(fake: FakeDeviceService) -> None:
     body = response.json()
     assert body["error"]["code"] == "SCAN_BUSY"
     assert body["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_scan_targets 三形态（方案 36 增补 D11）
+# ---------------------------------------------------------------------------
+
+def test_parse_targets_cidr_keeps_label_and_expands() -> None:
+    """CIDR 形态：label 取原输入，targets 按归一化网段展开为数值升序列表。"""
+    label, targets = devices_module._parse_scan_targets("192.168.8.0/24")
+    assert label == "192.168.8.0/24"
+    assert targets == _hosts("192.168.8.0/24")
+    assert len(targets) == 254
+
+
+def test_parse_targets_cidr_host_bits_labels_original() -> None:
+    """host 位非零：展开用归一化网段，label 保留原输入（strip 后）。"""
+    label, targets = devices_module._parse_scan_targets(" 192.168.8.5/24 ")
+    assert label == "192.168.8.5/24"
+    assert targets == _hosts("192.168.8.0/24")
+
+
+def test_parse_targets_single_ip() -> None:
+    """单 IP：targets 单元素。"""
+    label, targets = devices_module._parse_scan_targets("192.168.8.18")
+    assert label == "192.168.8.18"
+    assert targets == ["192.168.8.18"]
+
+
+def test_parse_targets_short_range() -> None:
+    """简写区间：右端为末段数字，前缀取自左端同段。"""
+    label, targets = devices_module._parse_scan_targets("192.168.8.10-100")
+    assert label == "192.168.8.10-100"
+    assert targets == _ip_range("192.168.8.10", "192.168.8.100")
+    assert len(targets) == 91
+
+
+def test_parse_targets_full_range_crosses_subnet() -> None:
+    """完整区间：跨网段也支持，仍数值升序。"""
+    label, targets = devices_module._parse_scan_targets("192.168.8.250-192.168.9.10")
+    assert label == "192.168.8.250-192.168.9.10"
+    assert targets == _ip_range("192.168.8.250", "192.168.9.10")
+    assert len(targets) == 17
+
+
+def test_parse_targets_single_ip_range_degenerate() -> None:
+    """首尾相同的简写区间：退化为单机探测。"""
+    label, targets = devices_module._parse_scan_targets("192.168.8.18-18")
+    assert targets == ["192.168.8.18"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",                             # 空输入
+        "not-an-ip",                    # 无法解析
+        "192.168.8.100-10",             # 倒序区间
+        "192.168.8.10-256",             # 简写末段超 255
+        "192.168.8.010-100",            # 左端八位组前导零
+        "192.168.8.10-010",             # 简写右端前导零（防 int("010") 静默通过）
+        "192.168.8.10-",                # 右端缺失
+        "192.168.8.1-192.168.12.16",    # 总数 1040 台超上限 1022
+        "192.168.8.0/24-192.168.9.1",   # / 与 - 混写
+        "192.168.8.0/21",               # 前缀超下限
+        "::1-::5",                      # IPv6 区间
+        "192.168.8.18/33",              # 前缀非法
+    ],
+)
+def test_parse_targets_invalid(raw: str) -> None:
+    """非法/超上限输入 → InvalidScanRangeError（D11）。"""
+    with pytest.raises(InvalidScanRangeError):
+        devices_module._parse_scan_targets(raw)
 
 
 # ---------------------------------------------------------------------------
