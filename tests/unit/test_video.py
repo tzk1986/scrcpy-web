@@ -13,7 +13,8 @@
     - 兜底模式：aggregate_aus 聚帧、跨 chunk 悬空前缀 pending 合并、
       config 前 AU 丢弃；
     - 客户端输入：touch 转发编码器、stats 上报（非法值归一为 0.0）、
-      restarting 码率预告与同值去重；
+      restarting 码率预告与同值去重、非法输入帧忽略且输入面不断
+      （方案 37 A4）；
     - 生命周期：流正常结束/抛异常/连接断开时 stop_stream 与 error 消息；
     - _send_config codec 提取边界（3/4 字节起始码、SPS 过短回退默认值）。
 
@@ -568,6 +569,34 @@ def test_input_touch_forwarded_and_restarting_notified(video_client):
         assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
         assert encoder.inputs == [{"action": "touch", "x": 1, "y": 2}]
         assert svc.reported_fps == [(DEV, 25.0)]
+        gate.set()
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
+
+
+def test_invalid_input_frames_ignored_and_input_survives(video_client):
+    """方案 37 A4（Fix 轮 R1）：非法输入帧（裸非法 JSON / 非对象 /
+    action 键型不符）被 parse_video_input 归一为 None 后忽略——输入面不断、
+    不产生任何转发；紧随其后的合法触控帧仍被 _handle_input 正常处理
+    （stats 同步点证明触控帧已在输入任务中走完转发链）。"""
+    gate = threading.Event()
+    encoder = FakeEncoder()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        fps_to_bitrate={25.0: 2_000_000},
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
+        session.send_text("{")                 # 非法 JSON → 忽略
+        session.send_text("[1,2]")             # 非对象 JSON → 忽略
+        session.send_text('{"action": 42}')    # action 键型不符 → 忽略
+        session.send_json({"action": "touch", "x": 1, "y": 2})
+        # stats 是同步点：restarting 到达即证明此前触控帧已被输入任务处理
+        session.send_json({"op": "stats", "fps": 25})
+        assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
+        assert encoder.inputs == [{"action": "touch", "x": 1, "y": 2}]
         gate.set()
     assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 

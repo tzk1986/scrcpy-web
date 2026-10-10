@@ -41,7 +41,6 @@ H.264 流处理：
 """
 
 import asyncio
-import json
 import struct
 from typing import Any
 
@@ -53,32 +52,12 @@ from app.scrcpy.h264_parser import H264Parser, scan_packet_nalus
 from app.scrcpy.au_aggregator import aggregate_aus
 from app.scrcpy.constants import NALU_TYPE_SPS, NALU_TYPE_PPS
 from app.core.logging import get_logger
+from app.interfaces.ws.protocol import parse_video_input
 from app.interfaces.ws.socket_opts import enable_tcp_nodelay
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["video"])
-
-
-def parse_video_input(raw: str | bytes) -> dict[str, Any] | None:
-    """视频输入帧解析（方案 37 A4）：非法 JSON / 非对象 / op、action 键型不符
-    归一为 None（调用侧忽略，输入面不断）。
-
-    与 protocol.parse_ws_message 的差异：视频输入协议存在无 op 的
-    {"action": "touch"/"swipe"/...} 帧（前端 inputController），不能要求
-    op 恒在；仅要求 JSON 对象且 op / action（如存在）为 str。
-    """
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    for key in ("op", "action"):
-        value = data.get(key)
-        if value is not None and not isinstance(value, str):
-            return None
-    return data
 
 
 @router.websocket("/ws/video/{device_id}")
