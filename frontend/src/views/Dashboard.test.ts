@@ -896,6 +896,26 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
+  it('屏幕与分辨率列居中对齐：两列 align=center，缩略图与分辨率文本横向同轴', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA])
+    const wrapper = await mountDashboard()
+    await flushPromises()
+
+    // 无 slot 列与有 slot 列的 align prop 均经 fallthrough attrs 落在根元素
+    const screenCol = wrapper
+      .findAll('.stub-column')
+      .find((c) => c.find('.thumb-cell').exists())
+    const resCol = wrapper
+      .findAll('.stub-column')
+      .find((c) => c.text().includes('1080x2400'))
+    expect(screenCol).toBeDefined()
+    expect(resCol).toBeDefined()
+    expect(screenCol!.attributes('align')).toBe('center')
+    expect(resCol!.attributes('align')).toBe('center')
+
+    wrapper.unmount()
+  })
+
   // ==================== 方案 36 增补 D11：输入说明 ====================
 
   it('扫描输入框 placeholder 更新，帮助 popover 说明三种输入形态（D11）', async () => {

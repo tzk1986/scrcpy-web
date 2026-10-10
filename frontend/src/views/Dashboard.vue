@@ -175,7 +175,7 @@
            经 rowSelectable 取 id 后与行内「断开」按钮同一判定口径 -->
       <el-table-column type="selection" :selectable="rowSelectable" width="40" />
       <el-table-column prop="id" label="设备ID" min-width="180" />
-      <el-table-column label="屏幕" width="120">
+      <el-table-column label="屏幕" width="120" align="center">
         <template #default="{ row }">
           <div
             class="thumb-cell"
@@ -224,7 +224,7 @@
       </el-table-column>
       <el-table-column prop="model" label="型号" min-width="120" />
       <el-table-column prop="os_version" label="系统版本" min-width="100" />
-      <el-table-column label="分辨率" min-width="100">
+      <el-table-column label="分辨率" min-width="100" align="center">
         <template #default="{ row }">
           {{ row.resolution[0] }}x{{ row.resolution[1] }}
         </template>
