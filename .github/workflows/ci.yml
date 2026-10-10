@@ -30,6 +30,9 @@ jobs:
       - name: Mypy (strict)
         run: python -m mypy backend/app
       - name: Pytest (含覆盖率门禁 80%)
+        # timeout-minutes 兜底 flaky hang（2026-10-09 3.10 偶发静默挂起 80 分钟，重跑即绿）：
+        # 正常耗时 <2 分钟；超时即中止，防止挂起烧满 6 小时 job 上限
+        timeout-minutes: 10
         run: PYTHONPATH=backend:. python -m pytest tests/ --ignore=tests/e2e -q --cov=app --cov-fail-under=80
 
   frontend:
