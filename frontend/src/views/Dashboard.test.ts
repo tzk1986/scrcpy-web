@@ -13,7 +13,7 @@
  * 供 handleConnect 的表单校验调用。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, shallowMount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h as vueH, inject, nextTick, provide } from 'vue'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -191,6 +191,12 @@ function scanFixture(overrides: Record<string, unknown> = {}) {
 }
 
 let pinia: Pinia
+
+/** 勾选原生 checkbox 输入（setChecked 为测试库私有 API，改用手动 checked + change） */
+async function checkRowCheckbox(input: DOMWrapper<Element>) {
+  ;(input.element as HTMLInputElement).checked = true
+  await input.trigger('change')
+}
 
 async function mountDashboard(): Promise<VueWrapper> {
   const router = createRouter({
@@ -750,6 +756,121 @@ describe('Dashboard', () => {
     await wrapper.findAll('button').find((b) => b.text() === '清除记录')!.trigger('click')
     expect(wrapper.find('.scan-record-card').exists()).toBe(false)
     expect(localStorage.getItem('oscrpy-scan-record')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('记录行勾选出现批量工具条；「连接所选」逐台连接并汇总成功（第三批）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30', '192.168.8.31'], connect_results: [] })
+    )
+    mockApi.connectDevice.mockResolvedValue({ success: true, device_id: 'x' })
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    // 无勾选无工具条
+    expect(wrapper.find('.record-batch-bar').exists()).toBe(false)
+
+    const checkboxes = wrapper.findAll('.scan-record-row input[type="checkbox"]')
+    expect(checkboxes).toHaveLength(2)
+    await checkRowCheckbox(checkboxes[0])
+    await checkRowCheckbox(checkboxes[1])
+
+    const bar = wrapper.find('.record-batch-bar')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('已选 2 台')
+
+    await bar.findAll('button').find((b) => b.text() === '连接所选')!.trigger('click')
+    await flushPromises()
+
+    expect(mockApi.connectDevice).toHaveBeenCalledTimes(2)
+    expect(mockApi.connectDevice).toHaveBeenCalledWith('192.168.8.30', 5555)
+    expect(mockApi.connectDevice).toHaveBeenCalledWith('192.168.8.31', 5555)
+    expect(h.ElMessage.success).toHaveBeenCalledWith('已连接 2 台设备')
+
+    wrapper.unmount()
+  })
+
+  it('批量连接部分失败：失败台及时报错、结束 warning 汇总「成功 X 失败 Y」（第三批）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30', '192.168.8.31'], connect_results: [] })
+    )
+    mockApi.connectDevice
+      .mockResolvedValueOnce({ success: true, device_id: '192.168.8.30:5555' })
+      .mockRejectedValueOnce(new Error('无响应'))
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    const checkboxes = wrapper.findAll('.scan-record-row input[type="checkbox"]')
+    await checkRowCheckbox(checkboxes[0])
+    await checkRowCheckbox(checkboxes[1])
+
+    await wrapper
+      .find('.record-batch-bar')
+      .findAll('button')
+      .find((b) => b.text() === '连接所选')!
+      .trigger('click')
+    await flushPromises()
+
+    // 失败台即时报错 + 结束汇总（有成功有失败 → warning）
+    expect(h.ElMessage.error).toHaveBeenCalled()
+    expect(h.ElMessage.warning).toHaveBeenCalledWith('成功 1 台，失败 1 台')
+    expect(h.ElMessage.success).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('批量工具条「取消选择」清空勾选不发起连接（第三批）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30'], connect_results: [] })
+    )
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    await checkRowCheckbox(wrapper.find('.scan-record-row input[type="checkbox"]'))
+    const bar = wrapper.find('.record-batch-bar')
+    expect(bar.exists()).toBe(true)
+
+    await bar.findAll('button').find((b) => b.text() === '取消选择')!.trigger('click')
+    expect(wrapper.find('.record-batch-bar').exists()).toBe(false)
+    expect(mockApi.connectDevice).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('记录行单台连接失败：即时 error 提示、行转「连接失败」可重试（第三批）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30'], connect_results: [] })
+    )
+    mockApi.connectDevice.mockRejectedValue(new Error('无响应'))
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    const row = wrapper.find('.scan-record-row')
+    expect(row.find('.stub-tag').text()).toBe('未连接')
+
+    await row.findAll('button').find((b) => b.text() === '连接')!.trigger('click')
+    await flushPromises()
+
+    expect(h.ElMessage.error).toHaveBeenCalledWith('连接失败: 无响应')
+    expect(row.find('.stub-tag').text()).toBe('连接失败')
+    expect(row.findAll('button').find((b) => b.text() === '重试')).toBeDefined()
 
     wrapper.unmount()
   })

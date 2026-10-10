@@ -97,6 +97,10 @@
       </div>
       <ul class="scan-record-hosts">
         <li v-for="entry in recordHosts" :key="entry.ip" class="scan-record-row">
+          <el-checkbox
+            :model-value="recordSelected.has(entry.ip)"
+            @update:model-value="toggleRecordSelect(entry.ip, $event)"
+          />
           <span class="scan-host-ip">{{ entry.ip }}</span>
           <el-tag
             v-if="hostState(entry.ip) === 'failed'"
@@ -110,12 +114,25 @@
           <el-button
             size="small"
             :loading="hostConnectingIp === entry.ip"
+            :disabled="batchConnectingIps"
             @click="connectHost(entry.ip)"
           >
             {{ hostState(entry.ip) === 'failed' ? '重试' : '连接' }}
           </el-button>
         </li>
       </ul>
+      <div v-if="recordSelected.size > 0" class="record-batch-bar">
+        <span class="batch-count">已选 {{ recordSelected.size }} 台</span>
+        <el-button
+          type="primary"
+          size="small"
+          :loading="batchConnectingIps"
+          @click="batchConnectHosts"
+        >
+          连接所选
+        </el-button>
+        <el-button size="small" @click="recordSelected = new Set()">取消选择</el-button>
+      </div>
     </div>
 
     <!-- 连接提示 -->
@@ -339,6 +356,10 @@ interface ScanRecordData {
 }
 const SCAN_RECORD_KEY = 'oscrpy-scan-record'
 const scanRecord = ref<ScanRecordData | null>(null)
+const recordSelected = ref<Set<string>>(new Set())
+const batchConnectingIps = ref(false)
+// 手动连接失败的 ip → 原因（行转「连接失败」态，重试成功即清除）
+const hostFailedIps = ref<Map<string, string>>(new Map())
 
 // ===== 设备多选与批量断开（方案 36 增补 D10） =====
 const tableRef = ref()
@@ -415,6 +436,7 @@ async function handleScan() {
   scanning.value = true
   scanResult.value = null
   hostConnectedIps.value = new Set() // 新一次扫描清空上次手动连接集合（D9）
+  hostFailedIps.value = new Map() // 第三批：手动失败态随新扫描重置
   scanPort.value = scanForm.port // D9：端口显式快照，结果条目连接用快照值
   try {
     const result = await store.scanSubnet(cidr, !scanForm.scanOnly, scanForm.port)
@@ -434,12 +456,15 @@ function hostState(ip: string): HostState {
   if (attempt?.ok) return 'connected'
   if (hostConnectedIps.value.has(ip)) return 'connected'
   if (store.devices.some((d) => d.id === `${ip}:${scanPort.value}`)) return 'connected'
+  if (hostFailedIps.value.has(ip)) return 'failed'
   if (attempt) return 'failed'
   return 'open'
 }
 
-/** D9：失败条目悬停提示（后端 message 摘要；缺省回退固定文案） */
+/** 失败条目悬停提示（优先手动失败原因；其次后端 message；缺省回退固定文案） */
 function hostFailureMessage(ip: string): string {
+  const manual = hostFailedIps.value.get(ip)
+  if (manual) return manual
   const attempt = scanResult.value?.connect_results.find((a) => a.ip === ip)
   return attempt?.message || '连接失败'
 }
@@ -450,13 +475,62 @@ async function connectHost(ip: string) {
   try {
     await store.connectDevice(ip, scanPort.value)
     hostConnectedIps.value = new Set([...hostConnectedIps.value, ip])
+    const nextFailed = new Map(hostFailedIps.value)
+    nextFailed.delete(ip)
+    hostFailedIps.value = nextFailed
     ElMessage.success(`已连接 ${ip}:${scanPort.value}`)
     persistScanRecord()
   } catch (e) {
-    ElMessage.error(`连接失败: ${extractApiError(e, '未知错误')}`)
+    const msg = extractApiError(e, '未知错误')
+    ElMessage.error(`连接失败: ${msg}`)
+    const nextFailed = new Map(hostFailedIps.value)
+    nextFailed.set(ip, msg)
+    hostFailedIps.value = nextFailed
   } finally {
     hostConnectingIp.value = null
   }
+}
+
+/** 第三批：行勾选开关（Set 整体替换保证响应性） */
+function toggleRecordSelect(ip: string, checked: boolean) {
+  const next = new Set(recordSelected.value)
+  if (checked) next.add(ip)
+  else next.delete(ip)
+  recordSelected.value = next
+}
+
+/** 第三批：批量连接所选（顺序逐台；失败台即时报错；结束汇总一次） */
+async function batchConnectHosts() {
+  const targets = recordHosts.value.filter(
+    (h) => recordSelected.value.has(h.ip) && hostState(h.ip) !== 'connected'
+  )
+  if (targets.length === 0) return
+  batchConnectingIps.value = true
+  let okCount = 0
+  let failedCount = 0
+  for (const h of targets) {
+    try {
+      await store.connectDevice(h.ip, scanPort.value)
+      hostConnectedIps.value = new Set([...hostConnectedIps.value, h.ip])
+      const nextFailed = new Map(hostFailedIps.value)
+      nextFailed.delete(h.ip)
+      hostFailedIps.value = nextFailed
+      okCount++
+    } catch (e) {
+      const msg = extractApiError(e, '未知错误')
+      failedCount++
+      const nextFailed = new Map(hostFailedIps.value)
+      nextFailed.set(h.ip, msg)
+      hostFailedIps.value = nextFailed
+      ElMessage.error(`连接失败 ${h.ip}: ${msg}`)
+    }
+  }
+  recordSelected.value = new Set()
+  if (failedCount === 0) ElMessage.success(`已连接 ${okCount} 台设备`)
+  else if (okCount > 0) ElMessage.warning(`成功 ${okCount} 台，失败 ${failedCount} 台`)
+  else ElMessage.error(`连接失败 ${failedCount} 台`)
+  if (okCount > 0) persistScanRecord()
+  batchConnectingIps.value = false
 }
 
 /** 第三批：待连接清单（记录中剔除已连接主机；卡片为空时整体隐藏） */
@@ -735,6 +809,21 @@ async function handleBatchDisconnect() {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.record-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #ecf5ff;
+  border: 1px solid #d9ecff;
+  border-radius: 4px;
+}
+
+.record-batch-bar .batch-count {
+  color: #409eff;
 }
 
 /* 方案 36 增补 D10：批量断开工具条 */
