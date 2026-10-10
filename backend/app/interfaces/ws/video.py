@@ -41,6 +41,7 @@ H.264 流处理：
 """
 
 import asyncio
+import json
 import struct
 from typing import Any
 
@@ -57,6 +58,27 @@ from app.interfaces.ws.socket_opts import enable_tcp_nodelay
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["video"])
+
+
+def parse_video_input(raw: str | bytes) -> dict[str, Any] | None:
+    """视频输入帧解析（方案 37 A4）：非法 JSON / 非对象 / op、action 键型不符
+    归一为 None（调用侧忽略，输入面不断）。
+
+    与 protocol.parse_ws_message 的差异：视频输入协议存在无 op 的
+    {"action": "touch"/"swipe"/...} 帧（前端 inputController），不能要求
+    op 恒在；仅要求 JSON 对象且 op / action（如存在）为 str。
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("op", "action"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, str):
+            return None
+    return data
 
 
 @router.websocket("/ws/video/{device_id}")
@@ -112,7 +134,9 @@ async def video_stream(
         try:
             last_notified = None
             while True:
-                data = await websocket.receive_json()
+                data = parse_video_input(await websocket.receive_text())
+                if data is None:
+                    continue  # 非法输入帧忽略，输入面不断
                 await _handle_input(device_id, data, stream_service)
                 pend = stream_service.peek_pending_bitrate(device_id)
                 if pend is not None and pend != last_notified:
@@ -268,7 +292,7 @@ async def video_stream(
     except Exception as e:
         logger.error("video_stream_error", device=device_id, error=str(e))
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.send_json({"type": "error", "message": "internal error"})
         except Exception:
             pass
     finally:

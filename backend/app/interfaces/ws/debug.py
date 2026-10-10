@@ -49,10 +49,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.application.debug_service import DebugService
 from app.core.logging import get_logger
+from app.interfaces.ws.protocol import parse_ws_message
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["debug"])
+
+_BAD_MESSAGE = {"type": "error", "code": "BAD_MESSAGE", "message": "invalid message"}
 
 
 async def _safe_send_json(websocket: WebSocket, payload: dict[str, Any]) -> None:
@@ -61,6 +64,10 @@ async def _safe_send_json(websocket: WebSocket, payload: dict[str, Any]) -> None
         await websocket.send_json(payload)
     except Exception:
         pass
+
+
+async def _send_bad_message(websocket: WebSocket) -> None:
+    await _safe_send_json(websocket, dict(_BAD_MESSAGE))
 
 
 async def debug_stream(websocket: WebSocket, session_id: str, debug_service: DebugService) -> None:
@@ -81,16 +88,24 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
 
     try:
         while True:
-            data = await websocket.receive_json()
+            data = parse_ws_message(await websocket.receive_text())
+            if data is None:
+                await _send_bad_message(websocket)
+                continue
             op = data.get("op")
 
             if op == "subscribe":
                 # 订阅实时日志推送；带 from_seq 时先补发断线期间的日志（断线续传）
                 from_seq = data.get("from_seq")
+                if from_seq is not None and not (
+                    isinstance(from_seq, int) and not isinstance(from_seq, bool)
+                ):
+                    await _send_bad_message(websocket)
+                    continue
                 if from_seq is not None:
                     await debug_service.subscribe(session_id, websocket)
                     logs, missing = await debug_service.get_logs_since(
-                        session_id, int(from_seq))
+                        session_id, from_seq)
                     await websocket.send_json({
                         "type": "log_batch", "logs": logs, "missing": missing})
                 else:
@@ -112,6 +127,13 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                 level = data.get("level")
                 tag = data.get("tag")
                 paused = data.get("paused", False)
+                if (
+                    (level is not None and not isinstance(level, str))
+                    or (tag is not None and not isinstance(tag, str))
+                    or not isinstance(paused, bool)
+                ):
+                    await _send_bad_message(websocket)
+                    continue
                 await debug_service.set_subscriber_filter(session_id, websocket, level, tag, paused)
                 await websocket.send_json({
                     "type": "filter_applied",
@@ -123,7 +145,10 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
             elif op == "exec":
                 # 流式执行 shell 命令
                 # aclosing：客户端中断时立即关闭生成器，释放会话锁并落盘历史
-                cmd = data.get("command", "")
+                cmd = data.get("command")
+                if not isinstance(cmd, str):
+                    await _send_bad_message(websocket)
+                    continue
                 try:
                     async with aclosing(
                         debug_service._exec_shell_stream_raw(session_id, cmd)
@@ -145,9 +170,10 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                     # 客户端中途断开：不是命令执行错误，交由外层 finally 清理
                     raise
                 except Exception as e:
+                    logger.error("exec_failed", session=session_id, error=str(e))
                     await _safe_send_json(websocket, {
                         "type": "shell_output",
-                        "output": str(e),
+                        "output": "internal error",
                         "success": False,
                         "done": True,
                     })
@@ -166,18 +192,19 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                     await shell.send_input(input_data)
                     # 不需要读取输出 — 后台读取器会自动转发
                 except Exception as e:
-                    await websocket.send_json({
+                    logger.error("input_failed", session=session_id, error=str(e))
+                    await _safe_send_json(websocket, {
                         "type": "error",
-                        "message": f"Failed to send input: {e}"
+                        "message": "failed to send input",
                     })
 
             elif op == "resize":
                 # 终端 resize：cols/rows 必须为正整数（pywinpty set_size 约束）
-                cols = data.get("cols")
-                rows = data.get("rows")
+                cols_raw = data.get("cols")
+                rows_raw = data.get("rows")
                 valid = all(
                     isinstance(v, int) and not isinstance(v, bool) and v > 0
-                    for v in (cols, rows)
+                    for v in (cols_raw, rows_raw)
                 )
                 if not valid:
                     await _safe_send_json(websocket, {
@@ -185,12 +212,16 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                         "message": "resize requires positive integer cols/rows",
                     })
                     continue
+                # valid 已保证两者为 int（排除 bool）；显式收窄供类型检查
+                cols = cols_raw if isinstance(cols_raw, int) else 0
+                rows = rows_raw if isinstance(rows_raw, int) else 0
                 try:
                     await debug_service.resize_shell(session_id, cols, rows)
                 except Exception as e:
+                    logger.error("resize_failed", session=session_id, error=str(e))
                     await _safe_send_json(websocket, {
                         "type": "error",
-                        "message": f"Failed to resize shell: {e}",
+                        "message": "failed to resize shell",
                     })
 
             elif op == "unsubscribe":

@@ -81,6 +81,6 @@ async def stream_metrics(
     except Exception as e:
         logger.error("performance_ws_error", device=device_id, error=str(e))
         try:
-            await websocket.close(code=1011, reason=str(e))
+            await websocket.close(code=1011, reason="internal error")
         except Exception:
             pass

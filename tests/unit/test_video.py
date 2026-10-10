@@ -234,9 +234,10 @@ class FakeWS:
     async def accept(self) -> None:
         self.accepted = True
 
-    async def receive_json(self) -> dict[str, Any]:
+    async def receive_text(self) -> str:
+        # 方案 37 A4：handler 改用 receive_text + 帧解析归一（不再 receive_json）
         if self._incoming:
-            return self._incoming.pop(0)
+            return json.dumps(self._incoming.pop(0))
         if self._disconnect_when_empty:
             # 置位后同步抛给 handle_input（中间无 await），供测试确定性判停
             self.disconnect_delivered = True
@@ -734,7 +735,9 @@ def test_stream_error_notifies_client_and_stops_stream(video_client):
         assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
         error = recv_json(session)
         assert error["type"] == "error"
-        assert "编码器崩溃" in error["message"]
+        # 方案 37 A4：错误文案脱敏——内部异常文本不外泄，通用文案回执
+        assert error["message"] == "internal error"
+        assert "编码器崩溃" not in error["message"]
     assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
@@ -831,7 +834,8 @@ async def test_error_notify_send_failure_is_swallowed():
     )
     await video_stream(ws, DEV, svc)
 
-    assert ws.json_attempts[-1] == {"type": "error", "message": "boom"}
+    # 方案 37 A4：错误文案脱敏，内部异常文本（boom）不外泄
+    assert ws.json_attempts[-1] == {"type": "error", "message": "internal error"}
     assert "error" not in [m["type"] for m in ws.sent_json]
     assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
 

@@ -40,6 +40,7 @@ class FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[dict] = []
         self.accepted = False
+        self.closed = None
 
     async def accept(self) -> None:
         self.accepted = True
@@ -48,7 +49,7 @@ class FakeWebSocket:
         self.sent.append(payload)
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
-        pass
+        self.closed = (code, reason)
 
 
 async def test_ws_message_includes_alerts_key():
@@ -83,3 +84,16 @@ async def test_ws_message_alerts_empty_without_alerts():
     await stream_metrics(ws, "dev-1", service=svc)
 
     assert ws.sent[0]["alerts"] == []
+
+
+async def test_ws_error_close_reason_sanitized():
+    """推流异常：关闭原因用通用文案，内部异常文本不外泄。"""
+    class BoomService(FakePerfService):
+        async def stream_metrics(self, device_id: str):
+            raise RuntimeError("secret-internal-detail")
+            yield  # pragma: no cover
+
+    ws = FakeWebSocket()
+    await stream_metrics(ws, "dev-1", service=BoomService([]))
+    assert ws.closed is not None and ws.closed[0] == 1011
+    assert "secret-internal-detail" not in ws.closed[1]
