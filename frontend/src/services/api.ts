@@ -6,7 +6,7 @@
  * 使用 axios 作为 HTTP 客户端，baseURL 为 /api（通过 Vite 代理到后端 8765 端口）。
  *
  * API 分组：
- *   - 设备 API：listDevices, getDevice, installApk
+ *   - 设备 API：listDevices, getDevice, installApk, connectDevice, disconnectDevice, scanSubnet
  *   - 调试 API：createDebugSession, getDebugSession, getLogs, execShell, closeDebugSession
  *
  * 使用方式：
@@ -23,6 +23,24 @@ export interface RecordStatus {
   rows: number
   oldest_ts: number | null
   newest_ts: number | null
+}
+
+/** 扫描中单台开放主机的一次连接尝试（方案 36，对应后端 ConnectAttempt）。 */
+export interface ConnectAttempt {
+  ip: string
+  ok: boolean
+  device_id: string | null
+  reason: string | null   // 失败分类：unreachable / connect_failed
+  message: string | null  // 失败摘要（异常短文本）
+}
+
+/** 网段扫描 + 批量连接结果（方案 36，对应后端 ScanResult）。 */
+export interface ScanResult {
+  cidr: string
+  probed: number
+  open_hosts: string[]
+  connect_results: ConnectAttempt[]
+  truncated: boolean
 }
 
 // 创建 axios 实例，配置基础 URL 和超时
@@ -88,6 +106,18 @@ export const api = {
       timeout: 40000, // 大于后端 adb.timeout(30s)，保证结构化错误先返回
     })
     return res.data as { success: boolean }
+  },
+
+  /**
+   * 网段扫描并批量连接（方案 36）。
+   * 对应：POST /api/devices/scan?cidr=...&connect=...&port=...
+   */
+  async scanSubnet(cidr: string, connect = true, port = 5555): Promise<ScanResult> {
+    const res = await client.post('/devices/scan', null, {
+      params: { cidr, connect, port },
+      timeout: 40000, // 后端扫描最坏 ≤30s（短超时+截断保护），保证结构化错误先返回
+    })
+    return res.data as ScanResult
   },
 
   // ==================== 系统 API ====================

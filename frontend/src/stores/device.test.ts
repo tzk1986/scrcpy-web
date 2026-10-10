@@ -8,6 +8,9 @@
  *   - disconnectDevice：成功先本地移除再重拉列表、success=false 保持原状、异常向上抛
  *   - startSSE/stopSSE：URL 组装、connected 去重添加、disconnected 移除、非法 JSON/onerror
  *   - installApk / getDevice（含失败返回 null）
+ *   - scanSubnet（方案 36）：参数透传、静默重拉、ok 集合自动加载缩略图、失败抛错
+ *   - 缩略图缓存（方案 36 D5）：TTL 命中/过期 revoke、force 重拉、并发池 ≤3、
+ *     同设备去重、失败不缓存、断开清理
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
@@ -19,8 +22,17 @@ const mockApi = vi.hoisted(() => ({
   disconnectDevice: vi.fn(),
   installApk: vi.fn(),
   getDevice: vi.fn(),
+  scanSubnet: vi.fn(),
+  screenshot: vi.fn(),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
+
+// happy-dom 无 createObjectURL / revokeObjectURL 实现（videoStream.test.ts 同款桩）
+const urlStub = vi.hoisted(() => ({
+  createObjectURL: vi.fn(),
+  revokeObjectURL: vi.fn(),
+}))
+let urlSeq = 0
 
 const h = vi.hoisted(() => {
   class FakeEventSource {
@@ -65,6 +77,19 @@ beforeEach(() => {
   mockApi.disconnectDevice.mockClear().mockResolvedValue({ success: true })
   mockApi.installApk.mockClear().mockResolvedValue({ success: true })
   mockApi.getDevice.mockClear().mockResolvedValue(null)
+  mockApi.scanSubnet.mockClear()
+  mockApi.screenshot.mockClear().mockResolvedValue(new Blob(['png']))
+  urlSeq = 0
+  urlStub.createObjectURL.mockReset().mockImplementation(() => `blob:thumb-${++urlSeq}`)
+  urlStub.revokeObjectURL.mockReset()
+  Object.defineProperty(URL, 'createObjectURL', {
+    configurable: true,
+    value: urlStub.createObjectURL,
+  })
+  Object.defineProperty(URL, 'revokeObjectURL', {
+    configurable: true,
+    value: urlStub.revokeObjectURL,
+  })
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -359,5 +384,229 @@ describe('device store - 其他操作', () => {
     mockApi.getDevice.mockRejectedValueOnce(new Error('404'))
     await expect(store.getDevice('missing')).resolves.toBeNull()
     expect(store.error).toBeNull() // getDevice 失败不污染全局 error
+  })
+})
+
+function scanResult(overrides: Record<string, unknown> = {}) {
+  return {
+    cidr: '192.168.8.0/24',
+    probed: 254,
+    open_hosts: ['192.168.8.18', '192.168.8.25'],
+    connect_results: [
+      { ip: '192.168.8.18', ok: true, device_id: '192.168.8.18:5555', reason: null, message: null },
+      { ip: '192.168.8.25', ok: false, device_id: null, reason: 'connect_failed', message: 'timeout' },
+    ],
+    truncated: false,
+    ...overrides,
+  }
+}
+
+describe('device store - scanSubnet（方案 36）', () => {
+  it('透传参数；成功后静默重拉列表并对 ok 设备自动加载缩略图', async () => {
+    const store = useDeviceStore()
+    const result = scanResult()
+    mockApi.scanSubnet.mockResolvedValueOnce(result)
+    mockApi.listDevices.mockResolvedValueOnce([dev('192.168.8.18:5555')])
+
+    await expect(store.scanSubnet('192.168.8.0/24')).resolves.toBe(result)
+
+    expect(mockApi.scanSubnet).toHaveBeenCalledWith('192.168.8.0/24', true, 5555)
+    await vi.waitFor(() => expect(mockApi.listDevices).toHaveBeenCalledTimes(1)) // 静默重拉
+    await vi.waitFor(() =>
+      expect(mockApi.screenshot).toHaveBeenCalledWith('192.168.8.18:5555')
+    )
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(1) // 仅 ok 设备，失败设备不加载
+    expect(store.error).toBeNull()
+  })
+
+  it('自定义 connect/port；无 ok 集合不加载缩略图', async () => {
+    const store = useDeviceStore()
+    mockApi.scanSubnet.mockResolvedValueOnce(scanResult({ connect_results: [] }))
+
+    await store.scanSubnet('10.0.0.0/24', false, 4444)
+
+    expect(mockApi.scanSubnet).toHaveBeenCalledWith('10.0.0.0/24', false, 4444)
+    expect(mockApi.screenshot).not.toHaveBeenCalled()
+  })
+
+  it('重拉不阻塞扫描返回：列表挂起时仍立即返回结果', async () => {
+    const store = useDeviceStore()
+    const result = scanResult({ connect_results: [], open_hosts: [] })
+    mockApi.scanSubnet.mockResolvedValueOnce(result)
+    mockApi.listDevices.mockImplementation(() => new Promise<DeviceInfo[]>(() => {}))
+
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      const raced = await Promise.race([
+        store.scanSubnet('192.168.8.0/24'),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => reject(new Error('列表刷新阻塞了扫描返回')), 500)
+        }),
+      ])
+      expect(raced).toBe(result)
+      expect(mockApi.listDevices).toHaveBeenCalled() // 静默重拉已发起
+    } finally {
+      clearTimeout(deadline)
+    }
+  })
+
+  it('异常时写入 error 并向上抛出，不触发重拉', async () => {
+    const store = useDeviceStore()
+    mockApi.scanSubnet.mockRejectedValueOnce(new Error('已有扫描任务进行中'))
+
+    await expect(store.scanSubnet('192.168.8.0/24')).rejects.toThrow('已有扫描任务进行中')
+    expect(store.error).toBe('已有扫描任务进行中')
+    expect(mockApi.listDevices).not.toHaveBeenCalled()
+  })
+})
+
+describe('device store - 缩略图缓存（方案 36 D5）', () => {
+  it('loadThumbnail 成功缓存（url + 快照时刻），TTL 内重复调用命中缓存', async () => {
+    const store = useDeviceStore()
+    await store.loadThumbnail('a')
+
+    expect(mockApi.screenshot).toHaveBeenCalledWith('a')
+    expect(store.thumbnails['a'].url).toBe('blob:thumb-1')
+    expect(store.thumbnails['a'].ts).toBeGreaterThan(0)
+    expect(store.thumbLoading['a']).toBeUndefined()
+
+    await store.loadThumbnail('a') // TTL 内命中，不重拉
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(1)
+  })
+
+  it('TTL 过期后重拉并 revoke 旧 objectURL', async () => {
+    const store = useDeviceStore()
+    await store.loadThumbnail('a')
+    const oldUrl = store.thumbnails['a'].url
+    store.thumbnails = { a: { url: oldUrl, ts: Date.now() - 30_001 } } // 模拟过期
+
+    await store.loadThumbnail('a')
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(2)
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith(oldUrl)
+    expect(store.thumbnails['a'].url).toBe('blob:thumb-2')
+  })
+
+  it('force=true 绕过 TTL 强制重拉（刷新场景）', async () => {
+    const store = useDeviceStore()
+    await store.loadThumbnail('a')
+    const oldUrl = store.thumbnails['a'].url
+
+    await store.loadThumbnail('a', true)
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(2)
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith(oldUrl)
+    expect(store.thumbnails['a'].url).toBe('blob:thumb-2')
+  })
+
+  it('加载中 loading 态可见，完成后清除', async () => {
+    const store = useDeviceStore()
+    let resolveShot!: (b: Blob) => void
+    mockApi.screenshot.mockImplementationOnce(
+      () => new Promise<Blob>((resolve) => { resolveShot = resolve })
+    )
+
+    const p = store.loadThumbnail('a')
+    expect(store.thumbLoading['a']).toBe(true) // 请求发起即置（含队列等待期）
+
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(1))
+    resolveShot(new Blob(['x']))
+    await p
+    expect(store.thumbLoading['a']).toBeUndefined()
+  })
+
+  it('同设备 in-flight 去重合并，不重复请求', async () => {
+    const store = useDeviceStore()
+    let resolveShot!: (b: Blob) => void
+    mockApi.screenshot.mockImplementationOnce(
+      () => new Promise<Blob>((resolve) => { resolveShot = resolve })
+    )
+
+    const p1 = store.loadThumbnail('a')
+    const p2 = store.loadThumbnail('a')
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(1))
+
+    resolveShot(new Blob(['x']))
+    await Promise.all([p1, p2])
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(1)
+    expect(store.thumbnails['a']).toBeDefined()
+  })
+
+  it('批量加载并发峰值 ≤3（对设备温和），且逐台推进', async () => {
+    const store = useDeviceStore()
+    let inflight = 0
+    let peak = 0
+    const resolvers: Array<() => void> = []
+    mockApi.screenshot.mockImplementation(() => {
+      inflight++
+      peak = Math.max(peak, inflight)
+      return new Promise<Blob>((resolve) => {
+        resolvers.push(() => {
+          inflight--
+          resolve(new Blob(['x']))
+        })
+      })
+    })
+
+    const p = store.loadThumbnails(['a', 'b', 'c', 'd', 'e'])
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(3))
+    resolvers.shift()!() // 释放一槽 → 第 4 台启动
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(4))
+    resolvers.shift()!() // 再释一槽 → 第 5 台启动
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(5))
+    while (resolvers.length > 0) resolvers.shift()!() // 放行剩余
+    await p
+
+    expect(peak).toBe(3) // 同时最多 3 台 screencap
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(5)
+  })
+
+  it('loadThumbnails 批量加载，force 透传（刷新全部场景）', async () => {
+    const store = useDeviceStore()
+    await store.loadThumbnails(['a', 'b'])
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(2)
+    expect(store.thumbnails['a']).toBeDefined()
+    expect(store.thumbnails['b']).toBeDefined()
+
+    await store.loadThumbnails(['a', 'b'], true) // TTL 内但强制刷新
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(4)
+  })
+
+  it('加载失败置失败态且不写缓存，重试成功后恢复', async () => {
+    const store = useDeviceStore()
+    mockApi.screenshot.mockRejectedValueOnce(new Error('offline'))
+
+    await store.loadThumbnail('a')
+    expect(store.thumbFailed['a']).toBe(true)
+    expect(store.thumbnails['a']).toBeUndefined() // 失败不写 TTL 缓存
+    expect(store.thumbLoading['a']).toBeUndefined()
+
+    await store.loadThumbnail('a') // 失败未缓存 → 直接重拉
+    expect(mockApi.screenshot).toHaveBeenCalledTimes(2)
+    expect(store.thumbFailed['a']).toBeUndefined()
+    expect(store.thumbnails['a']).toBeDefined()
+  })
+
+  it('断开设备时清理缩略图条目并 revoke', async () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a')]
+    await store.loadThumbnail('a')
+    const url = store.thumbnails['a'].url
+
+    await store.disconnectDevice('a')
+    expect(store.thumbnails['a']).toBeUndefined()
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith(url)
+  })
+
+  it('SSE 断开事件同步清理缩略图条目', () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a')]
+    store.thumbnails = { a: { url: 'blob:x', ts: 1 } }
+
+    store.startSSE()
+    lastEventSource().onmessage!({
+      data: JSON.stringify({ type: 'disconnected', device_id: 'a' }),
+    })
+
+    expect(store.thumbnails['a']).toBeUndefined()
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith('blob:x')
   })
 })

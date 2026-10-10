@@ -76,6 +76,32 @@ describe('axios 实例与设备 API', () => {
       { timeout: 40000 },
     )
   })
+
+  it('scanSubnet 以 query 参数传 cidr/connect/port，超时 40s（方案 36）', async () => {
+    await api.scanSubnet('192.168.8.0/24')
+    expect(mockClient.post).toHaveBeenCalledWith('/devices/scan', null, {
+      params: { cidr: '192.168.8.0/24', connect: true, port: 5555 },
+      timeout: 40000,
+    })
+  })
+
+  it('scanSubnet 支持自定义 connect/port 并透传 ScanResult', async () => {
+    const scanResult = {
+      cidr: '10.0.0.0/24',
+      probed: 254,
+      open_hosts: ['10.0.0.5'],
+      connect_results: [
+        { ip: '10.0.0.5', ok: true, device_id: '10.0.0.5:4444', reason: null, message: null },
+      ],
+      truncated: false,
+    }
+    mockClient.post.mockResolvedValueOnce({ data: scanResult })
+    await expect(api.scanSubnet('10.0.0.0/24', false, 4444)).resolves.toBe(scanResult)
+    expect(mockClient.post).toHaveBeenCalledWith('/devices/scan', null, {
+      params: { cidr: '10.0.0.0/24', connect: false, port: 4444 },
+      timeout: 40000,
+    })
+  })
 })
 
 describe('调试 API', () => {
