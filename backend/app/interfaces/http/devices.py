@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator
 from ipaddress import IPv4Network, ip_network
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response, StreamingResponse
 
 from app.application.device_service import DeviceService, ScanResult
@@ -227,7 +227,8 @@ async def screenshot(
 async def scan_devices(
     cidr: str,
     connect: bool = True,
-    port: int = 5555,
+    # 终评 I-2：越界端口在 Windows 上被 sockaddr 回绕静默扫错端口，接口层拦截
+    port: int = Query(5555, ge=1, le=65535),
     service: DeviceService = Depends(get_device_service),
 ) -> ScanResult:
     """

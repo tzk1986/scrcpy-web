@@ -412,6 +412,19 @@ def test_scan_invalid_cidr_422(fake: FakeDeviceService, cidr: str) -> None:
     assert fake.calls == []
 
 
+@pytest.mark.parametrize("port", [0, -1, 65536, 99999])
+def test_scan_invalid_port_422(fake: FakeDeviceService, port: int) -> None:
+    """越界端口 → 422 FastAPI 校验拦截，不触达探测层（终评 I-2）。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/scan", params={"cidr": "192.168.8.0/24", "port": port}
+        )
+
+    assert response.status_code == 422
+    assert fake.calls == []
+
+
 def test_scan_busy_409(fake: FakeDeviceService) -> None:
     """扫描互斥：ScanBusyError → 409 SCAN_BUSY + 中文 message。"""
     fake.scan_error = ScanBusyError()

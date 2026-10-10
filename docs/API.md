@@ -217,7 +217,9 @@
   预检失败，扫描路径基本不触发）、`connect_failed`（其余连接异常）。
 - 错误：409 `SCAN_BUSY`（已有扫描进行中）、422 `INVALID_SCAN_RANGE`
   （CIDR 非法/超上限）
-- 全链路最坏时长 ≈30s（探测 ≈8s + 连接 64/16×5s），前端显式超时 40s
+- 全链路最坏时长 ≈54s（探测 /22 ≈8s + 连接 4 波 ×（TCP 预检 1.5s + adb connect 5s
+  + 信息查询 5s）；终评 I-1 上界修正），前端显式超时 60s
+- `port` 越界（<1 或 >65535）→ 422（FastAPI Query 校验，终评 I-2）
 
 #### POST /api/devices/{device_id}/disconnect
 

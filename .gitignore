@@ -65,6 +65,7 @@ tests/e2e/report/
 
 # Claude memory
 memory/
+.claude/
 .review-scratch/
 .scratch/
 scratch/

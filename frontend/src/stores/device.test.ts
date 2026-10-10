@@ -573,8 +573,11 @@ describe('device store - 缩略图缓存（方案 36 D5）', () => {
   it('加载失败置失败态且不写缓存，重试成功后恢复', async () => {
     const store = useDeviceStore()
     mockApi.screenshot.mockRejectedValueOnce(new Error('offline'))
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await store.loadThumbnail('a')
+    expect(warnSpy).toHaveBeenCalled() // 终评 M-4：失败留诊断痕迹
+    warnSpy.mockRestore()
     expect(store.thumbFailed['a']).toBe(true)
     expect(store.thumbnails['a']).toBeUndefined() // 失败不写 TTL 缓存
     expect(store.thumbLoading['a']).toBeUndefined()
@@ -594,6 +597,40 @@ describe('device store - 缩略图缓存（方案 36 D5）', () => {
     await store.disconnectDevice('a')
     expect(store.thumbnails['a']).toBeUndefined()
     expect(urlStub.revokeObjectURL).toHaveBeenCalledWith(url)
+  })
+
+  it('列表静默重拉后消失的设备：缩略图条目清理并 revoke（终评 A-3/M-3）', async () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a'), dev('b')]
+    await store.loadThumbnail('a')
+    const url = store.thumbnails['a'].url
+
+    mockApi.listDevices.mockResolvedValue([dev('b')])
+    await store.fetchDevices()
+
+    expect(store.thumbnails['a']).toBeUndefined()
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith(url)
+    expect(store.thumbnails['b']).toBeUndefined() // 无条目设备不误伤
+  })
+
+  it('移除设备时在途加载作废：完成后不回写条目且 revoke 新 blob（终评 A-3/M-2）', async () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a')]
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.disconnectDevice.mockResolvedValue({ success: true })
+    let resolveShot!: (b: Blob) => void
+    mockApi.screenshot.mockImplementationOnce(
+      () => new Promise<Blob>((resolve) => { resolveShot = resolve })
+    )
+
+    const p = store.loadThumbnail('a')
+    await vi.waitFor(() => expect(mockApi.screenshot).toHaveBeenCalledTimes(1))
+    await store.disconnectDevice('a') // 在途期间移除设备
+    resolveShot(new Blob(['x']))
+    await p
+
+    expect(store.thumbnails['a']).toBeUndefined() // 不复活
+    expect(urlStub.revokeObjectURL).toHaveBeenCalledWith('blob:thumb-1') // 新 blob 不泄漏
   })
 
   it('SSE 断开事件同步清理缩略图条目', () => {

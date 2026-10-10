@@ -414,6 +414,25 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
+  it('扫描进行中回车不重复触发请求（终评 M-1）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    let resolveScan!: (v: unknown) => void
+    mockApi.scanSubnet.mockImplementation(() => new Promise((res) => { resolveScan = res }))
+    const wrapper = await mountDashboard()
+
+    const input = wrapper.find('input.scan-cidr')
+    await input.setValue('192.168.8.0/24')
+    await input.trigger('keyup.enter')
+    await input.trigger('keyup.enter') // 扫描中再按回车
+    await flushPromises()
+
+    expect(mockApi.scanSubnet).toHaveBeenCalledTimes(1)
+
+    resolveScan(scanFixture())
+    await flushPromises()
+    wrapper.unmount()
+  })
+
   it('扫描失败（后端结构化错误）走 ElMessage 且不显示结果 alert', async () => {
     mockApi.listDevices.mockResolvedValue([])
     mockApi.scanSubnet.mockRejectedValue({

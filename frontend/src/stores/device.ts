@@ -70,6 +70,8 @@ export const useDeviceStore = defineStore('device', () => {
 
   // 同设备 in-flight 去重（非响应式，仅请求合并用）
   const thumbInFlight = new Map<string, Promise<void>>()
+  // 已移除设备的在途加载作废标记（终评 A-3/M-2）：任务完成时不回写并 revoke 新 blob
+  const thumbCancelled = new Set<string>()
   // 并发池（自建 3 槽队列，in-flight 数可观测以支撑测试断言）
   let thumbActive = 0
   const thumbQueue: Array<() => void> = []
@@ -93,6 +95,17 @@ export const useDeviceStore = defineStore('device', () => {
       const list = await api.listDevices()
       if (generation !== fetchGeneration) return // 过期响应：丢弃
       devices.value = list
+      // 终评 A-3/M-3：列表静默换血时消失的设备无 SSE 事件兜底，
+      // 差集清理缩略图三态并 revoke，防 objectURL 无上限滞留
+      const alive = new Set((list as DeviceInfo[]).map((d) => d.id))
+      const stale = new Set([
+        ...Object.keys(thumbnails.value),
+        ...Object.keys(thumbLoading.value),
+        ...Object.keys(thumbFailed.value),
+      ])
+      for (const id of stale) {
+        if (!alive.has(id)) removeThumbnail(id)
+      }
     } catch (e) {
       if (generation !== fetchGeneration) return
       error.value = (e as Error).message
@@ -231,6 +244,7 @@ export const useDeviceStore = defineStore('device', () => {
    * 设备从列表移除（断开动作 / SSE 断开事件）时调用。
    */
   function removeThumbnail(deviceId: string) {
+    if (thumbInFlight.has(deviceId)) thumbCancelled.add(deviceId)
     const entry = thumbnails.value[deviceId]
     if (entry) {
       URL.revokeObjectURL(entry.url)
@@ -285,6 +299,7 @@ export const useDeviceStore = defineStore('device', () => {
       const entry = thumbnails.value[deviceId]
       if (entry && Date.now() - entry.ts < THUMBNAIL_TTL) return Promise.resolve()
     }
+    thumbCancelled.delete(deviceId) // 重新加载即恢复写入资格
     const task = (async () => {
       thumbLoading.value = { ...thumbLoading.value, [deviceId]: true }
       if (thumbFailed.value[deviceId]) {
@@ -296,12 +311,19 @@ export const useDeviceStore = defineStore('device', () => {
       try {
         const blob = await api.screenshot(deviceId)
         const url = URL.createObjectURL(blob)
-        const old = thumbnails.value[deviceId]
-        thumbnails.value = { ...thumbnails.value, [deviceId]: { url, ts: Date.now() } }
-        if (old) URL.revokeObjectURL(old.url)
-      } catch {
+        if (thumbCancelled.has(deviceId)) {
+          URL.revokeObjectURL(url) // 设备已移除：新 blob 不落地也不泄漏
+        } else {
+          const old = thumbnails.value[deviceId]
+          thumbnails.value = { ...thumbnails.value, [deviceId]: { url, ts: Date.now() } }
+          if (old) URL.revokeObjectURL(old.url)
+        }
+      } catch (e) {
+        if (thumbCancelled.has(deviceId)) return
+        console.warn('thumbnail load failed', deviceId, e) // 终评 M-4：留诊断痕迹
         thumbFailed.value = { ...thumbFailed.value, [deviceId]: true }
       } finally {
+        thumbCancelled.delete(deviceId)
         const nextLoading = { ...thumbLoading.value }
         delete nextLoading[deviceId]
         thumbLoading.value = nextLoading

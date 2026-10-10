@@ -350,15 +350,25 @@ class DeviceService:
                                 ip=ip, ok=False, reason="unreachable", message=e.message
                             )
                         except Exception as e:
+                            # 终评 M-8：AdbError 内嵌完整 adb 输出，截断防长文本入契约
                             return ConnectAttempt(
-                                ip=ip, ok=False, reason="connect_failed", message=str(e)
+                                ip=ip,
+                                ok=False,
+                                reason="connect_failed",
+                                message=str(e)[:200],
                             )
                         return ConnectAttempt(ip=ip, ok=True, device_id=device_id)
 
                 gathered = await asyncio.gather(
                     *(connect_one(ip) for ip in candidates), return_exceptions=True
                 )
-                connect_results = [r for r in gathered if isinstance(r, ConnectAttempt)]
+                connect_results = []
+                for r in gathered:
+                    if isinstance(r, ConnectAttempt):
+                        connect_results.append(r)
+                    else:
+                        # 终评 M-5：BaseException 穿透（如任务取消）会静默丢台，留痕
+                        logger.warning("scan_attempt_dropped", cidr=cidr, error=repr(r))
 
             ok_count = sum(1 for r in connect_results if r.ok)
             logger.info(

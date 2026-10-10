@@ -306,6 +306,7 @@ const scanSummaryText = computed(() => {
 
 /** 处理网段扫描（store.scanSubnet 内部已静默重拉列表 + 对 ok 设备加载缩略图） */
 async function handleScan() {
+  if (scanning.value) return // 终评 M-1：扫描中回车重入会撞自家 409
   const cidr = scanForm.cidr.trim()
   if (!cidr) {
     ElMessage.error('请输入扫描网段')

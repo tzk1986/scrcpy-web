@@ -564,6 +564,60 @@ class TestScanAndConnect:
             (not r.ok) and r.reason == "connect_failed" for r in result.connect_results
         )
 
+    @pytest.mark.asyncio
+    async def test_scan_probed_boundary_prefixes(self, service, mock_adb):
+        """/22 上界 1022 台、/32 退化 1 台：probed 与 hosts() 语义一致（终评 M-7/A-5）。"""
+        mock_adb.scan_hosts.return_value = []
+
+        r22 = await service.scan_and_connect(ip_network("192.168.8.0/22"), connect=False)
+        r32 = await service.scan_and_connect(ip_network("192.168.8.5/32"), connect=False)
+
+        assert r22.probed == 1022
+        assert r32.probed == 1
+
+    @pytest.mark.asyncio
+    async def test_scan_message_truncated_to_200(self, service, mock_adb):
+        """connect_failed 的 message 截断 200 字符（终评 M-8）：长 adb 输出不入契约。"""
+        mock_adb.scan_hosts.return_value = ["192.168.8.1"]
+        mock_adb.connect_tcp.side_effect = AdbError("x" * 300)
+
+        result = await service.scan_and_connect(ip_network("192.168.8.0/24"))
+
+        attempt = result.connect_results[0]
+        assert attempt.reason == "connect_failed"
+        assert attempt.message == "x" * 200
+
+    @pytest.mark.asyncio
+    async def test_scan_dropped_attempt_logs_warning(self, service, mock_adb, monkeypatch):
+        """BaseException 穿透 connect_one 被 gather 过滤：留一条 warning 痕迹（终评 M-5）。"""
+
+        class _Boom(BaseException):
+            pass
+
+        warnings: list[str] = []
+
+        class _FakeLogger:
+            def warning(self, event: str, **kw: object) -> None:
+                warnings.append(event)
+
+            def info(self, event: str, **kw: object) -> None:
+                pass
+
+            def error(self, event: str, **kw: object) -> None:
+                pass
+
+            def debug(self, event: str, **kw: object) -> None:
+                pass
+
+        monkeypatch.setattr("app.application.device_service.logger", _FakeLogger())
+        mock_adb.scan_hosts.return_value = ["192.168.8.1"]
+        mock_adb.connect_tcp.side_effect = _Boom()
+
+        result = await service.scan_and_connect(ip_network("192.168.8.0/24"))
+
+        assert result.connect_results == []
+        assert warnings.count("scan_attempt_dropped") == 1
+
 
 # ---------------------------------------------------------------------------
 # 后台刷新测试

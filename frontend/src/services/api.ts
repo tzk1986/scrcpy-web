@@ -115,7 +115,9 @@ export const api = {
   async scanSubnet(cidr: string, connect = true, port = 5555): Promise<ScanResult> {
     const res = await client.post('/devices/scan', null, {
       params: { cidr, connect, port },
-      timeout: 40000, // 后端扫描最坏 ≤30s（短超时+截断保护），保证结构化错误先返回
+      // 终评 I-1 上界修正：探测 /22 ≈8s + 4 波 ×（预检 1.5s + connect 5s + info 5s）
+      // ≈54s，40s 会先行中止导致「已连上却报失败 + 409 连锁」
+      timeout: 60000,
     })
     return res.data as ScanResult
   },
