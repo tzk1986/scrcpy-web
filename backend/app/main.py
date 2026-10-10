@@ -44,6 +44,7 @@ from app.core.exceptions import (
     validation_exception_handler,
 )
 from app.interfaces.http import apps, debug, devices, network, performance, sessions, system
+from app.interfaces.http.origin_guard import OriginGuardMiddleware
 from app.interfaces.ws import debug as ws_debug
 from app.interfaces.ws import performance as ws_performance
 from app.interfaces.ws import video as ws_video
@@ -102,6 +103,10 @@ def create_app() -> FastAPI:
         # X-Frame-Format（方案 29）：截图响应帧格式标识
         expose_headers=["X-Export-Count", "X-Export-Oldest-Ts", "X-Export-Newest-Ts", "X-Frame-Format"],
     )
+
+    # Origin 守卫（方案 37 A2）：跨站请求/WS 握手收敛。Starlette 后注册者在
+    # 中间件栈外层，故判定先于 CORS 处理执行。
+    app.add_middleware(OriginGuardMiddleware)
 
     # --- 异常处理器 --------------------------------------------------------
     # 四层：领域异常 → 校验错误 → HTTP 异常 → 兜底。
