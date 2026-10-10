@@ -986,6 +986,29 @@ describe('suspend / resume 探测模式', () => {
   })
 })
 
+describe('captureFrame（方案 40 A）', () => {
+  it('渲染 canvas 经 toBlob 导出 PNG Blob', async () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    const stream = makeStream(ws, canvas)
+    const pngBlob = new Blob(['png'], { type: 'image/png' })
+    const toBlobSpy = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback) => cb(pngBlob))
+
+    await expect(stream.captureFrame()).resolves.toBe(pngBlob)
+    expect(toBlobSpy).toHaveBeenCalledWith(expect.any(Function), 'image/png')
+  })
+
+  it('toBlob 回调传 null 时 reject', async () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback) => cb(null))
+
+    await expect(stream.captureFrame()).rejects.toThrow('canvas.toBlob 返回空数据')
+  })
+})
+
 describe('WS 重连接线（方案 19 终审）', () => {
   it('start 注册重连回调：挂起时重连成功 → 自动 resume 并 request_keyframe', () => {
     const ws = new FakeWs()

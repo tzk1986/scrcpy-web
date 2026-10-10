@@ -10,7 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
 
 const h = vi.hoisted(() => {
   class MockWebSocketService {
@@ -48,6 +48,7 @@ const h = vi.hoisted(() => {
     args: unknown[]
     restartGraceUntil = 0
     suspended = false
+    state = 'streaming'
     stats = {
       frameCount: 0,
       fps: 25,
@@ -65,6 +66,7 @@ const h = vi.hoisted(() => {
     resume = vi.fn()
     setStateChangeHandler = vi.fn()
     setStatsUpdateHandler = vi.fn()
+    captureFrame = vi.fn()
 
     constructor(...args: unknown[]) {
       this.args = args
@@ -103,12 +105,15 @@ const h = vi.hoisted(() => {
     }
   }
 
-  return { MockWebSocketService, MockH264Stream, MockInputController, MockVideoStream }
+  const MockApi = { screenshot: vi.fn() }
+
+  return { MockWebSocketService, MockH264Stream, MockInputController, MockVideoStream, MockApi }
 })
 
 vi.mock('@/services/websocket', () => ({ WebSocketService: h.MockWebSocketService }))
 vi.mock('@/services/h264VideoStream', () => ({ H264VideoStream: h.MockH264Stream }))
 vi.mock('@/services/videoStream', () => ({ VideoStream: h.MockVideoStream }))
+vi.mock('@/services/api', () => ({ api: h.MockApi }))
 vi.mock('@/services/inputController', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/inputController')>()
   return { InputController: h.MockInputController, KeyCode: actual.KeyCode }
@@ -146,6 +151,7 @@ beforeEach(() => {
   h.MockH264Stream.instances = []
   h.MockInputController.instances = []
   h.MockVideoStream.instances = []
+  h.MockApi.screenshot.mockReset().mockResolvedValue(new Blob(['png']))
   // 走 h264 路径（happy-dom 无 WebCodecs，需 stub 支撑 isWebCodecsSupported）
   vi.stubGlobal('VideoDecoder', class {})
   vi.stubGlobal('EncodedVideoChunk', class {})
@@ -624,6 +630,66 @@ describe('VideoPlayer 状态提示治理（方案 19 实施项 4）', () => {
     await nextTick()
     expect(wrapper.find('.status-text').text()).toContain('正在连接...')
     expect(wrapper.find('.recovering-tip').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('VideoPlayer 截图快照（方案 40 A）', () => {
+  /** defineExpose 成员不在 vm 静态类型上，经窄化访问 */
+  type SnapshotApi = {
+    captureSnapshot: () => Promise<{ blob: Blob; source: 'stream' | 'fallback' }>
+  }
+  const capture = (wrapper: VueWrapper) =>
+    (wrapper.vm as unknown as SnapshotApi).captureSnapshot()
+
+  it('h264 streaming 时走视频流抓帧，不回退设备端截图', async () => {
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    const streamBlob = new Blob(['frame-png'], { type: 'image/png' })
+    h264.captureFrame.mockResolvedValue(streamBlob)
+
+    const result = await capture(wrapper)
+
+    expect(result.source).toBe('stream')
+    expect(result.blob).toBe(streamBlob)
+    expect(h264.captureFrame).toHaveBeenCalledTimes(1)
+    expect(h.MockApi.screenshot).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('h264 未达 streaming（configuring）时回退 api.screenshot', async () => {
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    h264.state = 'configuring'
+    const apiBlob = new Blob(['api-png'])
+    h.MockApi.screenshot.mockResolvedValue(apiBlob)
+
+    const result = await capture(wrapper)
+
+    expect(result.source).toBe('fallback')
+    expect(result.blob).toBe(apiBlob)
+    expect(h264.captureFrame).not.toHaveBeenCalled()
+    expect(h.MockApi.screenshot).toHaveBeenCalledWith('dev1')
+    wrapper.unmount()
+  })
+
+  it('截图模式（WebCodecs 不可用）时回退 api.screenshot', async () => {
+    vi.unstubAllGlobals() // 移除 VideoDecoder stub → 挂载即截图模式
+    const wrapper = shallowMount(VideoPlayer, {
+      props: { deviceId: 'dev1' },
+      global: { renderStubDefaultSlot: true, stubs: { 'el-button': true, 'el-button-group': true } },
+    })
+    await flushPromises()
+    expect(h.MockH264Stream.instances.length).toBe(0)
+
+    const apiBlob = new Blob(['api-png'])
+    h.MockApi.screenshot.mockResolvedValue(apiBlob)
+
+    const result = await capture(wrapper)
+
+    expect(result.source).toBe('fallback')
+    expect(result.blob).toBe(apiBlob)
+    expect(h.MockApi.screenshot).toHaveBeenCalledWith('dev1')
     wrapper.unmount()
   })
 })

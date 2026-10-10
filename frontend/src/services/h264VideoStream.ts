@@ -134,6 +134,23 @@ export class H264VideoStream {
     this.onStatsUpdate = handler
   }
 
+  /**
+   * 导出渲染 canvas 当前帧为 PNG Blob（方案 40 A）。
+   * 渲染帧方向与视频流一致（天然正），无需 rotation 判据。
+   * 截图零额外画布、零新依赖；toBlob 回调为空时 reject。
+   */
+  captureFrame(): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      this.canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob)
+        } else {
+          reject(new Error('canvas.toBlob 返回空数据'))
+        }
+      }, 'image/png')
+    })
+  }
+
   /** 码率重启宽限截止时间戳（ms）。未处于宽限期为 0。 */
   get restartGraceUntil(): number {
     return this._restartGraceUntil

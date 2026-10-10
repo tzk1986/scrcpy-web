@@ -41,11 +41,15 @@
   <div class="device-detail">
     <div class="device-info">
       <h2>设备: {{ deviceId }}</h2>
-      <el-button @click="disconnect">断开</el-button>
+      <div class="actions">
+        <el-button @click="captureScreenshot">截图</el-button>
+        <el-button @click="disconnect">断开</el-button>
+      </div>
     </div>
 
     <div class="content" :class="{ 'column-layout': panelPosition === 'bottom' }">
       <VideoPlayer
+        ref="videoPlayerRef"
         :device-id="deviceId"
         :device-width="deviceResolution[0]"
         :device-height="deviceResolution[1]"
@@ -61,6 +65,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { api } from '@/services/api'
 import DebugPanel from '@/components/debug/DebugPanel.vue'
 import VideoPlayer from '@/components/stream/VideoPlayer.vue'
@@ -73,6 +78,7 @@ const debugStore = useDebugStore()
 const deviceResolution = ref<[number, number]>([1080, 1920])
 /** 调试面板停靠位置，用于切换布局方向。 */
 const panelPosition = ref<'bottom' | 'right'>('right')
+const videoPlayerRef = ref<InstanceType<typeof VideoPlayer>>()
 
 /**
  * 组件挂载时初始化：
@@ -104,6 +110,26 @@ function disconnect() {
   debugStore.closeSession()
   window.history.back()
 }
+
+/**
+ * 截图按钮（方案 40 A）：优先取视频流渲染帧（方向天然正）；
+ * 无视频流时回退设备端截图并提示（后端判据重建后方向已修正，方案 40 B）。
+ */
+async function captureScreenshot() {
+  const player = videoPlayerRef.value
+  if (!player) return
+  const { blob, source } = await player.captureSnapshot()
+  if (source === 'fallback') {
+    ElMessage.info('当前无视频流，已回退设备端截图')
+  }
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${deviceId.replace(/[^a-zA-Z0-9._-]/g, '_')}_screenshot.png`
+  a.click()
+  // 下载仅读取 blob URL 一次，延迟回收避免大图占用内存长期滞留
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
 </script>
 
 <style scoped>
@@ -119,6 +145,11 @@ function disconnect() {
   align-items: center;
   padding: 1rem;
   border-bottom: 1px solid #eee;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
 }
 
 /* 默认行布局（面板在右侧） */

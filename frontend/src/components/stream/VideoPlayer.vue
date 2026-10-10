@@ -103,6 +103,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { WebSocketService } from '@/services/websocket'
+import { api } from '@/services/api'
 import { VideoStream, type VideoStreamState } from '@/services/videoStream'
 import { H264VideoStream, type H264StreamOptions, type H264StreamState } from '@/services/h264VideoStream'
 import {
@@ -518,6 +519,23 @@ async function reconnect() {
     await videoStream.start()
   }
 }
+
+/**
+ * 截图快照（方案 40 A，供 DeviceDetail 截图按钮经模板 ref 调用）。
+ * h264 流观看中：抓渲染帧（方向与视频流一致，天然正）；
+ * 其余状态（configuring/截图模式/已停止）：回退设备端截图
+ * （后端判据重建后方向已修正，见方案 40 B）。
+ */
+defineExpose({
+  async captureSnapshot(): Promise<{ blob: Blob; source: 'stream' | 'fallback' }> {
+    if (mode.value === 'h264' && h264Stream && h264Stream.state === 'streaming') {
+      const blob = await h264Stream.captureFrame()
+      return { blob, source: 'stream' }
+    }
+    const blob = await api.screenshot(props.deviceId)
+    return { blob, source: 'fallback' }
+  },
+})
 </script>
 
 <style scoped>
