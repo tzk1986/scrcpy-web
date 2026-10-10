@@ -916,6 +916,22 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
+  it('设备ID 列收窄：min-width 140 + 溢出省略，压缩与屏幕列间空隙', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA])
+    const wrapper = await mountDashboard()
+    await flushPromises()
+
+    // prop="id" 列无 slot：column props 经 fallthrough attrs 落在 stub-no-slot 根
+    const idCol = wrapper
+      .findAll('.stub-column.stub-no-slot')
+      .find((c) => c.attributes('prop') === 'id')
+    expect(idCol).toBeDefined()
+    expect(idCol!.attributes('min-width')).toBe('140')
+    expect(idCol!.attributes()).toHaveProperty('show-overflow-tooltip')
+
+    wrapper.unmount()
+  })
+
   // ==================== 方案 36 增补 D11：输入说明 ====================
 
   it('扫描输入框 placeholder 更新，帮助 popover 说明三种输入形态（D11）', async () => {

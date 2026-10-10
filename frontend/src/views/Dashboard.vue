@@ -174,7 +174,7 @@
       <!-- D10：选择列，仅 TCP 设备可勾选（USB 无 TCP 断开语义）；EP 回调传行对象，
            经 rowSelectable 取 id 后与行内「断开」按钮同一判定口径 -->
       <el-table-column type="selection" :selectable="rowSelectable" width="40" />
-      <el-table-column prop="id" label="设备ID" min-width="180" />
+      <el-table-column prop="id" label="设备ID" min-width="140" show-overflow-tooltip />
       <el-table-column label="屏幕" width="120" align="center">
         <template #default="{ row }">
           <div
