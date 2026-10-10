@@ -56,6 +56,8 @@
 | `PERMISSION_DENIED` | 403 | 权限不足（如非 admin 转移控制权） |
 | `ADB_ERROR` | 400 | ADB 子进程非零退出 |
 | `DEVICE_UNREACHABLE` | 400 | `connect`/`disconnect` 前置 TCP 可达性预检失败 |
+| `SCAN_BUSY` | 409 | 已有网段扫描进行中（`/api/devices/scan` 互斥，方案 36） |
+| `INVALID_SCAN_RANGE` | 422 | 扫描 CIDR 非法或超出 /22-/32 支持范围（方案 36） |
 | `UNKNOWN_ERROR` | 400 | 基类默认值 |
 
 ## 二、HTTP 端点
@@ -69,6 +71,7 @@
 | GET | `/api/devices` | 设备列表 | `api.listDevices` |
 | GET | `/api/devices/{device_id}` | 单设备信息 | `api.getDevice` |
 | POST | `/api/devices/connect` | TCP/IP 连接设备 | `api.connectDevice` |
+| POST | `/api/devices/scan` | 网段扫描并批量连接（方案 36） | `api.scanSubnet` |
 | POST | `/api/devices/{device_id}/disconnect` | 断开 TCP/IP 连接 | `api.disconnectDevice` |
 | POST | `/api/devices/{device_id}/install` | 安装 APK | `api.installApk` |
 | POST | `/api/devices/batch/install` | 批量安装 APK | — |
@@ -177,6 +180,44 @@
 - 错误：400 `DEVICE_UNREACHABLE`（预检失败）、400 `ADB_ERROR`
 
 前端超时设置 40s（大于后端 ADB 超时 30s），以保证结构化错误先返回。
+
+#### POST /api/devices/scan
+
+扫描 IPv4 网段内 TCP 端口开放的主机并批量 adb 连接（方案 36；同步返回，
+无异步任务/进度轮询）。
+
+- 查询参数：
+  - `cidr`（必填）：目标网段，IPv4，前缀 `/22`-`/32`（`/24` = 254 台）；
+    host 位非零自动归一化（`192.168.8.5/24` → `192.168.8.0/24`）
+  - `connect`（可选，默认 `true`）：是否对开放主机执行 adb 连接；`false`
+    仅探测返回
+  - `port`（可选，默认 `5555`）
+- 响应 200 `ScanResult`：
+
+```json
+{
+  "cidr": "192.168.8.0/24",
+  "probed": 254,
+  "open_hosts": ["192.168.8.18", "192.168.8.25"],
+  "connect_results": [
+    {"ip": "192.168.8.18", "ok": true, "device_id": "192.168.8.18:5555",
+     "reason": null, "message": null},
+    {"ip": "192.168.8.36", "ok": false, "device_id": null,
+     "reason": "connect_failed", "message": "failed to connect to 192.168.8.36:5555"}
+  ],
+  "truncated": false
+}
+```
+
+- 语义：连接复用既有 `connect_tcp` 路径（连接成功即入库，信息查询失败不阻断，
+  同 `/connect` 现状）；响应不含设备信息，前端随后走设备列表刷新补齐。
+  连接阶段单台短超时 5s + 并发上限 16；开放主机超过 64 台时仅连前 64 台
+  （`truncated: true`，`open_hosts` 仍为全量）；重复扫描幂等（already
+  connected 判成功）。`connect_results.reason` 取值：`unreachable`（TCP
+  预检失败，扫描路径基本不触发）、`connect_failed`（其余连接异常）。
+- 错误：409 `SCAN_BUSY`（已有扫描进行中）、422 `INVALID_SCAN_RANGE`
+  （CIDR 非法/超上限）
+- 全链路最坏时长 ≈30s（探测 ≈8s + 连接 64/16×5s），前端显式超时 40s
 
 #### POST /api/devices/{device_id}/disconnect
 

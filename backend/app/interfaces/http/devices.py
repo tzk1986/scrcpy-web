@@ -12,6 +12,7 @@
     POST   /api/devices/batch/install       — 批量安装 APK
     GET    /api/devices/{device_id}/screenshot — 截图
     POST   /api/devices/connect             — 通过 TCP/IP 连接设备
+    POST   /api/devices/scan                — 网段扫描并批量连接（方案 36）
     POST   /api/devices/{device_id}/disconnect — 断开 TCP/IP 连接
     GET    /api/devices/events              — 设备变化事件流（SSE）
 
@@ -21,13 +22,14 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from ipaddress import IPv4Network, ip_network
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response, StreamingResponse
 
-from app.application.device_service import DeviceService
-from app.core.exceptions import AdbError, DeviceNotFoundError
+from app.application.device_service import DeviceService, ScanResult
+from app.core.exceptions import AdbError, DeviceNotFoundError, InvalidScanRangeError
 from app.core.launcher import is_shutdown_requested
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
@@ -219,6 +221,44 @@ async def screenshot(
         )
     png_bytes = await service.screenshot(device_id)
     return Response(content=png_bytes, media_type="image/png")
+
+
+@router.post("/scan")
+async def scan_devices(
+    cidr: str,
+    connect: bool = True,
+    port: int = 5555,
+    service: DeviceService = Depends(get_device_service),
+) -> ScanResult:
+    """
+    扫描网段内 TCP 开放主机并批量连接（方案 36）。
+
+    参数：
+        cidr: 目标网段（查询参数，IPv4，前缀 /22-/32；host 位非零自动归一化）。
+        connect: 是否对开放主机执行 adb 连接（查询参数，默认 true）。
+        port: ADB 端口（查询参数，默认 5555）。
+
+    返回：
+        ScanResult：开放清单全量（数值序）+ 实际尝试的连接结果（≤64 台）
+        + truncated 截断标记。
+
+    异常：
+        InvalidScanRangeError: CIDR 非法/超上限（422 INVALID_SCAN_RANGE）。
+        ScanBusyError: 已有扫描进行中（409 SCAN_BUSY）。
+    """
+    network = _parse_scan_cidr(cidr)
+    return await service.scan_and_connect(network, connect=connect, port=port)
+
+
+def _parse_scan_cidr(cidr: str) -> IPv4Network:
+    """解析并校验扫描网段：IPv4 且前缀 /22-/32，否则 InvalidScanRangeError。"""
+    try:
+        network = ip_network(cidr, strict=False)
+    except ValueError:
+        raise InvalidScanRangeError(cidr)
+    if not isinstance(network, IPv4Network) or not 22 <= network.prefixlen <= 32:
+        raise InvalidScanRangeError(cidr)
+    return network
 
 
 @router.post("/connect")

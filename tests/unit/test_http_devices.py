@@ -9,6 +9,7 @@
     - POST /api/devices/batch/install          批量安装（字面路径不被 {device_id} 吞掉）
     - GET  /api/devices/{id}/screenshot        截图二进制 + Content-Type
     - POST /api/devices/connect                ip/port 透传 + 默认端口
+    - POST /api/devices/scan                   CIDR 校验（422）/ 互斥（409）/ 序列化（方案 36）
     - POST /api/devices/{id}/disconnect        "ip:port" 解析 / 无冒号不过滤
     - GET  /api/devices/events                 SSE 响应头、事件负载、断连回调清理
 
@@ -25,11 +26,13 @@ HTTP 请求会永久挂起。因此改为：
 import asyncio
 import gzip
 import json
+from ipaddress import ip_network
 from typing import Any
 
 import pytest
 
-from app.core.exceptions import AdbError
+from app.application.device_service import ConnectAttempt, ScanResult
+from app.core.exceptions import AdbError, ScanBusyError
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
 from app.interfaces.http import devices as devices_module
@@ -71,6 +74,16 @@ class FakeDeviceService:
         self.raw_gz = gzip.compress(b"RAW_FRAME_PAYLOAD")
         self.raw_error: Exception | None = None
         self.new_device_id = "192.168.1.5:5555"
+        self.scan_result = ScanResult(
+            cidr="192.168.8.0/24",
+            probed=254,
+            open_hosts=["192.168.8.18"],
+            connect_results=[
+                ConnectAttempt(ip="192.168.8.18", ok=True, device_id="192.168.8.18:5555")
+            ],
+            truncated=False,
+        )
+        self.scan_error: Exception | None = None
         self._on_device_connected: list[Any] = []
         self._on_device_disconnected: list[Any] = []
 
@@ -103,6 +116,14 @@ class FakeDeviceService:
     async def connect_tcp(self, ip: str, port: int = 5555) -> str:
         self.calls.append(("connect_tcp", ip, port))
         return self.new_device_id
+
+    async def scan_and_connect(
+        self, network: Any, connect: bool = True, port: int = 5555
+    ) -> ScanResult:
+        self.calls.append(("scan_and_connect", network, connect, port))
+        if self.scan_error is not None:
+            raise self.scan_error
+        return self.scan_result
 
     async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         self.calls.append(("disconnect_tcp", ip, port))
@@ -316,6 +337,92 @@ def test_disconnect_device_without_port(fake: FakeDeviceService) -> None:
     assert response.status_code == 200
     assert response.json() == {"success": True}
     assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# 网段扫描（方案 36）
+# ---------------------------------------------------------------------------
+
+def test_scan_ok_serializes_scan_result(fake: FakeDeviceService) -> None:
+    """/24 合法 + 默认参数：ScanResult 整体序列化为 JSON，network 已解析。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/scan", params={"cidr": "192.168.8.0/24"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cidr": "192.168.8.0/24",
+        "probed": 254,
+        "open_hosts": ["192.168.8.18"],
+        "connect_results": [
+            {
+                "ip": "192.168.8.18",
+                "ok": True,
+                "device_id": "192.168.8.18:5555",
+                "reason": None,
+                "message": None,
+            }
+        ],
+        "truncated": False,
+    }
+    assert fake.calls == [("scan_and_connect", ip_network("192.168.8.0/24"), True, 5555)]
+
+
+def test_scan_passes_query_params(fake: FakeDeviceService) -> None:
+    """connect=false 与 port 经查询串透传。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/scan",
+            params={"cidr": "192.168.8.0/28", "connect": "false", "port": 5556},
+        )
+
+    assert response.status_code == 200
+    assert fake.calls == [("scan_and_connect", ip_network("192.168.8.0/28"), False, 5556)]
+
+
+def test_scan_normalizes_host_bits(fake: FakeDeviceService) -> None:
+    """strict=False：host 位非零的 CIDR 归一化为网络地址后透传。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/scan", params={"cidr": "192.168.8.5/24"})
+
+    assert response.status_code == 200
+    assert fake.calls == [("scan_and_connect", ip_network("192.168.8.0/24"), True, 5555)]
+
+
+@pytest.mark.parametrize(
+    "cidr",
+    [
+        "not-a-cidr",       # 无法解析
+        "192.168.8.0/21",   # 超上限（>1022 台）
+        "192.168.8.0/8",    # 远超上限
+        "::/64",            # IPv6 不支持
+        "192.168.8.0/33",   # 前缀非法
+    ],
+)
+def test_scan_invalid_cidr_422(fake: FakeDeviceService, cidr: str) -> None:
+    """非法/超上限 CIDR → 422 INVALID_SCAN_RANGE，不触达 service。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/scan", params={"cidr": cidr})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_SCAN_RANGE"
+    assert fake.calls == []
+
+
+def test_scan_busy_409(fake: FakeDeviceService) -> None:
+    """扫描互斥：ScanBusyError → 409 SCAN_BUSY + 中文 message。"""
+    fake.scan_error = ScanBusyError()
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/scan", params={"cidr": "192.168.8.0/24"})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["code"] == "SCAN_BUSY"
+    assert body["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
