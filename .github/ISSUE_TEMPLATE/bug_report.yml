@@ -1,0 +1,81 @@
+name: Bug 报告
+description: 报告使用中遇到的缺陷（绿色版 exe 或源码运行）
+title: "[Bug] 简述问题"
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请确认：
+        1. 已使用最新正式版（[Releases](https://github.com/tzk1986/scrcpy-web/releases) 页最新版本）
+        2. 搜索现有 Issues 确认无同类问题
+        3. 尽量附上日志片段（绿色版位于包目录 `logs/openscrcpy.log`）
+  - type: input
+    id: version
+    attributes:
+      label: OpenScrcpy 版本
+      description: 形式如 v0.7.3（发布包文件名或界面内版本信息）
+      placeholder: v0.7.3
+    validations:
+      required: true
+  - type: dropdown
+    id: run_mode
+    attributes:
+      label: 运行方式
+      options:
+        - Windows 绿色版 exe（OpenScrcpy.exe）
+        - 源码运行（python run_server.py）
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: Windows 版本
+      placeholder: 如 Windows 11 23H2 / Windows 10 22H2
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器与版本
+      description: 仅支持 Chrome（最新两个稳定版）
+      placeholder: Chrome 131
+  - type: input
+    id: device
+    attributes:
+      label: 设备信息
+      description: 手机型号 / Android 版本 / 连接方式（USB 或无线 IP:端口）
+      placeholder: 小米 14 / Android 14 / 无线 192.168.1.20:5555
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题类型
+      options:
+        - 视频流（黑屏/卡顿/花屏/不出画面）
+        - 设备连接（连不上/掉线/列表异常）
+        - 鼠标键盘控制
+        - Logcat 日志
+        - 远程 Shell
+        - 性能监控
+        - 界面/交互
+        - 安装/启动（绿色版）
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: |
+        1. 复现步骤（操作 → 结果）
+        2. 期望行为
+        3. 实际行为
+        4. 如方便请附截图或录屏
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（可选，但强烈建议提供）
+      description: |
+        绿色版：包目录下 `logs/openscrcpy.log` 中的报错片段
+        源码版：运行终端输出的报错片段
+      render: text

@@ -284,8 +284,10 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ## 📮 联系方式
 
-- 问题反馈：[GitHub Issues](https://github.com/tzk1986/scrcpy-web/issues)
+- Bug 报告：[GitHub Issues](https://github.com/tzk1986/scrcpy-web/issues)（带版本号、Windows 版本、设备信息与复现步骤）
 - 讨论交流：[GitHub Discussions](https://github.com/tzk1986/scrcpy-web/discussions)
+
+反馈时强烈建议附上日志片段：绿色版位于包目录 `logs/openscrcpy.log`，源码版为运行终端输出。
 
 ---
 
