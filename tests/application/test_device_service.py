@@ -453,6 +453,30 @@ class TestRotationCache:
 
         mock_adb.get_rotation.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_reconnect_requeries_rotation_after_failure(self, service, mock_adb, mock_repo):
+        """方案 41：断开瞬间失败缓存的 0 不得污染重连后的判据。
+
+        行为链：连接 I 的 dumpsys 失败 → 0 入缓存（.24 断开竞态）→
+        断开 + 重连（新生命周期）→ 首截图真查得 2 → 施加 180° 补偿。
+        """
+        png, src_pixels = _make_png_2x2()
+        mock_adb.get_rotation = AsyncMock(side_effect=AdbError("device gone"))
+        assert await service.get_rotation("192.168.1.5:5555") == 0
+        assert "192.168.1.5:5555" in service._rotation_cache
+
+        await service.disconnect_tcp("192.168.1.5", 5555)
+        mock_adb.get_device_info.return_value = _make_device("192.168.1.5:5555")
+        await service.connect_tcp("192.168.1.5", 5555)
+
+        mock_adb.get_rotation = AsyncMock(return_value=2)
+        mock_adb.screenshot.return_value = png
+        result = await service.screenshot("192.168.1.5:5555")
+
+        with Image.open(io.BytesIO(result)) as img:
+            img.load()
+            assert list(img.getdata()) == src_pixels[::-1]
+
 
 # ---------------------------------------------------------------------------
 # TCP/IP 连接测试
@@ -494,6 +518,16 @@ class TestConnectTcp:
         assert result == "192.168.1.5:5555"
         mock_repo.save.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_connect_clears_rotation_cache(self, service, mock_adb):
+        """方案 41：连接成功即清 rotation 缓存（新生命周期首查必真查）。"""
+        service._rotation_cache["192.168.1.5:5555"] = (0, time.monotonic())
+        mock_adb.get_device_info.return_value = _make_device("192.168.1.5:5555")
+
+        await service.connect_tcp("192.168.1.5", 5555)
+
+        assert "192.168.1.5:5555" not in service._rotation_cache
+
 
 class TestDisconnectTcp:
     """测试 disconnect_tcp 方法"""
@@ -516,6 +550,15 @@ class TestDisconnectTcp:
 
         assert "192.168.1.5:5555" not in service._info_cooldown
         assert "192.168.1.5:5555" not in service._info_tasks
+
+    @pytest.mark.asyncio
+    async def test_disconnect_clears_rotation_cache(self, service, mock_adb, mock_repo):
+        """方案 41：断开即清 rotation 缓存（失败收敛值不跨生命周期存活）。"""
+        service._rotation_cache["192.168.1.5:5555"] = (0, time.monotonic())
+
+        await service.disconnect_tcp("192.168.1.5", 5555)
+
+        assert "192.168.1.5:5555" not in service._rotation_cache
 
 
 # ---------------------------------------------------------------------------

@@ -321,6 +321,9 @@ class DeviceService:
         device_id = await self.adb.connect_tcp(ip, port, timeout=timeout)
         # 连接成功后获取设备信息并保存；信息查询失败不阻断连接本身
         # （方案 35 D6：get_device_info 命令走 5s 短超时，失败仅告警）
+        # 方案 41：rotation 判据属于连接生命周期——断开瞬间失败收敛的 0
+        # 不得被重连继承，连接成功即清缓存（首查必真查）
+        self._rotation_cache.pop(device_id, None)
         try:
             info = await self.adb.get_device_info(device_id)
         except Exception as e:
@@ -436,6 +439,8 @@ class DeviceService:
         # 清理查询缓存（方案 35 D4）：防止断开后残留冷却/任务占用内存
         self._info_cooldown.pop(device_id, None)
         self._info_tasks.pop(device_id, None)
+        # 方案 41：断开即清 rotation 缓存，失败收敛值不跨生命周期存活
+        self._rotation_cache.pop(device_id, None)
 
     async def start(self) -> None:
         """
