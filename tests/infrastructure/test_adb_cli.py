@@ -511,6 +511,50 @@ class TestScreenshotPng:
 
 
 # ---------------------------------------------------------------------------
+# 设备 rotation 查询（方案 38 B1：dumpsys input SurfaceOrientation）
+# ---------------------------------------------------------------------------
+
+class TestRotation:
+    """测试 get_rotation 方法"""
+
+    _DUMP = (
+        "TouchDisplayId: 0\n"
+        "SurfaceOrientation: 2\n"
+        "windowOrientationListenerEnabled: true\n"
+    )
+
+    @pytest.mark.asyncio
+    async def test_get_rotation_parses_value(self):
+        """解析 SurfaceOrientation 数值。"""
+        with patch.object(
+            AdbCliDriver, "_run_serial", new=AsyncMock(return_value=self._DUMP)
+        ):
+            driver = AdbCliDriver()
+            result = await driver.get_rotation("dev1")
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_get_rotation_missing_line_defaults_zero(self):
+        """输出无 SurfaceOrientation 行 → 0（不旋转）。"""
+        with patch.object(
+            AdbCliDriver, "_run_serial", new=AsyncMock(return_value="no such line\n")
+        ):
+            driver = AdbCliDriver()
+            result = await driver.get_rotation("dev1")
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_get_rotation_command_failure_propagates(self):
+        """命令失败抛 AdbError（由应用层收敛为 0 并缓存）。"""
+        with patch.object(
+            AdbCliDriver, "_run_serial", side_effect=AdbError("boom")
+        ):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError):
+                await driver.get_rotation("dev1")
+
+
+# ---------------------------------------------------------------------------
 # logcat 流式采集测试（-T 时间下界绑定）
 # ---------------------------------------------------------------------------
 

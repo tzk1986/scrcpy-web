@@ -15,10 +15,12 @@
 """
 
 import asyncio
+import io
 import time
 from ipaddress import ip_network
 
 import pytest
+from PIL import Image
 from unittest.mock import AsyncMock, MagicMock
 
 from app.application.device_service import (
@@ -49,6 +51,7 @@ def mock_adb():
     adb.install = AsyncMock()
     adb.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n")
     adb.screenshot_raw_gzip = AsyncMock(return_value=b"\x1f\x8bGZIP")
+    adb.get_rotation = AsyncMock(return_value=0)
     adb.connect_tcp = AsyncMock(return_value="192.168.1.5:5555")
     adb.disconnect_tcp = AsyncMock()
     adb.scan_hosts = AsyncMock(return_value=[])
@@ -381,6 +384,74 @@ class TestScreenshot:
 
         mock_adb.screenshot_raw_gzip.assert_called_once_with("emulator-5554")
         assert result == b"GZIP_FRAME"
+
+    @pytest.mark.asyncio
+    async def test_screenshot_applies_rotation_180(self, service, mock_adb):
+        """rotation=2 → PNG 经 180° 补偿（方案 38 B4）：行主序像素全反序。"""
+        png, src_pixels = _make_png_2x2()
+        mock_adb.screenshot.return_value = png
+        mock_adb.get_rotation = AsyncMock(return_value=2)
+
+        result = await service.screenshot("emulator-5554")
+
+        with Image.open(io.BytesIO(result)) as img:
+            img.load()
+            assert list(img.getdata()) == src_pixels[::-1]
+
+
+def _make_png_2x2() -> tuple[bytes, list[tuple[int, int, int]]]:
+    """生成 2×2 逐像素异色 PNG 与行主序像素列表（rotation 测试锚点）。"""
+    img = Image.new("RGB", (2, 2))
+    px = img.load()
+    for x in range(2):
+        for y in range(2):
+            px[x, y] = (x * 200 + 10, y * 200 + 20, 40)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue(), [px[x, y] for y in range(2) for x in range(2)]
+
+
+# ---------------------------------------------------------------------------
+# rotation 查询与 TTL 缓存测试（方案 38 B3）
+# ---------------------------------------------------------------------------
+
+class TestRotationCache:
+    """测试 get_rotation 方法"""
+
+    @pytest.mark.asyncio
+    async def test_ttl_cache_reuses_within_window(self, service, mock_adb):
+        """TTL 内二次调用复用缓存，adb 只查一次。"""
+        mock_adb.get_rotation = AsyncMock(return_value=2)
+
+        assert await service.get_rotation("emulator-5554") == 2
+        assert await service.get_rotation("emulator-5554") == 2
+
+        mock_adb.get_rotation.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ttl_expires_then_requeries(self, service, mock_adb, monkeypatch):
+        """TTL 过期后重查 adb（monkeypatch 时钟前推 31s）。"""
+        mock_adb.get_rotation = AsyncMock(return_value=2)
+        now = [0.0]
+        monkeypatch.setattr(
+            "app.application.device_service.time.monotonic", lambda: now[0]
+        )
+
+        assert await service.get_rotation("emulator-5554") == 2
+        now[0] = 31.0
+        assert await service.get_rotation("emulator-5554") == 2
+
+        assert mock_adb.get_rotation.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_failure_cached_as_zero(self, service, mock_adb):
+        """查询失败 → 返回 0 且同 TTL 缓存（不重试风暴）。"""
+        mock_adb.get_rotation = AsyncMock(side_effect=AdbError("dumpsys timeout"))
+
+        assert await service.get_rotation("emulator-5554") == 0
+        assert await service.get_rotation("emulator-5554") == 0
+
+        mock_adb.get_rotation.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

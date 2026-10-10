@@ -83,6 +83,7 @@ class FakeDeviceService:
         self.batch_results: list[str] = []
         self.png = b"\x89PNG\r\n\x1a\nfakepng"
         self.raw_gz = gzip.compress(b"RAW_FRAME_PAYLOAD")
+        self.rotation = 0
         self.raw_error: Exception | None = None
         self.new_device_id = "192.168.1.5:5555"
         self.scan_result = ScanResult(
@@ -123,6 +124,10 @@ class FakeDeviceService:
         if self.raw_error is not None:
             raise self.raw_error
         return self.raw_gz
+
+    async def get_rotation(self, device_id: str) -> int:
+        self.calls.append(("get_rotation", device_id))
+        return self.rotation
 
     async def connect_tcp(self, ip: str, port: int = 5555) -> str:
         self.calls.append(("connect_tcp", ip, port))
@@ -258,7 +263,7 @@ def test_batch_install(fake: FakeDeviceService) -> None:
 
 
 def test_screenshot(fake: FakeDeviceService) -> None:
-    """截图返回 PNG 二进制与 Content-Type。"""
+    """截图返回 PNG 二进制与 Content-Type，并携带 X-Rotation（方案 38 B6）。"""
     client = make_client()
     with override(get_device_service, fake):
         response = client.get(f"/api/devices/{DEV}/screenshot")
@@ -266,11 +271,23 @@ def test_screenshot(fake: FakeDeviceService) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.content == fake.png
-    assert fake.calls == [("screenshot", DEV)]
+    assert response.headers["x-rotation"] == "0"
+    assert fake.calls == [("get_rotation", DEV), ("screenshot", DEV)]
+
+
+def test_screenshot_png_rotation_header(fake: FakeDeviceService) -> None:
+    """rotation=2 设备 PNG 截图头标注 X-Rotation: 2。"""
+    fake.rotation = 2
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.get(f"/api/devices/{DEV}/screenshot")
+
+    assert response.status_code == 200
+    assert response.headers["x-rotation"] == "2"
 
 
 def test_screenshot_raw(fake: FakeDeviceService) -> None:
-    """format=raw 原样透传 gzip 字节 + gzip/格式响应头（方案 29）。
+    """format=raw 原样透传 gzip 字节 + gzip/格式/rotation 响应头（方案 29/38）。
 
     注意：httpx（与浏览器同行为）对 Content-Encoding: gzip 响应透明解压，
     response.content 为解压后的原始字节——这正是前端依赖的传输层行为。
@@ -284,12 +301,14 @@ def test_screenshot_raw(fake: FakeDeviceService) -> None:
     assert response.headers["content-type"] == "application/octet-stream"
     assert response.headers["content-encoding"] == "gzip"
     assert response.headers["x-frame-format"] == "raw-rgba"
-    assert fake.calls == [("screenshot_raw_gzip", DEV)]
+    assert response.headers["x-rotation"] == "0"
+    assert fake.calls == [("get_rotation", DEV), ("screenshot_raw_gzip", DEV)]
 
 
 def test_screenshot_raw_falls_back_to_png(fake: FakeDeviceService) -> None:
-    """raw 链路失败 → 单请求内回退 PNG 且标注 X-Frame-Format: png。"""
+    """raw 链路失败 → 单请求内回退 PNG 且标注 X-Frame-Format: png（含 X-Rotation）。"""
     fake.raw_error = AdbError("sh: gzip: not found")
+    fake.rotation = 3
     client = make_client()
     with override(get_device_service, fake):
         response = client.get(f"/api/devices/{DEV}/screenshot", params={"format": "raw"})
@@ -298,7 +317,8 @@ def test_screenshot_raw_falls_back_to_png(fake: FakeDeviceService) -> None:
     assert response.content == fake.png
     assert response.headers["content-type"] == "image/png"
     assert response.headers["x-frame-format"] == "png"
-    assert fake.calls == [("screenshot_raw_gzip", DEV), ("screenshot", DEV)]
+    assert response.headers["x-rotation"] == "3"
+    assert fake.calls == [("get_rotation", DEV), ("screenshot_raw_gzip", DEV), ("screenshot", DEV)]
 
 
 # ---------------------------------------------------------------------------

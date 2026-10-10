@@ -203,7 +203,10 @@ async def screenshot(
         png：PNG 图片数据（Content-Type: image/png）。
         raw：gzip 压缩的 raw RGBA 帧数据（X-Frame-Format: raw-rgba）；
         链路失败时回退 PNG（X-Frame-Format: png）。
+        两类响应均携带 X-Rotation（0-3，方案 38 B6）：前端 raw 链路据此
+        画布补偿；PNG 链路已由应用层内联补偿，头供一致性参考。
     """
+    rotation = await service.get_rotation(device_id)
     if format == "raw":
         try:
             gzip_bytes = await service.screenshot_raw_gzip(device_id)
@@ -212,15 +215,23 @@ async def screenshot(
             return Response(
                 content=png_bytes,
                 media_type="image/png",
-                headers={"X-Frame-Format": "png"},
+                headers={"X-Frame-Format": "png", "X-Rotation": str(rotation)},
             )
         return Response(
             content=gzip_bytes,
             media_type="application/octet-stream",
-            headers={"Content-Encoding": "gzip", "X-Frame-Format": "raw-rgba"},
+            headers={
+                "Content-Encoding": "gzip",
+                "X-Frame-Format": "raw-rgba",
+                "X-Rotation": str(rotation),
+            },
         )
     png_bytes = await service.screenshot(device_id)
-    return Response(content=png_bytes, media_type="image/png")
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"X-Rotation": str(rotation)},
+    )
 
 
 @router.post("/scan")

@@ -364,6 +364,21 @@ class AdbDriver(Protocol):
         """
         ...
 
+    async def get_rotation(self, device_id: str) -> int:
+        """
+        查询设备显示 rotation（Surface 值 0-3，方案 38 B1）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            rotation 值 0-3；查询不可得时返回 0（不旋转）。
+
+        异常：
+            AdbError: 命令执行失败。
+        """
+        ...
+
     async def connect_tcp(self, ip: str, port: int = 5555, timeout: int | None = None) -> str:
         """
         通过 TCP/IP 连接设备，返回 "ip:port" 形式的设备 ID。

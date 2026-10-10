@@ -34,7 +34,8 @@ import time
 from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Optional
 
-from app.core.exceptions import DeviceUnreachableError, ScanBusyError
+from app.application.image_ops import rotate_png_payload
+from app.core.exceptions import AdbError, DeviceUnreachableError, ScanBusyError
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
 from app.domain.ports import AdbDriver, DeviceRepository
@@ -44,6 +45,9 @@ logger = get_logger(__name__)
 # 信息查询失败后的冷却时长（秒，方案 35 D4）：卡设备 30s 内不重试，
 # 边界设备重试频率低（对设备友好）；到期自动恢复查询。
 _COOLDOWN_SECONDS = 30
+
+# rotation 查询内存 TTL（秒，方案 38 B3）：成功与失败同缓存期。
+_ROTATION_TTL = 30
 
 # 设备信息查询的设备级并发上限（方案 35 D1）：防设备数增长后进程失控。
 _INFO_CONCURRENCY = 8
@@ -102,6 +106,7 @@ class DeviceService:
         self._info_cooldown: dict[str, float] = {}  # device_id → 冷却截止（time.monotonic）
         self._info_tasks: dict[str, asyncio.Task[Optional[DeviceInfo]]] = {}
         self._scan_inflight = False  # 网段扫描互斥（方案 36 D2）
+        self._rotation_cache: dict[str, tuple[int, float]] = {}  # 方案 38 B3
 
     async def list_devices(self) -> list[DeviceInfo]:
         """
@@ -249,7 +254,8 @@ class DeviceService:
 
     async def screenshot(self, device_id: str) -> bytes:
         """
-        从设备截取屏幕截图。
+        从设备截取屏幕截图（方案 38 B4：rotation>0 时经 180/90 补偿，
+        使截图方向与视频流一致）。
 
         参数：
             device_id: ADB 序列号。
@@ -257,7 +263,9 @@ class DeviceService:
         返回：
             PNG 图像数据字节。
         """
-        return await self.adb.screenshot(device_id)
+        data = await self.adb.screenshot(device_id)
+        rotation = await self.get_rotation(device_id)
+        return rotate_png_payload(data, rotation) if rotation else data
 
     async def screenshot_raw_gzip(self, device_id: str) -> bytes:
         """
@@ -270,6 +278,29 @@ class DeviceService:
             gzip 压缩的 raw RGBA 帧数据（含 screencap 帧头）。
         """
         return await self.adb.screenshot_raw_gzip(device_id)
+
+    async def get_rotation(self, device_id: str) -> int:
+        """
+        查询设备显示 rotation（方案 38 B3）：内存 TTL 缓存 30s，
+        成功与失败（收敛为 0）同缓存期——截图模式逐帧调用不产生
+        dumpsys 风暴；查询失败期内不旋转，到期自动重查。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            rotation 值 0-3。
+        """
+        cached = self._rotation_cache.get(device_id)
+        if cached is not None and time.monotonic() - cached[1] < _ROTATION_TTL:
+            return cached[0]
+        try:
+            rotation = await self.adb.get_rotation(device_id)
+        except AdbError:
+            logger.warning("get_rotation_failed", device_id=device_id)
+            rotation = 0
+        self._rotation_cache[device_id] = (rotation, time.monotonic())
+        return rotation
 
     async def connect_tcp(self, ip: str, port: int = 5555, timeout: int | None = None) -> str:
         """
