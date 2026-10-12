@@ -43,7 +43,7 @@ from app.core.exceptions import (
     openscrcpy_exception_handler,
     validation_exception_handler,
 )
-from app.interfaces.http import apps, debug, devices, network, performance, sessions, system
+from app.interfaces.http import apps, debug, devices, network, performance, recording, sessions, system
 from app.interfaces.http.origin_guard import OriginGuardMiddleware
 from app.interfaces.ws import debug as ws_debug
 from app.interfaces.ws import performance as ws_performance
@@ -123,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(debug.router)       # /api/debug
     app.include_router(network.router)     # /api/network
     app.include_router(performance.router) # /api/perf
+    app.include_router(recording.router)   # /api/recording
     app.include_router(sessions.router)    # /api/sessions
     app.include_router(system.router)      # /api/system（配置热重载）
 
