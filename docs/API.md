@@ -112,6 +112,12 @@
 | POST | `/api/sessions/{session_id}/join` | 加入协作会话 | — |
 | POST | `/api/sessions/{session_id}/leave` | 离开协作会话 | — |
 | POST | `/api/sessions/{session_id}/transfer` | 转移控制权 | — |
+| GET | `/api/devices/{device_id}/files` | 设备目录列表（方案 39） | `api.listFiles` |
+| GET | `/api/devices/{device_id}/file/download` | 下载（单=原文件，多=zip，方案 39） | `api.downloadFiles` |
+| POST | `/api/devices/{device_id}/file/upload` | multipart 上传（方案 39） | `api.uploadFile` |
+| POST | `/api/devices/{device_id}/file/rename` | 重命名（方案 39） | `api.renameFile` |
+| POST | `/api/devices/{device_id}/file/delete` | 批量删除（方案 39） | `api.deleteFiles` |
+| GET | `/api/devices/{device_id}/file-jobs/{job_id}` | 传输任务状态（方案 39） | `api.getFileJob` |
 
 ### 2.2 系统
 
@@ -572,6 +578,57 @@ data: {"type": "disconnected", "device_id": "..."}
 - 查询参数：`from_user`、`to_user`（均必填）
 - 响应 200：`{"success": true}`
 - 错误：403 `PERMISSION_DENIED`（`from_user` 不是 admin）、404 `SESSION_NOT_FOUND`（会话不存在）
+
+### 2.9 文件管理（`/api/devices/{device_id}/files*`，方案 39）
+
+设备文件浏览/上传/下载/重命名/删除。**读全盘、写白名单**（仅 `/sdcard`、
+`/data/local/tmp`）；单设备同时只允许 1 个传输（互斥 409）；上传单文件上限
+512MB。所有路径参数为设备端绝对路径，后端 normalize + shlex.quote 双层防御。
+
+#### GET /api/devices/{device_id}/files
+
+- 查询参数：`path`（默认 `/sdcard`）
+- 响应 200：`[{"name","is_dir","is_symlink","size","mtime","permissions","link_target"}]`
+  （toybox `ls -la` 解析；`.`/`..` 与 total 行忽略；非 UTF-8 文件名字节以替换符呈现）
+- 错误：400 `INVALID_PATH`（相对/含 NUL）、404 `PATH_NOT_FOUND`、403 `PERMISSION_DENIED`
+
+#### GET /api/devices/{device_id}/file/download
+
+- 查询参数：`paths`（必填，可重复裸键 `paths=…&paths=…`；单值=原文件流，
+  多值=后端 zip，zip 名 `<首个文件basename>_etc.zip`）
+- 响应 200：`application/octet-stream` + `Content-Disposition: attachment`；
+  响应头 `X-File-Job` 携带任务 ID（供 `file-jobs` 查询关联进度）
+- 错误：400 `NOT_A_FILE`（目录）、404 `PATH_NOT_FOUND`、409 `TRANSFER_BUSY`
+- 暂存清理在响应发送完成后执行（BackgroundTask）；大传输前端须关闭 axios 超时
+
+#### POST /api/devices/{device_id}/file/upload
+
+- 查询参数：`dir`（默认 `/sdcard`，须在写白名单内）
+- 请求体：`multipart/form-data`，字段名 `file`（单请求单文件；多文件由前端顺序
+  逐个——互斥语义即单飞）
+- 响应 200：任务 JSON `{id,device_id,direction:"upload",paths,total_size,status:"done",substage,error}`
+- 错误：400 `INVALID_PATH`、403 `PERMISSION_DENIED`、409 `TRANSFER_BUSY`、413 `FILE_TOO_LARGE`
+- 字节流经 `UploadFile.read` 注入应用层（application 层不依赖 fastapi）
+
+#### POST /api/devices/{device_id}/file/rename
+
+- 请求体：`{"path": "…", "new_name": "…"}`（new_name 不得含 `/`、非 `.`/`..`）
+- 响应 200：`{"ok": true}`
+- 错误：400 `INVALID_PATH`、403 `PERMISSION_DENIED`、404 `PATH_NOT_FOUND`、409 `TARGET_EXISTS`
+
+#### POST /api/devices/{device_id}/file/delete
+
+- 请求体：`{"paths": ["…", …]}`
+- 预检：任一白名单外路径 → 整体 403（一项都不执行）
+- 响应 200：`{"results": [{"path","ok","error"}]}`（逐项执行汇总；软链按 `rm -f`
+  删除链接本身，目录 `rm -r`）
+
+#### GET /api/devices/{device_id}/file-jobs/{job_id}
+
+- 响应 200：任务公开 JSON（字段同 upload 响应）
+- 错误：404 `JOB_NOT_FOUND`（ID 无效/已过期 60s TTL/跨设备，统一形状不区分）
+- 状态机：`status running→done|failed`；`substage` 下载 `pulling→zipping→http`、
+  上传 `http→pushing`（前端两段进度依据：HTTP 段真实百分比、adb 段不确定态）
 
 ## 三、WebSocket 端点
 

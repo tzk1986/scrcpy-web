@@ -43,7 +43,7 @@ from app.core.exceptions import (
     openscrcpy_exception_handler,
     validation_exception_handler,
 )
-from app.interfaces.http import apps, debug, devices, network, performance, recording, sessions, system
+from app.interfaces.http import apps, debug, devices, files, network, performance, recording, sessions, system
 from app.interfaces.http.origin_guard import OriginGuardMiddleware
 from app.interfaces.ws import debug as ws_debug
 from app.interfaces.ws import performance as ws_performance
@@ -120,6 +120,7 @@ def create_app() -> FastAPI:
     # --- HTTP 路由（interfaces/http/）--------------------------------------
     app.include_router(apps.router)        # /api/apps
     app.include_router(devices.router)     # /api/devices
+    app.include_router(files.router)       # /api/devices/{id}/files*（方案 39，多段子路由）
     app.include_router(debug.router)       # /api/debug
     app.include_router(network.router)     # /api/network
     app.include_router(performance.router) # /api/perf
