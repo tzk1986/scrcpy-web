@@ -118,6 +118,26 @@
       </div>
     </div>
 
+    <!-- 进程 CPU Top 8（方案 37 D5）：缺字段/空数组时整体隐藏 -->
+    <div v-if="hasProcessTable" class="extra-section">
+      <div class="extra-title">进程 CPU Top 8</div>
+      <el-table :data="topProcesses" size="small" class="proc-table">
+        <el-table-column prop="proc" label="进程" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="user" label="User %" min-width="90" />
+        <el-table-column prop="kernel" label="Kernel %" min-width="90" />
+      </el-table>
+    </div>
+
+    <!-- 电池展示条（方案 37 D5）：温度/电压/health 单项缺失隐藏，全缺失整条隐藏 -->
+    <div v-if="hasBatteryBar" class="extra-section">
+      <div class="extra-title">电池</div>
+      <div class="battery-bar">
+        <span v-if="batteryTempText !== null" class="battery-chip">{{ batteryTempText }}</span>
+        <span v-if="batteryVoltageText !== null" class="battery-chip">{{ batteryVoltageText }}</span>
+        <span v-if="batteryHealthText !== null" class="battery-chip">{{ batteryHealthText }}</span>
+      </div>
+    </div>
+
     <!-- 状态指示器 -->
     <div class="status-bar">
       <div v-if="wsConnected" class="status-indicator live">
@@ -159,6 +179,18 @@ interface PerfMetrics {
   current_activity: string
   top_package: string
   alerts?: AlertItem[]
+  // 方案 37 D5 新 4 键（后端 D3 透传）：可选——旧后端/旧数据可能整键缺失
+  cpu_processes?: CpuProcessInfo[]
+  battery_temp?: number | null
+  battery_voltage?: number | null
+  battery_health?: string
+}
+
+/** 进程级 CPU 明细（后端 sampler CpuProcessInfo 纯值 dict 化形态）。 */
+interface CpuProcessInfo {
+  proc: string
+  user: number
+  kernel: number
 }
 
 const props = defineProps<{
@@ -198,6 +230,46 @@ const memoryPercent = computed(() => {
   if (!latestMetrics.value.total_memory_mb) return 0
   return (latestMetrics.value.used_memory_mb / latestMetrics.value.total_memory_mb) * 100
 })
+
+// ---------------- 方案 37 D5：进程 CPU Top 8 + 电池展示条 ----------------
+
+/** 进程 CPU Top 8：user+kernel 降序；缺失/空数组防御性空表（隐藏分段）。 */
+const topProcesses = computed<CpuProcessInfo[]>(() => {
+  const list = latestMetrics.value.cpu_processes
+  if (!list || list.length === 0) return []
+  return [...list].sort((a, b) => b.user + b.kernel - (a.user + a.kernel)).slice(0, 8)
+})
+
+const hasProcessTable = computed(() => topProcesses.value.length > 0)
+
+/** 温度文本：摄氏原值（后端已 ÷10），toFixed(1) 展示；None/非有限值隐藏单项。 */
+const batteryTempText = computed<string | null>(() => {
+  const t = latestMetrics.value.battery_temp
+  if (t == null || !Number.isFinite(t)) return null
+  return `${t.toFixed(1)} °C`
+})
+
+/** 电压文本：mV 原值（0 为板级假值，如实展示）；None 隐藏单项。 */
+const batteryVoltageText = computed<string | null>(() => {
+  const v = latestMetrics.value.battery_voltage
+  if (v == null) return null
+  return `${v} mV`
+})
+
+/** health 文本：后端归一字符串直显；缺失/空串隐藏单项。 */
+const batteryHealthText = computed<string | null>(() => {
+  const h = latestMetrics.value.battery_health
+  if (!h) return null
+  return h
+})
+
+/** 电池条整体可见性：三项全缺时整条隐藏（旧后端降级）。 */
+const hasBatteryBar = computed(
+  () =>
+    batteryTempText.value !== null ||
+    batteryVoltageText.value !== null ||
+    batteryHealthText.value !== null,
+)
 
 // CPU 图表配置
 const cpuChartOption = computed(() => ({
@@ -576,6 +648,35 @@ function disconnectWebSocket() {
 .chart {
   flex: 1;
   min-height: 150px;
+}
+
+.extra-section {
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.extra-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #303133;
+  margin-bottom: 8px;
+}
+
+.battery-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.battery-chip {
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #409EFF;
+  background: #ecf5ff;
+  border: 1px solid #d9ecff;
 }
 
 .status-bar {

@@ -78,6 +78,29 @@ const metrics = {
   top_package: 'com.example.app',
 }
 
+/** 方案 37 D5 新 4 键（后端 D3 已透传；断言用 payload 以此为准）。 */
+const d5Fields = {
+  // user+kernel 降序：procI(21) procL(21) procB(17) procF(14) procC(13)
+  // procG(10.5) procD(10) procH(8) | 裁掉 procE/procK(7) procA(2) procJ(0.2)
+  cpu_processes: [
+    { proc: 'procA', user: 1, kernel: 1 },
+    { proc: 'procB', user: 9, kernel: 8 },
+    { proc: 'procC', user: 7, kernel: 6 },
+    { proc: 'procD', user: 5, kernel: 5 },
+    { proc: 'procE', user: 3, kernel: 4 },
+    { proc: 'procF', user: 11, kernel: 3 },
+    { proc: 'procG', user: 10, kernel: 0.5 },
+    { proc: 'procH', user: 2, kernel: 6 },
+    { proc: 'procI', user: 20, kernel: 1 },
+    { proc: 'procJ', user: 0.1, kernel: 0.1 },
+    { proc: 'procK', user: 4, kernel: 3 },
+    { proc: 'procL', user: 12, kernel: 9 },
+  ],
+  battery_temp: 42.4,
+  battery_voltage: 4200,
+  battery_health: 'GOOD',
+}
+
 const ElButton = defineComponent({
   name: 'ElButton',
   props: { loading: Boolean },
@@ -121,8 +144,35 @@ const ElDropdownItem = defineComponent({
 })
 
 function elStubs() {
-  return { ElButton, ElDropdown, ElDropdownMenu, ElDropdownItem }
+  return {
+    ElButton,
+    ElDropdown,
+    ElDropdownMenu,
+    ElDropdownItem,
+    ElTable: ElTableStub,
+    // 消解「Failed to resolve component: el-table-column」警告（测试环境未全局注册 element-plus）
+    'el-table-column': true,
+  }
 }
+
+/** 进程表格渲染 stub（AppsView.test.ts ElTableStub 先例）：按 data 渲染行 + slot 透传。 */
+const ElTableStub = defineComponent({
+  name: 'ElTable',
+  props: { data: Array },
+  setup(props, { slots }) {
+    return () =>
+      hVue('div', { class: 'stub-table' }, [
+        ((props.data ?? []) as Array<Record<string, unknown>>).map((row, i) =>
+          hVue('div', { key: i, class: 'stub-table-row' }, [
+            hVue('span', { class: 'stub-proc' }, String(row.proc)),
+            hVue('span', { class: 'stub-user' }, String(row.user)),
+            hVue('span', { class: 'stub-kernel' }, String(row.kernel)),
+          ]),
+        ),
+        slots.default?.(),
+      ])
+  },
+})
 
 function mountView() {
   return shallowMount(PerfView, {
@@ -472,5 +522,93 @@ describe('PerfView', () => {
 
     expect(wrapper.findAll('.alert-chip')).toHaveLength(0)
     expect(elMessage.warning).not.toHaveBeenCalled()
+  })
+
+  // ---------------- 方案 37 D5：进程 CPU Top N 表格 ----------------
+
+  it('渲染进程 CPU Top-N 表格（user+kernel 降序取前 8）', async () => {
+    const wrapper = mountView()
+    const ws = latestWs()
+
+    ws.messageHandler!(JSON.stringify({ ...metrics, ...d5Fields }))
+    await nextTick()
+
+    const table = wrapper.find('.stub-table')
+    expect(table.exists()).toBe(true)
+    const rows = wrapper.findAll('.stub-table-row')
+    expect(rows).toHaveLength(8)
+    // 降序：前两名并列 21 保持原相对序
+    expect(rows[0].text()).toContain('procI')
+    expect(rows[1].text()).toContain('procL')
+    expect(rows[2].text()).toContain('procB')
+    expect(rows[7].text()).toContain('procH')
+    // user/kernel 数值透出
+    expect(rows[0].text()).toContain('20')
+    expect(rows[0].text()).toContain('1')
+    expect(rows[5].text()).toContain('0.5')
+    // 第 9-12 名被裁掉
+    const text = table.text()
+    expect(text).not.toContain('procE')
+    expect(text).not.toContain('procK')
+    expect(text).not.toContain('procA')
+    expect(text).not.toContain('procJ')
+    wrapper.unmount()
+  })
+
+  // ---------------- 方案 37 D5：电池温度/电压/health 展示条 ----------------
+
+  it('展示电池温度/电压/health（摄氏原值 toFixed(1) + mV + 归一字符串）', async () => {
+    const wrapper = mountView()
+    const ws = latestWs()
+
+    ws.messageHandler!(JSON.stringify({ ...metrics, ...d5Fields }))
+    await nextTick()
+
+    const bar = wrapper.find('.battery-bar')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('42.4 °C')
+    expect(bar.text()).toContain('4200 mV')
+    expect(bar.text()).toContain('GOOD')
+
+    // 板级怪值如实展示（后端已 ÷10，前端不再 /10）；电压 None 单项隐藏
+    ws.messageHandler!(
+      JSON.stringify({ ...metrics, battery_temp: 2.6, battery_voltage: null, battery_health: 'UNKNOWN' }),
+    )
+    await nextTick()
+    expect(bar.text()).toContain('2.6 °C')
+    expect(bar.text()).not.toContain('mV')
+    expect(bar.text()).toContain('UNKNOWN')
+    wrapper.unmount()
+  })
+
+  // ---------------- 方案 37 D5：缺字段优雅降级 ----------------
+
+  it('新字段缺失/空数组/None 时隐藏新分段（旧后端/旧数据降级）', async () => {
+    const wrapper = mountView()
+    const ws = latestWs()
+
+    // 旧 8 键 payload：两个新分段都不出现
+    ws.messageHandler!(JSON.stringify(metrics))
+    await nextTick()
+    expect(wrapper.find('.stub-table').exists()).toBe(false)
+    expect(wrapper.find('.battery-bar').exists()).toBe(false)
+
+    // 空数组 + 温度/电压 None + health 兜底串：表格不出现，电池条仅剩 UNKNOWN
+    ws.messageHandler!(
+      JSON.stringify({ ...metrics, cpu_processes: [], battery_temp: null, battery_voltage: null, battery_health: 'UNKNOWN' }),
+    )
+    await nextTick()
+    expect(wrapper.find('.stub-table').exists()).toBe(false)
+    const bar = wrapper.find('.battery-bar')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('UNKNOWN')
+    expect(bar.text()).not.toContain('°C')
+    expect(bar.text()).not.toContain('mV')
+
+    // 全部缺失（undefined 键）→ 电池条整体隐藏
+    ws.messageHandler!(JSON.stringify(metrics))
+    await nextTick()
+    expect(wrapper.find('.battery-bar').exists()).toBe(false)
+    wrapper.unmount()
   })
 })
