@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 截图标注（方案 37 屏幕工具）：「截图」预览弹窗支持画笔/箭头/矩形/文字叠加标注，导出标注后 PNG 或直接保存原图
 - 应用运行时状态（方案 37 应用检查）：详情弹窗「运行时」区块——Top Activity / Resumed Activity 卡片 + Service 清单 + 按需刷新；解析缺失字段返回 parse_warning 提示，不整体失败
 - 性能监控扩展（方案 37 性能增强）：进程 CPU Top 8 表格 + 电池温度（摄氏直显）/电压/健康状态展示条（单项缺失自动隐藏）；采样与 CSV/JSON 导出新增 4 字段（旧字段零变化，新字段置尾）
+- 详情页一键截图（方案 40）：视频流抓帧主路径 + 无流回退设备端截图，截图更接近实时画面
 
 ### Security
 
@@ -26,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - 录屏降档竞态（方案 37 屏幕工具）：低端设备编码器报错延迟超启动宽限窗时降档不生效——扩展「宽限窗 + 任务终结回调」双触发点并防重入（.25 真机复验通过）
+- 截屏方向矫正（方案 38/40）：截图链路 rotation 补正（含 .33 rotation=1 情形、root 截屏魔数剥前缀兜底、多屏警告污染治理）；rotation 判据信号源换挡 dumpsys input→display，元数据缺失时按 deviceInfo rotation 兜底
+- 断开重连方向颠倒修复（方案 41）：rotation 缓存随连接生命周期清理，修复断开-重连后缩略图方向颠倒
 - 方案 36 终评修复轮收口：端口 422 校验、扫描 60s 超时上界修正、缩略图清理竞态等 10 项
 
 ## [0.7.3] - 2026-10-09
