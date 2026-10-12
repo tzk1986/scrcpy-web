@@ -19,7 +19,8 @@
     ├── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）
     ├── RecordingDisabledError   — 录制总开关关闭时请求开启（400）
     ├── ScanBusyError            — 已有扫描进行中，重复请求被拒（409，方案 36）
-    └── InvalidScanRangeError    — 扫描网段非法或超上限（422，方案 36）
+    ├── InvalidScanRangeError    — 扫描网段非法或超上限（422，方案 36）
+    └── ConflictError            — 同一设备已有进行态录屏会话（409，方案 37 B3）
 
 所有异常都携带一个机器可读的 ``code`` 字段（如 "DEVICE_NOT_FOUND"）
 以及一个人可读的 ``message``。这让前端可以根据 ``error.code`` 进行
@@ -144,6 +145,18 @@ class InvalidScanRangeError(OpenScrcpyException):
         super().__init__(
             f"扫描网段 {cidr!r} 非法或超出支持范围（仅支持 IPv4，前缀 /22 至 /32）",
             code="INVALID_SCAN_RANGE",
+        )
+
+
+class ConflictError(OpenScrcpyException):
+    """录屏互斥：同一设备已有进行态录屏会话（方案 37 B3）。"""
+
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(
+            "该设备已有进行中的录屏会话，请先停止当前录制后再试",
+            code="RECORDING_IN_PROGRESS",
         )
 
 

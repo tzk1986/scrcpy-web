@@ -21,6 +21,7 @@
 
     DeviceService(adb, repo)
     DebugService(adb, repo)
+    RecordingService(adb)      ← 方案 37 B3（单例：会话表 + 周期清理任务）
     StreamService(encoder)
     SessionService()（无依赖，纯内存）
 """
@@ -32,6 +33,7 @@ from app.application.debug_service import DebugService
 from app.application.device_service import DeviceService
 from app.application.network_service import NetworkService
 from app.application.performance_service import PerformanceService
+from app.application.recording_service import RecordingService
 from app.application.session_service import SessionService
 from app.application.stream_service import StreamService
 from app.domain.ports import AdbDriver, DebugRepository, DeviceRepository
@@ -75,9 +77,10 @@ def get_debug_repository() -> DebugRepository:
 # ---------------------------------------------------------------------------
 # 单例应用服务（需要跨请求共享状态）
 # ---------------------------------------------------------------------------
-# DeviceService 和 DebugService 需要是单例，因为：
+# DeviceService、DebugService 和 RecordingService 需要是单例，因为：
 #   - DeviceService 维护设备刷新任务和事件回调
 #   - DebugService 维护活跃会话、logcat 任务和 WebSocket 订阅者
+#   - RecordingService 维护录屏会话表与周期清理任务（方案 37 B3）
 
 @lru_cache()
 def get_device_service() -> DeviceService:
@@ -107,6 +110,16 @@ def get_performance_service() -> PerformanceService:
 def get_network_service() -> NetworkService:
     """返回进程级 NetworkService 单例。"""
     return NetworkService(adb=get_adb_driver())
+
+
+@lru_cache()
+def get_recording_service() -> RecordingService:
+    """返回进程级 RecordingService 单例（方案 37 B3）。
+
+    必须单例：sessions 会话表与 cleanup_task 为进程内共享状态，
+    每请求新建实例会让单设备互斥失效、周期清理任务泄漏。
+    """
+    return RecordingService(adb=get_adb_driver())
 
 
 @lru_cache()
