@@ -69,6 +69,36 @@ export interface RuntimeInfo {
   parse_warning: string
 }
 
+/** 设备端目录条目（方案 39，对应后端 FileEntry）。 */
+export interface FileEntry {
+  name: string
+  is_dir: boolean
+  is_symlink: boolean
+  size: number
+  mtime: string
+  permissions: string
+  link_target: string | null
+}
+
+/** 传输任务（方案 39，对应后端 TransferJob 公开形状）。 */
+export interface FileJob {
+  id: string
+  device_id: string
+  direction: 'download' | 'upload'
+  paths: string[]
+  total_size: number
+  status: 'running' | 'done' | 'failed'
+  substage: string | null
+  error: string | null
+}
+
+/** 删除逐条结果（方案 39，对应后端 delete 返回项）。 */
+export interface DeleteResult {
+  path: string
+  ok: boolean
+  error: string | null
+}
+
 // 创建 axios 实例，配置基础 URL 和超时
 const client = axios.create({
   baseURL: '/api',
@@ -571,5 +601,111 @@ export const api = {
   async listRecordings() {
     const res = await client.get('/recording')
     return res.data as { recordings: RecordingSession[] }
+  },
+
+  // ==================== 文件管理 API（方案 39）====================
+
+  /**
+   * 设备目录列表。
+   * 对应：GET /api/devices/{deviceId}/files?path=
+   */
+  async listFiles(deviceId: string, path: string): Promise<FileEntry[]> {
+    const res = await client.get(`/devices/${encodeURIComponent(deviceId)}/files`, {
+      params: { path },
+    })
+    return res.data as FileEntry[]
+  },
+
+  /**
+   * 下载文件（单=原文件、多=zip）。
+   * 对应：GET /api/devices/{deviceId}/file/download?paths=..&paths=..
+   * paths 手动拼重复查询串（axios 默认序列化为 paths[]=，后端 Query list
+   * 需裸重复键）。超时关闭（大文件）；onProgress 为 HTTP 段真实百分比。
+   * 返回 blob 与任务头 X-File-Job。
+   */
+  async downloadFiles(
+    deviceId: string,
+    paths: string[],
+    onProgress?: (percent: number) => void
+  ): Promise<{ blob: Blob; jobId: string | null }> {
+    const q = paths.map((p) => `paths=${encodeURIComponent(p)}`).join('&')
+    const res = await client.get<Blob>(
+      `/devices/${encodeURIComponent(deviceId)}/file/download?${q}`,
+      {
+        responseType: 'blob',
+        timeout: 0,
+        onDownloadProgress: (e: { loaded: number; total?: number }) => {
+          if (onProgress) {
+            const total = e.total ?? 0
+            if (total > 0) onProgress(Math.round((e.loaded / total) * 100))
+          }
+        },
+      }
+    )
+    const jobId = (res.headers?.['x-file-job'] ?? null) as string | null
+    return { blob: res.data, jobId }
+  },
+
+  /**
+   * 上传单文件（多文件由调用方顺序循环——设备互斥单飞）。
+   * 对应：POST /api/devices/{deviceId}/file/upload?dir=…（multipart 字段名 file）
+   */
+  async uploadFile(
+    deviceId: string,
+    dir: string,
+    file: File,
+    onProgress?: (percent: number) => void
+  ): Promise<FileJob> {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await client.post<FileJob>(
+      `/devices/${encodeURIComponent(deviceId)}/file/upload`,
+      form,
+      {
+        params: { dir },
+        timeout: 0,
+        onUploadProgress: (e: { loaded: number; total?: number }) => {
+          if (onProgress) {
+            const total = e.total ?? file.size
+            if (total > 0) onProgress(Math.round((e.loaded / total) * 100))
+          }
+        },
+      }
+    )
+    return res.data
+  },
+
+  /**
+   * 设备端重命名（同目录）。
+   * 对应：POST /api/devices/{deviceId}/file/rename {path,new_name}
+   */
+  async renameFile(deviceId: string, path: string, newName: string): Promise<void> {
+    await client.post(`/devices/${encodeURIComponent(deviceId)}/file/rename`, {
+      path,
+      new_name: newName,
+    })
+  },
+
+  /**
+   * 批量删除（逐条结果）。
+   * 对应：POST /api/devices/{deviceId}/file/delete {paths}
+   */
+  async deleteFiles(deviceId: string, paths: string[]): Promise<DeleteResult[]> {
+    const res = await client.post<{ results: DeleteResult[] }>(
+      `/devices/${encodeURIComponent(deviceId)}/file/delete`,
+      { paths }
+    )
+    return res.data.results
+  },
+
+  /**
+   * 查询传输任务状态。
+   * 对应：GET /api/devices/{deviceId}/file-jobs/{jobId}
+   */
+  async getFileJob(deviceId: string, jobId: string): Promise<FileJob> {
+    const res = await client.get<FileJob>(
+      `/devices/${encodeURIComponent(deviceId)}/file-jobs/${encodeURIComponent(jobId)}`
+    )
+    return res.data
   },
 }

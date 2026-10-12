@@ -32,6 +32,7 @@
     - 创建调试会话（自动）
     - 断开按钮：关闭 WebSocket 和调试会话，返回列表页
     - 截图按钮（方案 37 B7）：抓帧 → ScreenshotPreview 预览弹窗标注/导出（不再直接下载）
+    - 文件按钮（方案 39 T5）：跳转 /device/:id/files 文件管理独立页
 
   子组件关系：
     DeviceDetail.vue → VideoPlayer.vue
@@ -45,6 +46,7 @@
     <div class="device-info">
       <h2>设备: {{ deviceId }}</h2>
       <div class="actions">
+        <el-button class="btn-files" @click="goFiles">文件</el-button>
         <el-button @click="captureScreenshot">截图</el-button>
         <el-button @click="disconnect">断开</el-button>
         <RecordingPanel :device-id="deviceId" />
@@ -78,6 +80,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '@/services/api'
 import DebugPanel from '@/components/debug/DebugPanel.vue'
@@ -89,6 +92,7 @@ import { useDeviceStore } from '@/stores/device'
 
 const props = defineProps<{ id: string }>()
 const deviceId = props.id
+const router = useRouter()
 
 const debugStore = useDebugStore()
 const deviceStore = useDeviceStore()
@@ -129,6 +133,11 @@ onUnmounted(() => {
 function disconnect() {
   debugStore.closeSession()
   window.history.back()
+}
+
+/** 跳转设备文件管理独立页（方案 39 T5）。 */
+function goFiles() {
+  router.push({ name: 'device-files', params: { id: deviceId } })
 }
 
 /**

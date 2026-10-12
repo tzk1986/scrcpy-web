@@ -347,3 +347,113 @@ describe('系统 API（方案 23 T2）', () => {
     expect(result.status).toBe('ok')
   })
 })
+
+describe('文件管理 API（方案 39 T4）', () => {
+  const FILE_ROW = {
+    name: 'a.txt',
+    is_dir: false,
+    is_symlink: false,
+    size: 10,
+    mtime: '2026-10-12 09:12',
+    permissions: '-rw-r--r--',
+    link_target: null,
+  }
+  const UPLOAD_JOB = {
+    id: 'job-1',
+    device_id: 'dev1',
+    direction: 'upload',
+    paths: ['/sdcard'],
+    total_size: 3,
+    status: 'done',
+    substage: null,
+    error: null,
+  }
+
+  it('listFiles 请求 /devices/{id}/files 带 path 查询并返回条目数组', async () => {
+    mockClient.get.mockResolvedValueOnce({ data: [FILE_ROW] })
+    await expect(api.listFiles('192.168.8.18:5555', '/sdcard/Download')).resolves.toEqual([FILE_ROW])
+    expect(mockClient.get).toHaveBeenCalledWith('/devices/192.168.8.18%3A5555/files', {
+      params: { path: '/sdcard/Download' },
+    })
+  })
+
+  it('downloadFiles 手动拼重复 paths= 键（非 paths[]）、blob、timeout 0、透传进度与任务头', async () => {
+    mockClient.get.mockResolvedValueOnce({ data: BLOB, headers: { 'x-file-job': 'job-1' } })
+    const onProgress = vi.fn()
+    const result = await api.downloadFiles('dev1', ['/sdcard/my dir/a', '/sdcard/b'], onProgress)
+    expect(result).toEqual({ blob: BLOB, jobId: 'job-1' })
+
+    const [url, options] = mockClient.get.mock.calls[0]
+    // 裸重复键（后端 Query list 要求），空格编码 %20、斜杠编码 %2F
+    expect(url).toBe('/devices/dev1/file/download?paths=%2Fsdcard%2Fmy%20dir%2Fa&paths=%2Fsdcard%2Fb')
+    expect(options.responseType).toBe('blob')
+    expect(options.timeout).toBe(0)
+    expect(typeof options.onDownloadProgress).toBe('function')
+
+    options.onDownloadProgress({ loaded: 50, total: 100 })
+    expect(onProgress).toHaveBeenCalledWith(50)
+    // total 缺失 → 不报百分比（不伪造）
+    options.onDownloadProgress({ loaded: 30 })
+    expect(onProgress).toHaveBeenCalledTimes(1)
+  })
+
+  it('downloadFiles 不传进度回调、缺 x-file-job 头 → jobId 为 null', async () => {
+    mockClient.get.mockResolvedValueOnce({ data: BLOB, headers: {} })
+    await expect(api.downloadFiles('dev1', ['/sdcard/a'])).resolves.toEqual({
+      blob: BLOB,
+      jobId: null,
+    })
+  })
+
+  it('uploadFile POST multipart 字段 file + dir 查询 + timeout 0 + 上传进度透传', async () => {
+    mockClient.post.mockResolvedValueOnce({ data: UPLOAD_JOB })
+    const file = new File(['abc'], 'one.txt')
+    const onProgress = vi.fn()
+    await expect(api.uploadFile('dev1', '/sdcard/x', file, onProgress)).resolves.toEqual(UPLOAD_JOB)
+
+    const [url, body, options] = mockClient.post.mock.calls[0]
+    expect(url).toBe('/devices/dev1/file/upload')
+    expect(body).toBeInstanceOf(FormData)
+    expect(body.get('file')).toBe(file)
+    expect(options.params).toEqual({ dir: '/sdcard/x' })
+    expect(options.timeout).toBe(0)
+    expect(typeof options.onUploadProgress).toBe('function')
+
+    options.onUploadProgress({ loaded: 10, total: 20 })
+    expect(onProgress).toHaveBeenCalledWith(50)
+    // total 缺失回退 file.size（3 字节）
+    options.onUploadProgress({ loaded: 1 })
+    expect(onProgress).toHaveBeenLastCalledWith(33)
+  })
+
+  it('uploadFile 不传进度回调时进度事件不抛错', async () => {
+    mockClient.post.mockResolvedValueOnce({ data: UPLOAD_JOB })
+    const file = new File(['abc'], 'one.txt')
+    await expect(api.uploadFile('dev1', '/sdcard', file)).resolves.toEqual(UPLOAD_JOB)
+    const options = mockClient.post.mock.calls[0][2]
+    expect(() => options.onUploadProgress({ loaded: 1, total: 2 })).not.toThrow()
+  })
+
+  it('renameFile POST {path,new_name} 到 file/rename', async () => {
+    await api.renameFile('dev1', '/sdcard/a.txt', 'b.txt')
+    expect(mockClient.post).toHaveBeenCalledWith('/devices/dev1/file/rename', {
+      path: '/sdcard/a.txt',
+      new_name: 'b.txt',
+    })
+  })
+
+  it('deleteFiles POST {paths} 到 file/delete 并解包 results', async () => {
+    const results = [{ path: '/sdcard/a.txt', ok: true, error: null }]
+    mockClient.post.mockResolvedValueOnce({ data: { results } })
+    await expect(api.deleteFiles('dev1', ['/sdcard/a.txt'])).resolves.toEqual(results)
+    expect(mockClient.post).toHaveBeenCalledWith('/devices/dev1/file/delete', {
+      paths: ['/sdcard/a.txt'],
+    })
+  })
+
+  it('getFileJob 请求 file-jobs/{id}（id 编码）并返回任务', async () => {
+    mockClient.get.mockResolvedValueOnce({ data: UPLOAD_JOB })
+    await expect(api.getFileJob('192.168.8.18:5555', 'job 1')).resolves.toEqual(UPLOAD_JOB)
+    expect(mockClient.get).toHaveBeenCalledWith('/devices/192.168.8.18%3A5555/file-jobs/job%201')
+  })
+})

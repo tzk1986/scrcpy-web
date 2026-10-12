@@ -27,6 +27,13 @@ vi.mock('@/services/api', () => ({ api: mockApi }))
 const elMessageMock = vi.hoisted(() => ({ info: vi.fn() }))
 vi.mock('element-plus', () => ({ ElMessage: elMessageMock }))
 
+/** 方案 39 T5：最小 mock vue-router 的 useRouter（DeviceDetail 文件按钮跳转用），其余导出保持真实 */
+const routerPushMock = vi.hoisted(() => vi.fn())
+vi.mock('vue-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vue-router')>()
+  return { ...actual, useRouter: () => ({ push: routerPushMock }) }
+})
+
 /** 方案 40 A：VideoPlayer stub 暴露 captureSnapshot，供父组件截图按钮调用 */
 const captureSnapshotMock = vi.hoisted(() => vi.fn())
 
@@ -103,6 +110,7 @@ beforeEach(() => {
   captureSnapshotMock.mockReset()
   setThumbnailMock.mockReset()
   elMessageMock.info.mockReset()
+  routerPushMock.mockReset()
   anchorClickSpy.mockClear()
 })
 
@@ -227,6 +235,24 @@ describe('DeviceDetail 首帧缩略图（方案 40 消费点 2）', () => {
     await flushPromises()
 
     expect(setThumbnailMock).toHaveBeenCalledWith('dev1', blob)
+    wrapper.unmount()
+  })
+})
+
+describe('DeviceDetail 文件管理入口（方案 39 T5）', () => {
+  it('顶栏「文件」按钮跳转 device-files 路由并携带设备 id', async () => {
+    mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
+    const wrapper = await mountView()
+
+    const filesBtn = wrapper.find('.btn-files')
+    expect(filesBtn.exists()).toBe(true)
+    expect(filesBtn.text()).toBe('文件')
+    await filesBtn.trigger('click')
+
+    expect(routerPushMock).toHaveBeenCalledWith({
+      name: 'device-files',
+      params: { id: 'dev1' },
+    })
     wrapper.unmount()
   })
 })

@@ -8,12 +8,13 @@ import { describe, expect, it } from 'vitest'
 import router from '@/router'
 
 describe('router 路由表', () => {
-  it('包含 dashboard 与 device-detail 两条路由', () => {
+  it('包含 dashboard / device-detail / device-files 三条路由', () => {
     const routes = router.getRoutes()
     const byName = new Map(routes.map((r) => [r.name, r]))
-    expect([...byName.keys()].sort()).toEqual(['dashboard', 'device-detail'])
+    expect([...byName.keys()].sort()).toEqual(['dashboard', 'device-detail', 'device-files'])
     expect(byName.get('dashboard')!.path).toBe('/')
     expect(byName.get('device-detail')!.path).toBe('/device/:id')
+    expect(byName.get('device-files')!.path).toBe('/device/:id/files')
   })
 
   it('路由组件均为懒加载（动态 import 函数）', () => {
