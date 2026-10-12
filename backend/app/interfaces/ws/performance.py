@@ -7,7 +7,7 @@
 提供实时性能指标推送：
 - WS /ws/perf/{device_id}  实时推送性能指标
 
-消息格式（前 11 键来自 service._metrics_to_dict，方案 37 D3 追加 3/4 键）：
+消息格式（前 12 键来自 service._metrics_to_dict，方案 37 D3 追加 4 键）：
     服务端 → 客户端：
         {
             "ts": 1726045200.123,

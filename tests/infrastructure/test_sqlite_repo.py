@@ -495,6 +495,7 @@ async def test_metrics_perf_new_columns_roundtrip(metrics_repo):
 
     assert rows[0]["cpu_processes"] == procs
     assert rows[0]["battery_temp"] == 31.0
+    assert isinstance(rows[0]["battery_voltage"], int)
     assert rows[0]["battery_voltage"] == 4200
     assert rows[0]["battery_health"] == "GOOD"
     assert rows[1]["cpu_processes"] == "[]"

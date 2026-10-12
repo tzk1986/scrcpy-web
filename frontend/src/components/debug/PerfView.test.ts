@@ -542,10 +542,10 @@ describe('PerfView', () => {
     expect(rows[1].text()).toContain('procL')
     expect(rows[2].text()).toContain('procB')
     expect(rows[7].text()).toContain('procH')
-    // user/kernel 数值透出
-    expect(rows[0].text()).toContain('20')
-    expect(rows[0].text()).toContain('1')
-    expect(rows[5].text()).toContain('0.5')
+    // user/kernel 数值透出（按 span 定位，避免 '1'⊂'20' 子串误判）
+    expect(rows[0].find('.stub-user').text()).toBe('20')
+    expect(rows[0].find('.stub-kernel').text()).toBe('1')
+    expect(rows[5].find('.stub-kernel').text()).toBe('0.5')
     // 第 9-12 名被裁掉
     const text = table.text()
     expect(text).not.toContain('procE')
@@ -578,6 +578,14 @@ describe('PerfView', () => {
     expect(bar.text()).toContain('2.6 °C')
     expect(bar.text()).not.toContain('mV')
     expect(bar.text()).toContain('UNKNOWN')
+
+    // 0 值真值路径：板级假值 0 如实展示（== null 才隐藏，0 不被吞）
+    ws.messageHandler!(
+      JSON.stringify({ ...metrics, battery_temp: 0, battery_voltage: 0, battery_health: 'GOOD' }),
+    )
+    await nextTick()
+    expect(bar.text()).toContain('0.0 °C')
+    expect(bar.text()).toContain('0 mV')
     wrapper.unmount()
   })
 

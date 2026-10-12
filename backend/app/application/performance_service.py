@@ -417,7 +417,9 @@ class PerformanceService:
 
     @staticmethod
     def _parse_cpu_processes(value: Any) -> list[Any]:
-        """cpu_processes JSON 串 → list；仅 str 才 parse，非 list 结果容错为 []。"""
+        """cpu_processes JSON 串 → list；str 才 parse，已 parse 的 list 原样放行，其余容错为 []。"""
+        if isinstance(value, list):
+            return value
         if not isinstance(value, str):
             return []
         try:

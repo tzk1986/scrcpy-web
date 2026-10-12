@@ -727,7 +727,7 @@ class SqliteMetricsRepository(MetricsRepository):
                     top_package TEXT,
                     cpu_processes TEXT,
                     battery_temp REAL,
-                    battery_voltage REAL,
+                    battery_voltage INTEGER,
                     battery_health TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_perf_samples_device_ts ON perf_samples(device_id, ts);
@@ -755,7 +755,7 @@ class SqliteMetricsRepository(MetricsRepository):
             for name, ddl in (
                 ("cpu_processes", "TEXT"),
                 ("battery_temp", "REAL"),
-                ("battery_voltage", "REAL"),
+                ("battery_voltage", "INTEGER"),
                 ("battery_health", "TEXT"),
             ):
                 if name not in cols:
