@@ -8,11 +8,13 @@ test_devices_api.py 模式），覆盖：
     - POST /api/recording/{device_id}/stop    收尾终态（200）/ 无会话（404）
     - GET  /api/recording/{device_id}         会话透传 / 无会话（404 NO_RECORDING）
     - GET  /api/recording/                    active 列表（终态会话不出现）
+    - GET  /api/recording/{device_id}/file    产物下载（字节一致 / 越界 404 / 无会话 404）
 
 不触碰真实设备。
 """
 
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -32,6 +34,12 @@ class FakeRecordingService:
 
     def __init__(self) -> None:
         self.sessions: dict[str, RecordingSession] = {}
+        # 端点产物 containment 校验基准目录（测试指定 tmp_path）
+        self.dir: Path = Path("data/recordings")
+
+    def _resolve_dir(self) -> Path:
+        """镜像 RecordingService._resolve_dir：返回落盘目录。"""
+        return self.dir
 
     async def start(self, device_id: str) -> RecordingSession:
         existing = self.sessions.get(device_id)
@@ -184,3 +192,103 @@ def test_list_active_sessions(client, fake: FakeRecordingService) -> None:
     assert response.status_code == 200
     recordings = response.json()["recordings"]
     assert [item["device_id"] for item in recordings] == ["d1"]
+
+
+# ---------------------------------------------------------------------------
+# 文件下载（方案 37 B5：B4 补 file 端点）
+# ---------------------------------------------------------------------------
+
+def _done_session_with_file(fake: FakeRecordingService, path: Path) -> None:
+    """落一条 done 态会话，local_path 指向指定落盘文件。"""
+    fake.sessions["d1"] = RecordingSession(
+        id="rec-d1",
+        device_id="d1",
+        state=RecordingState.DONE.value,
+        local_path=str(path),
+    )
+
+
+def test_file_endpoint_streams_mp4_bytes(client, fake: FakeRecordingService, tmp_path) -> None:
+    """file 端点：done 会话 + 目录内产物 → 200 字节一致 + video/mp4。"""
+    mp4 = tmp_path / "rec-d1.mp4"
+    mp4.write_bytes(b"FAKE_MP4_BYTES")
+    fake.dir = tmp_path
+    _done_session_with_file(fake, mp4)
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/d1/file")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.content == b"FAKE_MP4_BYTES"
+    assert response.headers["content-type"] == "video/mp4"
+
+
+def test_file_endpoint_missing_session_404(client, fake: FakeRecordingService) -> None:
+    """file 端点：无会话 → 404 NO_RECORDING。"""
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/dx/file")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NO_RECORDING"
+
+
+def test_file_endpoint_not_done_404(client, fake: FakeRecordingService) -> None:
+    """file 端点：会话未到 done（recording）→ 404 NO_RECORDING。"""
+    fake.sessions["d1"] = make_session("d1", RecordingState.RECORDING.value)
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/d1/file")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NO_RECORDING"
+
+
+def test_file_endpoint_done_without_local_path_404(client, fake: FakeRecordingService) -> None:
+    """file 端点：done 但 local_path 为空 → 404 NO_RECORDING。"""
+    fake.sessions["d1"] = make_session("d1", RecordingState.DONE.value)
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/d1/file")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NO_RECORDING"
+
+
+def test_file_endpoint_path_escape_404(client, fake: FakeRecordingService, tmp_path) -> None:
+    """file 端点：local_path 越出录制目录（containment）→ 404 拒读。"""
+    outside = tmp_path / "evil.mp4"
+    outside.write_bytes(b"EVIL")
+    fake.dir = tmp_path / "recordings"
+    fake.dir.mkdir()
+    _done_session_with_file(fake, outside)
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/d1/file")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NO_RECORDING"
+
+
+def test_file_endpoint_missing_file_on_disk_404(client, fake: FakeRecordingService, tmp_path) -> None:
+    """file 端点：done 但落盘文件已被双限清理 → 404 NO_RECORDING。"""
+    fake.dir = tmp_path
+    _done_session_with_file(fake, tmp_path / "gone.mp4")
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/d1/file")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NO_RECORDING"

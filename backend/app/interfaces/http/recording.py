@@ -4,23 +4,29 @@
 
 层：接口 → HTTP。
 
-提供设备端 screenrecord 录屏相关的 RESTful API（方案 37 B4）：
+提供设备端 screenrecord 录屏相关的 RESTful API（方案 37 B4/B5）：
 
     POST /api/recording/{device_id}/start — 启动录屏（单设备互斥，冲突 409）
     POST /api/recording/{device_id}/stop  — 停止并收尾（终态 done/failed）
     GET  /api/recording/{device_id}       — 查询当前会话（无则 404 NO_RECORDING）
     GET  /api/recording                   — 进行态会话列表（供前端刷新恢复状态；不带尾斜杠）
+    GET  /api/recording/{device_id}/file  — 下载本地产物 MP4（containment 校验）
 
 所有端点通过 Depends(get_recording_service) 注入 RecordingService 单例。
 
 列表端点仅返回进行态会话：会话表 key=device_id、终态会话会被下一次
 start 覆盖，历史会话以落盘文件为准（方案 37 B3 评审关注点①）。
+
+file 端点只放行 done 态会话的 local_path，且解析后必须落在录屏落盘目录
+内（目录解析复用录制服务 B3 的逻辑，防路径穿越读出目录外文件）。
 """
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 
 from app.application.recording_service import RecordingService
 from app.core.exceptions import RecordingNotFoundError
@@ -108,3 +114,35 @@ async def get_recording(
     if session is None:
         raise RecordingNotFoundError(device_id)
     return _session_body(session)
+
+
+@router.get("/{device_id}/file")
+async def get_recording_file(
+    device_id: str,
+    service: RecordingService = Depends(get_recording_service),
+) -> FileResponse:
+    """
+    下载设备录屏的本地产物 MP4（前端 <video> 预览与下载链接共用）。
+
+    放行条件：会话 done 且 local_path 非空、解析后路径落在录屏落盘
+    目录内（recording_service._resolve_dir 同源解析）、文件真实存在。
+    任一不满足 → 404 NO_RECORDING（不泄露目录结构）。
+
+    返回：
+        FileResponse: video/mp4 文件流。
+
+    异常：
+        RecordingNotFoundError: 无会话 / 未收尾 / 无产物 / 越界 / 文件已清。
+    """
+    session = service.get(device_id)
+    if (
+        session is None
+        or session.state != RecordingState.DONE.value
+        or not session.local_path
+    ):
+        raise RecordingNotFoundError(device_id)
+    local_file = Path(session.local_path).resolve()
+    records_dir = service._resolve_dir().resolve()
+    if not local_file.is_relative_to(records_dir) or not local_file.is_file():
+        raise RecordingNotFoundError(device_id)
+    return FileResponse(local_file, media_type="video/mp4")

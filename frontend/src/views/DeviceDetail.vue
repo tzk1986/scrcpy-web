@@ -44,6 +44,7 @@
       <div class="actions">
         <el-button @click="captureScreenshot">截图</el-button>
         <el-button @click="disconnect">断开</el-button>
+        <RecordingPanel :device-id="deviceId" />
       </div>
     </div>
 
@@ -69,6 +70,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/services/api'
 import DebugPanel from '@/components/debug/DebugPanel.vue'
+import RecordingPanel from '@/components/stream/RecordingPanel.vue'
 import VideoPlayer from '@/components/stream/VideoPlayer.vue'
 import { useDebugStore } from '@/stores/debug'
 import { useDeviceStore } from '@/stores/device'

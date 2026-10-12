@@ -176,6 +176,7 @@ class RecordingService:
         logger.info(
             "recording_saved", session=session.id, device=device_id, local=local_path
         )
+        session.local_path = local_path
         session.state = RecordingState.DONE.value
         return session
 

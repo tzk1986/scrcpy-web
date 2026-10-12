@@ -106,6 +106,15 @@ async def test_pull_then_rm_remote(service, mock_adb, tmp_path):
     mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
 
 
+async def test_stop_pull_success_sets_local_path(service, mock_adb):
+    """pull 成功：会话 local_path 记录落盘路径（B5 file 端点与前端预览依据）。"""
+    mock_adb.pull_recording.return_value = "data/recordings/x.mp4"
+    s = await service.start("d1")
+    out = await service.stop("d1")
+    assert out is not None and out.state == RecordingState.DONE.value
+    assert s.local_path == "data/recordings/x.mp4"
+
+
 async def test_stop_adb_error_converges_failed_and_rm_remote(service, mock_adb):
     mock_adb.stop_recording.side_effect = AdbError("pkill 失败")
     s = await service.start("d1")
@@ -119,6 +128,7 @@ async def test_stop_pull_none_converges_failed(service, mock_adb):
     s = await service.start("d1")
     out = await service.stop("d1")
     assert out is not None and out.state == RecordingState.FAILED.value
+    assert s.local_path == ""
     mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
 
 

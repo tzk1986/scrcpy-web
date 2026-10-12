@@ -43,6 +43,16 @@ export interface ScanResult {
   truncated: boolean
 }
 
+/** 设备端录屏会话（方案 37，对应后端 RecordingSession）。 */
+export interface RecordingSession {
+  id: string
+  device_id: string
+  started_at: number
+  state: string // recording / stopping / pulling / done / failed
+  remote_path: string
+  local_path: string // done 后为主机落盘产物路径；空串=无产物
+}
+
 // 创建 axios 实例，配置基础 URL 和超时
 const client = axios.create({
   baseURL: '/api',
@@ -492,5 +502,47 @@ export const api = {
   async getNetworkRecordStatus(deviceId: string) {
     const res = await client.get(`/network/${encodeURIComponent(deviceId)}/record/status`)
     return res.data as RecordStatus
+  },
+
+  // ==================== 录屏 API（方案 37 B）====================
+
+  /**
+   * 启动设备端录屏。
+   * 对应：POST /api/recording/{deviceId}/start
+   * 单设备互斥：进行态会话冲突返回 409 RECORDING_IN_PROGRESS。
+   */
+  async startRecording(deviceId: string) {
+    const res = await client.post(`/recording/${encodeURIComponent(deviceId)}/start`)
+    return res.data as { session: RecordingSession }
+  },
+
+  /**
+   * 停止录屏并收尾。
+   * 对应：POST /api/recording/{deviceId}/stop
+   * 返回终态会话（done 时携带主机落盘路径 local_path）。
+   */
+  async stopRecording(deviceId: string) {
+    const res = await client.post(`/recording/${encodeURIComponent(deviceId)}/stop`)
+    return res.data as { session: RecordingSession }
+  },
+
+  /**
+   * 查询当前录屏会话。
+   * 对应：GET /api/recording/{deviceId}
+   */
+  async getRecording(deviceId: string) {
+    const res = await client.get(`/recording/${encodeURIComponent(deviceId)}`)
+    return res.data as { session: RecordingSession }
+  },
+
+  /**
+   * 列出进行态录屏会话（刷新恢复状态用）。
+   * 对应：GET /api/recording
+   * 注意：URL 必须无尾斜杠——SPA fallback catch-all 会 404 带尾斜杠的
+   * 路径（/api/devices/ 同理，Task 8 评审实证硬约束）。
+   */
+  async listRecordings() {
+    const res = await client.get('/recording')
+    return res.data as { recordings: RecordingSession[] }
   },
 }
