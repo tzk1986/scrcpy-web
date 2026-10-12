@@ -61,7 +61,7 @@
           v-model="textDraft"
           class="text-draft"
           placeholder="输入文字，点「确认」后点击画布放置"
-          @keydown.enter.prevent="confirmText"
+          @keydown.enter.prevent="onTextEnter"
         />
         <el-button class="text-confirm" size="small" @click="confirmText">确认</el-button>
         <span class="text-tool-hint">待放置：{{ confirmedText || '（未确认）' }}</span>
@@ -218,13 +218,16 @@ watch(
   { immediate: true },
 )
 
-// 每次打开弹窗都是全新标注会话（commands 归零）。
+// 每次打开弹窗都是全新标注会话（commands/drag/文字态/工具一并归零）。
 watch(
   () => props.visible,
   (visible) => {
     if (visible) {
       commands.value = []
       drag.value = null
+      textDraft.value = ''
+      confirmedText.value = ''
+      tool.value = 'pen'
     }
   },
 )
@@ -408,6 +411,11 @@ function clearAll() {
 /** 文字工具「确认」：把输入框草稿提升为待放置文字。 */
 function confirmText() {
   confirmedText.value = textDraft.value
+}
+
+/** 文字输入回车：过滤 IME 组合态（中文候选选词回车不得确认落字）。 */
+function onTextEnter(e: KeyboardEvent) {
+  if (!e.isComposing) confirmText()
 }
 
 onUnmounted(() => {

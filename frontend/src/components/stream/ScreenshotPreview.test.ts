@@ -297,6 +297,68 @@ describe('ScreenshotPreview 标注工具', () => {
     expect(fakeCtx.calls).not.toContain('fillText')
     expect(commandCount(wrapper)).toBe(0)
   })
+
+  it('IME 组合态回车（keydown Enter + isComposing）不确认文字', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    const input = wrapper.find('input.text-draft')
+    await input.setValue('中文候选词')
+    // 输入法候选态回车（isComposing=true）不得把候选词确认为待放置文字
+    await input.trigger('keydown', { key: 'Enter', isComposing: true })
+
+    fakeCtx.calls.length = 0
+    await wrapper.find('canvas').trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+
+    expect(fakeCtx.calls).not.toContain('fillText')
+    expect(commandCount(wrapper)).toBe(0)
+  })
+
+  it('非组合态回车（isComposing=false）正常确认文字并落字', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('普通输入')
+    await wrapper.find('input.text-draft').trigger('keydown', { key: 'Enter' })
+
+    fakeCtx.calls.length = 0
+    await wrapper.find('canvas').trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+
+    expect(fakeCtx.calls).toContain('fillText')
+    expect(fakeCtx.fillTextLog.some((a) => a[0] === '普通输入')).toBe(true)
+    expect(commandCount(wrapper)).toBe(1)
+  })
+})
+
+describe('ScreenshotPreview 弹窗重开状态重置', () => {
+  it('关闭重开后文字草稿/待放置文字/工具态归零（首击不落旧文案）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('旧文案')
+    await wrapper.find('.text-confirm').trigger('click')
+
+    await wrapper.setProps({ visible: false })
+    await wrapper.setProps({ visible: true })
+    await nextTick()
+    // 画布随弹窗重挂载，重新 mock 显示尺寸
+    mockCanvasRect(wrapper)
+
+    // 工具态归零回画笔：文字输入行不再渲染
+    expect(wrapper.find('.text-tool-row').exists()).toBe(false)
+
+    fakeCtx.calls.length = 0
+    await wrapper.find('canvas').trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+
+    expect(fakeCtx.calls).not.toContain('fillText')
+    expect(commandCount(wrapper)).toBe(0)
+  })
 })
 
 describe('ScreenshotPreview 撤销 / 清空', () => {

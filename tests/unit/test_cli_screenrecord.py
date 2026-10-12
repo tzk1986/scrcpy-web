@@ -31,17 +31,29 @@ async def test_start_recording_assembles_cmd(monkeypatch):
     assert calls == [("192.168.8.18:5555", "shell", "screenrecord", "--bit-rate", "4M", "--time-limit", "60", "/sdcard/r.mp4")]
 
 
+async def test_start_recording_timeout_is_time_limit_plus_30(monkeypatch):
+    """M1 补强：_run_serial 必须显式收到 timeout=time_limit+30（_run 默认 30s 会杀掉 60s 限额）。"""
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append((args, timeout))
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    await AdbCliDriver().start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    assert calls[0][1] == 60 + 30
+
+
 async def test_err38_triggers_degraded_retry(monkeypatch):
     calls = []
     async def fake_run(adr, *args, timeout=None):
-        calls.append(args)
+        calls.append((args, timeout))
         if "256x144" not in args:
             raise AdbError("Unable to get output buffers (err=-38)")
         return ""
     monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
     await AdbCliDriver().start_recording("d", "/sdcard/r.mp4", "4M", 60)
-    assert any("--size" in calls[-1] for _ in [0])  # 简化：断言存在含 --size 的调用
-    assert any("256x144" in c for c in calls)
+    assert any("256x144" in c[0] for c in calls)
+    # M1：降档重试同样显式收到 timeout=time_limit+30
+    assert all(t == 60 + 30 for _, t in calls)
 
 
 async def test_non_err38_fails_without_retry(monkeypatch):
@@ -61,13 +73,20 @@ async def test_err38_twice_raises_combined(monkeypatch):
     calls = []
     async def fake_run(adr, *args, timeout=None):
         calls.append(args)
-        raise AdbError("Unable to get output buffers (err=-38)")
+        # 模拟 _run 抛出的真实形态：错误文本自带 "ADB command failed: " 前缀
+        raise AdbError("ADB command failed: Unable to get output buffers (err=-38)")
     monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
     with pytest.raises(AdbError) as ei:
         await AdbCliDriver().start_recording("d", "/sdcard/r.mp4", "4M", 60)
     assert len(calls) == 2
     assert str(ei.value).count("Unable to get output buffers (err=-38)") == 2
     assert "retry with 256x144 also failed" in str(ei.value)
+    # M4：组合错误消息仅保留一个 "ADB command failed: " 前缀（首启/重试摘要去前缀合并）
+    assert str(ei.value).count("ADB command failed: ") == 1
+    assert str(ei.value) == (
+        "ADB command failed: Unable to get output buffers (err=-38); "
+        "retry with 256x144 also failed: Unable to get output buffers (err=-38)"
+    )
 
 
 async def test_stop_sends_pkill_and_returns_remote_path(monkeypatch):

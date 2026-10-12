@@ -153,16 +153,25 @@ class RecordingService:
             session.state = RecordingState.FAILED.value
             return session
         session.state = RecordingState.PULLING.value
-        local_dir = self._resolve_dir()
-        local_dir.mkdir(parents=True, exist_ok=True)
+        local_dir = self.resolve_dir()
         local_path: str | None
         try:
+            local_dir.mkdir(parents=True, exist_ok=True)
             local_path = await self.adb.pull_recording(
                 device_id, session.remote_path, str(local_dir)
             )
         except AdbError as exc:
             logger.warning(
                 "recording_pull_failed",
+                session=session.id,
+                device=device_id,
+                error=str(exc),
+            )
+            local_path = None
+        except OSError as exc:
+            # 落盘目录不可写：收敛 failed 不冒泡（会话不得卡死 PULLING）
+            logger.warning(
+                "recording_mkdir_failed",
                 session=session.id,
                 device=device_id,
                 error=str(exc),
@@ -200,8 +209,11 @@ class RecordingService:
     # 目录双限与会话自愈
     # -------------------------------------------------------------------
 
-    def _resolve_dir(self) -> Path:
-        """录屏落盘目录：配置相对路径锚定 app_base_dir()，绝对路径原样。"""
+    def resolve_dir(self) -> Path:
+        """录屏落盘目录：配置相对路径锚定 app_base_dir()，绝对路径原样。
+
+        公开方法（评审 M1）：HTTP file 端点同源解析 containment 基准目录。
+        """
         raw = Path(settings().recording.dir)
         return raw if raw.is_absolute() else app_base_dir() / raw
 
@@ -247,7 +259,7 @@ class RecordingService:
 
     async def cleanup(self) -> None:
         """一轮清理：目录双限 + 会话自愈巡检（周期任务与手动触发共用）。"""
-        self._enforce_limits(self._resolve_dir())
+        self._enforce_limits(self.resolve_dir())
         await self._self_heal()
 
     async def _self_heal(self) -> None:

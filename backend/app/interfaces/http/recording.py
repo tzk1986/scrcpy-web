@@ -125,7 +125,7 @@ async def get_recording_file(
     下载设备录屏的本地产物 MP4（前端 <video> 预览与下载链接共用）。
 
     放行条件：会话 done 且 local_path 非空、解析后路径落在录屏落盘
-    目录内（recording_service._resolve_dir 同源解析）、文件真实存在。
+    目录内（recording_service.resolve_dir 同源解析）、文件真实存在。
     任一不满足 → 404 NO_RECORDING（不泄露目录结构）。
 
     返回：
@@ -142,7 +142,7 @@ async def get_recording_file(
     ):
         raise RecordingNotFoundError(device_id)
     local_file = Path(session.local_path).resolve()
-    records_dir = service._resolve_dir().resolve()
+    records_dir = service.resolve_dir().resolve()
     if not local_file.is_relative_to(records_dir) or not local_file.is_file():
         raise RecordingNotFoundError(device_id)
     return FileResponse(local_file, media_type="video/mp4")

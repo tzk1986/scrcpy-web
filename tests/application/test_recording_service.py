@@ -15,6 +15,7 @@
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -130,6 +131,19 @@ async def test_stop_pull_none_converges_failed(service, mock_adb):
     assert out is not None and out.state == RecordingState.FAILED.value
     assert s.local_path == ""
     mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
+
+
+async def test_stop_mkdir_failure_converges_failed_and_rm_remote(service, mock_adb, monkeypatch):
+    """落盘目录不可写（mkdir OSError）→ 不冒泡，收敛 failed 且先 rm_remote 兜底。"""
+    def _boom_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", _boom_mkdir)
+    s = await service.start("d1")
+    out = await service.stop("d1")  # 不冒泡 OSError
+    assert out is not None and out.state == RecordingState.FAILED.value
+    mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
+    mock_adb.pull_recording.assert_not_called()
 
 
 async def test_repeat_stop_idempotent(service, mock_adb):

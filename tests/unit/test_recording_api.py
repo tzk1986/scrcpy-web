@@ -37,8 +37,8 @@ class FakeRecordingService:
         # 端点产物 containment 校验基准目录（测试指定 tmp_path）
         self.dir: Path = Path("data/recordings")
 
-    def _resolve_dir(self) -> Path:
-        """镜像 RecordingService._resolve_dir：返回落盘目录。"""
+    def resolve_dir(self) -> Path:
+        """镜像 RecordingService.resolve_dir：返回落盘目录。"""
         return self.dir
 
     async def start(self, device_id: str) -> RecordingSession:

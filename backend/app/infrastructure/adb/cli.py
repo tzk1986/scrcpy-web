@@ -44,10 +44,19 @@ PNG_MAGIC = b"\x89PNG"
 GZIP_MAGIC = b"\x1f\x8b"
 
 
+# _run 失败错误文本的统一前缀（start_recording 组合双摘要时按此前缀去重）
+_ADB_FAILED_PREFIX = "ADB command failed: "
+
+
 def _strip_lead_junk(data: bytes, magic: bytes) -> bytes:
     """从魔数处剥离输出流首位噪声；魔数缺失或在 0 位则原样返回（只增不减）。"""
     pos = data.find(magic)
     return data[pos:] if pos > 0 else data
+
+
+def _strip_adb_prefix(text: str) -> str:
+    """剥掉 _run 错误文本自带的 "ADB command failed: " 前缀（组合摘要防双前缀）。"""
+    return text[len(_ADB_FAILED_PREFIX):] if text.startswith(_ADB_FAILED_PREFIX) else text
 
 
 class AdbCliDriver:
@@ -129,7 +138,7 @@ class AdbCliDriver:
         if proc.returncode != 0:
             error_msg = stderr.decode().strip()
             logger.error("adb_command_failed", cmd=cmd, returncode=proc.returncode, error=error_msg)
-            raise AdbError(f"ADB command failed: {error_msg}")
+            raise AdbError(f"{_ADB_FAILED_PREFIX}{error_msg}")
 
         return stdout.decode().strip()
 
@@ -683,9 +692,11 @@ class AdbCliDriver:
                     continue
                 exc = retry.exception()
                 if exc is not None:
+                    # 首启/重试摘要均来自 _run（自带 "ADB command failed: " 前缀），
+                    # 组合时剥掉内层前缀，只保留外层的单一前缀（评审 M4 去重）
                     raise AdbError(
-                        f"ADB command failed: {first_error}; "
-                        f"retry with {size} also failed: {str(exc)}"
+                        f"{_ADB_FAILED_PREFIX}{_strip_adb_prefix(first_error)}; "
+                        f"retry with {size} also failed: {_strip_adb_prefix(str(exc))}"
                     )
                 _store(retry)
                 return
