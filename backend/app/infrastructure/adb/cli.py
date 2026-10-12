@@ -47,6 +47,11 @@ GZIP_MAGIC = b"\x1f\x8b"
 # _run 失败错误文本的统一前缀（start_recording 组合双摘要时按此前缀去重）
 _ADB_FAILED_PREFIX = "ADB command failed: "
 
+# screenrecord 启动宽限窗（方案 37 B-Fix-2 提为模块常量，测试可 monkeypatch
+# 收缩窗口以在单测时限内复现「晚失败超窗」竞态）：默认 20 轮 × 0.1s = 2s。
+_START_GRACE_ITERATIONS = 20
+_START_GRACE_INTERVAL = 0.1
+
 
 def _strip_lead_junk(data: bytes, magic: bytes) -> bytes:
     """从魔数处剥离输出流首位噪声；魔数缺失或在 0 位则原样返回（只增不减）。"""
@@ -88,6 +93,9 @@ class AdbCliDriver:
         # 防 "Task exception was never retrieved" 与自然结束后的孤儿表项。
         self._recording_tasks: dict[str, asyncio.Task[str]] = {}
         self._recording_paths: dict[str, str] = {}
+        # 降档重入抑制（方案 37 B-Fix-2）：同 device 同一次 start 只降档一次。
+        # start 入口 discard 重置，新一次启动重获降档资格。
+        self._degraded_once: set[str] = set()
 
     @property
     def adb_path(self) -> str:
@@ -643,6 +651,85 @@ class AdbCliDriver:
         await shell.start(device_id, initial_output_callback)
         return shell
 
+    def _store_recording_task(
+        self,
+        device_id: str,
+        remote_path: str,
+        bit_rate: str,
+        time_limit: int,
+        t: asyncio.Task[str],
+    ) -> None:
+        """录屏后台任务存表：挂完成回调（晚失败降档/自清）+ 记录设备端产物路径。"""
+        t.add_done_callback(
+            self._recording_done_callback(device_id, remote_path, bit_rate, time_limit)
+        )
+        self._recording_tasks[device_id] = t
+        self._recording_paths[device_id] = remote_path
+
+    def _degrade_once(
+        self,
+        device_id: str,
+        remote_path: str,
+        bit_rate: str,
+        time_limit: int,
+        exc: BaseException,
+    ) -> asyncio.Task[str] | None:
+        """
+        失败降档处置公共方法（方案 37 B-Fix-2）：err=-38 降档重试一次。
+
+        仅当失败文本含 err=-38 且本 device 本次启动尚未降过档（_degraded_once
+        防重入）时，以 settings().recording.degraded_size 的 --size 参数创建
+        重试后台任务并返回之；否则返回 None（调用侧决定重抛或自清）。
+
+        同步方法（仅 create_task 不 await）：可安全用于任务完成回调内
+        （回调同步执行于事件循环中）。存表/挂回调由调用侧决定时机。
+        """
+        if "err=-38" not in str(exc) or device_id in self._degraded_once:
+            return None
+        self._degraded_once.add(device_id)
+        size = settings().recording.degraded_size
+        retry_cmd = (
+            "shell", "screenrecord",
+            "--bit-rate", bit_rate,
+            "--time-limit", str(time_limit),
+            "--size", size,
+            remote_path,
+        )
+        logger.warning("recording_degraded_retry", device=device_id, size=size, error=str(exc))
+        return asyncio.create_task(
+            self._run_serial(device_id, *retry_cmd, timeout=time_limit + 30)
+        )
+
+    async def _watch_retry_grace(
+        self,
+        device_id: str,
+        remote_path: str,
+        bit_rate: str,
+        time_limit: int,
+        retry: asyncio.Task[str],
+        first_error: str,
+    ) -> None:
+        """
+        看守降档重试的启动宽限窗（同首启常量）：窗内再败抛组合 AdbError
+        （首启/重试双摘要，单前缀）；窗内成功或未结束 → 存表交给完成回调。
+        """
+        size = settings().recording.degraded_size
+        for _ in range(_START_GRACE_ITERATIONS):
+            await asyncio.sleep(_START_GRACE_INTERVAL)
+            if not retry.done():
+                continue
+            exc = retry.exception()
+            if exc is not None:
+                # 首启/重试摘要均来自 _run（自带 "ADB command failed: " 前缀），
+                # 组合时剥掉内层前缀，只保留外层的单一前缀（评审 M4 去重）
+                raise AdbError(
+                    f"{_ADB_FAILED_PREFIX}{_strip_adb_prefix(first_error)}; "
+                    f"retry with {size} also failed: {_strip_adb_prefix(str(exc))}"
+                )
+            self._store_recording_task(device_id, remote_path, bit_rate, time_limit, retry)
+            return
+        self._store_recording_task(device_id, remote_path, bit_rate, time_limit, retry)
+
     async def start_recording(
         self, device_id: str, remote_path: str, bit_rate: str, time_limit: int
     ) -> None:
@@ -650,10 +737,16 @@ class AdbCliDriver:
         后台启动设备端 screenrecord 录屏（方案 37 B2）。
 
         通过 self._run_serial 包在 asyncio.create_task 里后台运行（不 await）；
-        启动宽限 2s（20 × 0.1s）内观察成败：err=-38（编码输出缓冲不可用，
-        常见于低端机/无硬件编码器）自动降档 settings().recording.degraded_size
-        重试一次；降档宽限内再异常抛 AdbError（错误文本含首启与重试两份
-        摘要）。done 且无异常视为已结束仍存表；非 err=-38 异常直接重抛不重试。
+        启动宽限 2s（_START_GRACE_ITERATIONS × _START_GRACE_INTERVAL）内观察
+        成败：err=-38（编码输出缓冲不可用，常见于低端机/无硬件编码器）自动
+        降档 settings().recording.degraded_size 重试一次；降档宽限内再异常抛
+        AdbError（错误文本含首启与重试两份摘要）。done 且无异常视为已结束仍
+        存表；非 err=-38 异常直接重抛不重试。
+
+        方案 37 B-Fix-2：宽限窗外的「晚失败」（.25 实测 err=-38 延迟 ~3s）
+        由任务完成回调兜底——回调检测异常含 err=-38 时走同一降档公共方法，
+        重试任务替换任务表条目；_degraded_once 保证同一次 start 只降档一次
+        （窗内已降档后回调不再二次降档）。
 
         参数：
             device_id: ADB 序列号。
@@ -664,43 +757,8 @@ class AdbCliDriver:
         异常：
             AdbError: 非 err=-38 启动失败直接重抛；err=-38 降档重试仍失败。
         """
-
-        def _store(t: asyncio.Task[str]) -> None:
-            # 成功存表前挂完成回调：吞掉未取异常（打 debug 日志）+
-            # 自清两表，防未取异常告警与自然结束（触及 --time-limit）
-            # 后的孤儿表项
-            t.add_done_callback(self._recording_done_callback(device_id))
-            self._recording_tasks[device_id] = t
-            self._recording_paths[device_id] = remote_path
-
-        async def _degraded_retry(first_error: str) -> None:
-            """err=-38 降档重试：--size <degraded_size>，同样的 2s 宽限。"""
-            size = settings().recording.degraded_size
-            retry_cmd = (
-                "shell", "screenrecord",
-                "--bit-rate", bit_rate,
-                "--time-limit", str(time_limit),
-                "--size", size,
-                remote_path,
-            )
-            retry = asyncio.create_task(
-                self._run_serial(device_id, *retry_cmd, timeout=time_limit + 30)
-            )
-            for _ in range(20):
-                await asyncio.sleep(0.1)
-                if not retry.done():
-                    continue
-                exc = retry.exception()
-                if exc is not None:
-                    # 首启/重试摘要均来自 _run（自带 "ADB command failed: " 前缀），
-                    # 组合时剥掉内层前缀，只保留外层的单一前缀（评审 M4 去重）
-                    raise AdbError(
-                        f"{_ADB_FAILED_PREFIX}{_strip_adb_prefix(first_error)}; "
-                        f"retry with {size} also failed: {_strip_adb_prefix(str(exc))}"
-                    )
-                _store(retry)
-                return
-            _store(retry)
+        # 新一次启动重置降档资格（同 device 同一次启动只降档一次）
+        self._degraded_once.discard(device_id)
 
         cmd = (
             "shell", "screenrecord",
@@ -714,31 +772,39 @@ class AdbCliDriver:
             self._run_serial(device_id, *cmd, timeout=time_limit + 30)
         )
 
-        # 首启宽限：每轮 0.1s × 20（合计 2s）
-        for _ in range(20):
-            await asyncio.sleep(0.1)
+        # 首启宽限窗
+        for _ in range(_START_GRACE_ITERATIONS):
+            await asyncio.sleep(_START_GRACE_INTERVAL)
             if not task.done():
                 continue
             exc = task.exception()
             if exc is not None:
-                if "err=-38" in str(exc):
-                    await _degraded_retry(str(exc))
-                    return
-                # 非 err=-38：不重试，直接重新抛出该异常
-                raise exc
+                retry = self._degrade_once(device_id, remote_path, bit_rate, time_limit, exc)
+                if retry is None:
+                    # 非 err=-38 或本启动已降过档：不重试，直接重抛
+                    raise exc
+                await self._watch_retry_grace(
+                    device_id, remote_path, bit_rate, time_limit, retry, str(exc)
+                )
+                return
             # 已结束（无异常）：视为已结束，仍存表
-            _store(task)
+            self._store_recording_task(device_id, remote_path, bit_rate, time_limit, task)
             return
         # 宽限内未结束：正常启动，后台继续录
-        _store(task)
+        self._store_recording_task(device_id, remote_path, bit_rate, time_limit, task)
 
-    def _recording_done_callback(self, device_id: str) -> Callable[[asyncio.Task[str]], None]:
+    def _recording_done_callback(
+        self, device_id: str, remote_path: str, bit_rate: str, time_limit: int
+    ) -> Callable[[asyncio.Task[str]], None]:
         """
-        录屏后台任务完成回调（方案 37 B2）。
+        录屏后台任务完成回调（方案 37 B2 + B-Fix-2）。
 
-        task.exception() 先取走未取异常（打 debug 日志，防
-        "Task exception was never retrieved"），再自清
-        _recording_tasks/_recording_paths 表项（防自然结束后的孤儿表项）。
+        task.exception() 先取走未取异常（防 "Task exception was never retrieved"），
+        再自清 _recording_tasks/_recording_paths 表项（防自然结束后的孤儿表项）。
+
+        B-Fix-2 晚失败降档：异常含 err=-38 → 走 _degrade_once 公共方法，重试
+        任务替换表条目（_degraded_once 防重入，同启动已降过档则不二次降档）；
+        异常非 err=-38 或降档被抑制 → 打 debug 日志并自清。
         """
         def _cb(t: asyncio.Task[str]) -> None:
             try:
@@ -747,6 +813,13 @@ class AdbCliDriver:
                 # 任务被取消无异常可取，同样自清收尾
                 exc = None
             if exc is not None:
+                retry = self._degrade_once(device_id, remote_path, bit_rate, time_limit, exc)
+                if retry is not None:
+                    # 晚失败降档：重试任务替换表条目并挂新回调，本回调不清表
+                    self._store_recording_task(
+                        device_id, remote_path, bit_rate, time_limit, retry
+                    )
+                    return
                 logger.debug("recording_task_exited_with_error", device=device_id, error=str(exc))
             self._recording_tasks.pop(device_id, None)
             self._recording_paths.pop(device_id, None)
