@@ -1,0 +1,158 @@
+# tests/unit/test_cli_screenrecord.py
+"""
+AdbCliDriver 录屏 CLI 封装测试（方案 37 B2）
+==============================================
+
+monkeypatch AdbCliDriver._run_serial 记录命令序列、模拟 screenrecord
+启动成败与 pkill/pidof 输出，覆盖：
+
+    - start_recording：命令组装 / err=-38 降档重试 / 非 err=-38 不重试
+    - stop_recording：pkill 主路径 / 无产物空串 / toybox pidof+kill -INT 兜底
+    - pull_recording：成功路径 / 远程缺失 None / 其他错误重抛
+    - rm_remote：命令组装 / 失败仅警告
+"""
+
+import os
+
+import pytest
+
+from app.core.exceptions import AdbError
+from app.infrastructure.adb.cli import AdbCliDriver
+
+
+async def test_start_recording_assembles_cmd(monkeypatch):
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    await d.start_recording("192.168.8.18:5555", "/sdcard/r.mp4", "4M", 60)
+    assert calls == [("192.168.8.18:5555", "shell", "screenrecord", "--bit-rate", "4M", "--time-limit", "60", "/sdcard/r.mp4")]
+
+
+async def test_err38_triggers_degraded_retry(monkeypatch):
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        if "256x144" not in args:
+            raise AdbError("Unable to get output buffers (err=-38)")
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    await AdbCliDriver().start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    assert any("--size" in calls[-1] for _ in [0])  # 简化：断言存在含 --size 的调用
+    assert any("256x144" in c for c in calls)
+
+
+async def test_non_err38_fails_without_retry(monkeypatch):
+    n = 0
+    async def fake_run(adr, *args, timeout=None):
+        nonlocal n
+        n += 1
+        raise AdbError("some other failure")
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    with pytest.raises(AdbError):
+        await AdbCliDriver().start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    assert n == 1
+
+
+async def test_err38_twice_raises_combined(monkeypatch):
+    """err=-38 降档重试仍 err=-38：错误文本含首启与重试两份摘要，恰好两次调用。"""
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        raise AdbError("Unable to get output buffers (err=-38)")
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    with pytest.raises(AdbError) as ei:
+        await AdbCliDriver().start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    assert len(calls) == 2
+    assert str(ei.value).count("Unable to get output buffers (err=-38)") == 2
+    assert "retry with 256x144 also failed" in str(ei.value)
+
+
+async def test_stop_sends_pkill_and_returns_remote_path(monkeypatch):
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    remote = "/sdcard/r.mp4"
+    await d.start_recording("d", remote, "4M", 60)
+    assert await d.stop_recording("d") == remote
+    assert ("d", "shell", "pkill", "-INT", "screenrecord") in calls
+
+
+async def test_stop_no_product_returns_empty(monkeypatch):
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        if "pkill" in args:
+            # rc≠0 且 stderr 空 = 无匹配特征
+            raise AdbError("ADB command failed: ")
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    assert await d.stop_recording("d") == ""
+
+
+async def test_stop_falls_back_to_kill_pid(monkeypatch):
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        if "pkill" in args:
+            raise AdbError("ADB command failed: pkill: not found")
+        if "pidof" in args:
+            return "1234"
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    remote = "/sdcard/r.mp4"
+    await d.start_recording("d", remote, "4M", 60)
+    assert await d.stop_recording("d") == remote
+    assert ("d", "shell", "kill", "-INT", "1234") in calls
+
+
+async def test_pull_success_returns_local_path(monkeypatch):
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    result = await AdbCliDriver().pull_recording("d", "/sdcard/r.mp4", "C:/tmp")
+    assert calls == [("d", "pull", "/sdcard/r.mp4", "C:/tmp")]
+    assert result == os.path.join("C:/tmp", os.path.basename("/sdcard/r.mp4"))
+
+
+async def test_pull_remote_missing_returns_none(monkeypatch):
+    async def fake_run(adr, *args, timeout=None):
+        raise AdbError("ADB command failed: remote object '/sdcard/r.mp4' does not exist")
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    result = await AdbCliDriver().pull_recording("d", "/sdcard/r.mp4", "C:/tmp")
+    assert result is None
+
+
+async def test_pull_other_error_reraised(monkeypatch):
+    async def fake_run(adr, *args, timeout=None):
+        raise AdbError("boom")
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    with pytest.raises(AdbError):
+        await AdbCliDriver().pull_recording("d", "/sdcard/r.mp4", "C:/tmp")
+
+
+async def test_rm_remote_sends_rm(monkeypatch):
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    await AdbCliDriver().rm_remote("d", "/sdcard/r.mp4")
+    assert calls == [("d", "shell", "rm", "-f", "/sdcard/r.mp4")]
+
+
+async def test_rm_remote_failure_only_warns(monkeypatch):
+    async def fake_run(adr, *args, timeout=None):
+        raise AdbError("boom")
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    await AdbCliDriver().rm_remote("d", "/sdcard/r.mp4")  # 不抛即通过

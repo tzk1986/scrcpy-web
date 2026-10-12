@@ -430,6 +430,79 @@ class AdbDriver(Protocol):
         """
         ...
 
+    async def start_recording(
+        self, device_id: str, remote_path: str, bit_rate: str, time_limit: int
+    ) -> None:
+        """
+        后台启动设备端 screenrecord 录屏（方案 37 B2）。
+
+        `adb shell screenrecord --bit-rate <b> --time-limit <t> <remote_path>`
+        后台运行不阻塞等待（实现内以 asyncio 任务持有）；启动失败且 stderr
+        含 `err=-38` 时自动降档 `settings().recording.degraded_size` 重试一次，
+        再失败抛 AdbError（错误文本含首启与重试 stderr 摘要）。
+
+        参数：
+            device_id: ADB 序列号。
+            remote_path: 设备端输出文件路径。
+            bit_rate: 码率（如 "4M"）。
+            time_limit: 设备端 --time-limit 兜底时长（秒）。
+
+        异常：
+            AdbError: 非 err=-38 启动失败直接重抛；err=-38 降档重试仍失败。
+        """
+        ...
+
+    async def stop_recording(self, device_id: str) -> str:
+        """
+        停止录屏并返回设备端产物路径（方案 37 B2）。
+
+        主路径 `adb shell pkill -INT screenrecord`；toybox 无 pkill 时
+        兜底 `pidof screenrecord` 取 pid 后 `kill -INT <pid>`。pkill 无匹配
+        （returncode 非零且 stderr 空）不算错，返回空串表示无产物。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            设备端录屏文件路径（调用方知道收尾目标）；
+            无活跃录制或无产物时返回空串。
+        """
+        ...
+
+    async def pull_recording(
+        self, device_id: str, remote_path: str, local_dir: str
+    ) -> str | None:
+        """
+        将设备端录屏文件拉取到主机（方案 37 B2）。
+
+        `adb pull <remote> <local>`；成功返回本地文件路径，
+        远程文件不存在返回 None。
+
+        参数：
+            device_id: ADB 序列号。
+            remote_path: 设备端文件路径。
+            local_dir: 主机落盘目录。
+
+        返回：
+            本地文件路径；远程不存在时 None。
+
+        异常：
+            AdbError: 远程文件不存在（特定文本特征）以外的拉取失败。
+        """
+        ...
+
+    async def rm_remote(self, device_id: str, remote_path: str) -> None:
+        """
+        设备端删除文件（方案 37 B2）。
+
+        `adb shell rm -f <remote>`（设备端即清，幂等失败仅警告）。
+
+        参数：
+            device_id: ADB 序列号。
+            remote_path: 设备端文件路径。
+        """
+        ...
+
 
 @runtime_checkable
 class VideoEncoder(Protocol):

@@ -25,6 +25,7 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 """
 
 import asyncio
+import os
 from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
@@ -71,6 +72,13 @@ class AdbCliDriver:
     # 卡设备从「30s 阻塞」降为「5s + 信息缺失（列表兜底）」；诊断类
     # 命令（install/screenshot 等）继续用配置的 adb.timeout（30s）。
     _INFO_CMD_TIMEOUT = 5
+
+    def __init__(self) -> None:
+        # 录屏会话表（方案 37 B2）：后台 screenrecord 任务与对应设备端产物路径。
+        # stop 时用 task 收尾、用 paths 返回 remote_path；任务完成回调自清两项，
+        # 防 "Task exception was never retrieved" 与自然结束后的孤儿表项。
+        self._recording_tasks: dict[str, asyncio.Task[str]] = {}
+        self._recording_paths: dict[str, str] = {}
 
     @property
     def adb_path(self) -> str:
@@ -625,3 +633,210 @@ class AdbCliDriver:
         shell = InteractiveShell()
         await shell.start(device_id, initial_output_callback)
         return shell
+
+    async def start_recording(
+        self, device_id: str, remote_path: str, bit_rate: str, time_limit: int
+    ) -> None:
+        """
+        后台启动设备端 screenrecord 录屏（方案 37 B2）。
+
+        通过 self._run_serial 包在 asyncio.create_task 里后台运行（不 await）；
+        启动宽限 2s（20 × 0.1s）内观察成败：err=-38（编码输出缓冲不可用，
+        常见于低端机/无硬件编码器）自动降档 settings().recording.degraded_size
+        重试一次；降档宽限内再异常抛 AdbError（错误文本含首启与重试两份
+        摘要）。done 且无异常视为已结束仍存表；非 err=-38 异常直接重抛不重试。
+
+        参数：
+            device_id: ADB 序列号。
+            remote_path: 设备端输出文件路径。
+            bit_rate: 码率（如 "4M"）。
+            time_limit: 设备端 --time-limit 兜底时长（秒）。
+
+        异常：
+            AdbError: 非 err=-38 启动失败直接重抛；err=-38 降档重试仍失败。
+        """
+
+        def _store(t: asyncio.Task[str]) -> None:
+            # 成功存表前挂完成回调：吞掉未取异常（打 debug 日志）+
+            # 自清两表，防未取异常告警与自然结束（触及 --time-limit）
+            # 后的孤儿表项
+            t.add_done_callback(self._recording_done_callback(device_id))
+            self._recording_tasks[device_id] = t
+            self._recording_paths[device_id] = remote_path
+
+        async def _degraded_retry(first_error: str) -> None:
+            """err=-38 降档重试：--size <degraded_size>，同样的 2s 宽限。"""
+            size = settings().recording.degraded_size
+            retry_cmd = (
+                "shell", "screenrecord",
+                "--bit-rate", bit_rate,
+                "--time-limit", str(time_limit),
+                "--size", size,
+                remote_path,
+            )
+            retry = asyncio.create_task(
+                self._run_serial(device_id, *retry_cmd, timeout=time_limit + 30)
+            )
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                if not retry.done():
+                    continue
+                exc = retry.exception()
+                if exc is not None:
+                    raise AdbError(
+                        f"ADB command failed: {first_error}; "
+                        f"retry with {size} also failed: {str(exc)}"
+                    )
+                _store(retry)
+                return
+            _store(retry)
+
+        cmd = (
+            "shell", "screenrecord",
+            "--bit-rate", bit_rate,
+            "--time-limit", str(time_limit),
+            remote_path,
+        )
+        # 必须显式传 timeout=time_limit+30：_run 的 `timeout or 配置默认 30s`
+        # 回落会把 60s 录屏在默认超时处杀掉
+        task = asyncio.create_task(
+            self._run_serial(device_id, *cmd, timeout=time_limit + 30)
+        )
+
+        # 首启宽限：每轮 0.1s × 20（合计 2s）
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if not task.done():
+                continue
+            exc = task.exception()
+            if exc is not None:
+                if "err=-38" in str(exc):
+                    await _degraded_retry(str(exc))
+                    return
+                # 非 err=-38：不重试，直接重新抛出该异常
+                raise exc
+            # 已结束（无异常）：视为已结束，仍存表
+            _store(task)
+            return
+        # 宽限内未结束：正常启动，后台继续录
+        _store(task)
+
+    def _recording_done_callback(self, device_id: str) -> Callable[[asyncio.Task[str]], None]:
+        """
+        录屏后台任务完成回调（方案 37 B2）。
+
+        task.exception() 先取走未取异常（打 debug 日志，防
+        "Task exception was never retrieved"），再自清
+        _recording_tasks/_recording_paths 表项（防自然结束后的孤儿表项）。
+        """
+        def _cb(t: asyncio.Task[str]) -> None:
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                # 任务被取消无异常可取，同样自清收尾
+                exc = None
+            if exc is not None:
+                logger.debug("recording_task_exited_with_error", device=device_id, error=str(exc))
+            self._recording_tasks.pop(device_id, None)
+            self._recording_paths.pop(device_id, None)
+
+        return _cb
+
+    async def stop_recording(self, device_id: str) -> str:
+        """
+        停止录屏并返回设备端产物路径（方案 37 B2）。
+
+        主路径 `adb shell pkill -INT screenrecord`（SIGINT 触发 screenrecord
+        收尾写 MP4）；pkill 无匹配（rc≠0 且 stderr 空）不算错，返回空串表示
+        无产物。pkill 不可用/异常时 toybox 兜底：pidof screenrecord 取 pid，
+        非空则 `kill -INT <pid>`，pid 为空返回空串。收尾信号发出后等待后台
+        任务退出（try/except 捕一切异常——SIGINT 收尾 MP4 时 screenrecord
+        可能非零退出，不算错）并返回 start 时记录的 remote_path。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            设备端录屏文件路径；无活跃录制或无产物时返回空串。
+        """
+        task = self._recording_tasks.get(device_id)
+        remote_path = self._recording_paths.get(device_id, "")
+        if task is None:
+            return ""
+
+        try:
+            await self._run_serial(device_id, "shell", "pkill", "-INT", "screenrecord")
+        except AdbError as e:
+            if str(e).endswith("failed: "):
+                # rc≠0 且 stderr 空 = 无匹配进程：无产物，不算错
+                logger.debug("screenrecord_not_running", device=device_id)
+                return ""
+            # pkill 不可用/异常 → toybox 兜底：pidof 取 pid
+            pid = ""
+            try:
+                pid = (
+                    await self._run_serial(device_id, "shell", "pidof", "screenrecord")
+                ).strip()
+            except AdbError:
+                logger.debug("pidof_screenrecord_failed", device=device_id)
+            if not pid:
+                return ""
+            try:
+                await self._run_serial(device_id, "shell", "kill", "-INT", pid)
+            except AdbError:
+                logger.debug("kill_int_failed", device=device_id, pid=pid)
+
+        # 等后台录屏任务收尾——SIGINT 收尾 MP4 时 screenrecord 可能非零退出，
+        # 一切异常都不算错（异常已由 await/回调取走，不会产生未取告警）
+        try:
+            await task
+        except BaseException as exc:
+            logger.debug("recording_task_ended", device=device_id, error=str(exc))
+        return remote_path
+
+    async def pull_recording(
+        self, device_id: str, remote_path: str, local_dir: str
+    ) -> str | None:
+        """
+        将设备端录屏文件拉取到主机目录（方案 37 B2）。
+
+        `adb pull <remote> <local_dir>`，成功返回
+        os.path.join(local_dir, basename(remote_path))；远程文件不存在
+        （AdbError 消息含 "No such file" / "does not exist"）返回 None，
+        其他错误重抛。
+
+        参数：
+            device_id: ADB 序列号。
+            remote_path: 设备端文件路径。
+            local_dir: 主机落盘目录。
+
+        返回：
+            成功时本地文件路径；远程不存在时 None。
+
+        异常：
+            AdbError: 远程不存在特征以外的拉取失败。
+        """
+        try:
+            await self._run_serial(device_id, "pull", remote_path, local_dir)
+        except AdbError as e:
+            if "No such file" in str(e) or "does not exist" in str(e):
+                logger.debug("pull_recording_no_such_file", device=device_id, remote=remote_path)
+                return None
+            raise
+        return os.path.join(local_dir, os.path.basename(remote_path))
+
+    async def rm_remote(self, device_id: str, remote_path: str) -> None:
+        """
+        设备端删除文件（方案 37 B2）。
+
+        `adb shell rm -f <remote>`，设备端即清；失败仅打警告不抛
+        （幂等语义，删除失败不是严重错误）。
+
+        参数：
+            device_id: ADB 序列号。
+            remote_path: 设备端文件路径。
+        """
+        try:
+            await self._run_serial(device_id, "shell", "rm", "-f", remote_path)
+        except AdbError:
+            logger.warning("rm_remote_failed", device=device_id, remote=remote_path)
