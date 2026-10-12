@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import json
 from collections import deque
 from typing import Any, AsyncIterator
 
@@ -402,9 +403,28 @@ class PerformanceService:
         recorder = self._recorders.get(device_id)
         if recorder is not None:
             await recorder.flush()
-        return await self._metrics_repo.query_perf_samples(
+        rows = await self._metrics_repo.query_perf_samples(
             device_id, from_ts=from_ts, to_ts=to_ts, limit=limit
         )
+        # 方案 37 D4：缓存源 cpu_processes 为 JSON 串（TEXT 列），parse 回
+        # list 使 cache 源与 buffer 源（_metrics_to_dict 纯值 list）JSON
+        # 导出形态一致；坏数据/None/旧行缺列 → [] 容错，不炸导出。
+        for row in rows:
+            row["cpu_processes"] = self._parse_cpu_processes(
+                row.get("cpu_processes")
+            )
+        return rows
+
+    @staticmethod
+    def _parse_cpu_processes(value: Any) -> list[Any]:
+        """cpu_processes JSON 串 → list；仅 str 才 parse，非 list 结果容错为 []。"""
+        if not isinstance(value, str):
+            return []
+        try:
+            parsed: Any = json.loads(value)
+        except (ValueError, TypeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
 
     # ------------------------------------------------------------------
     # 空闲守卫（暂存态清零）

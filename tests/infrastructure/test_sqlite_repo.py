@@ -448,9 +448,12 @@ async def metrics_repo(db_path):
     return repo
 
 
-def make_perf_row(device: str = "dev-1", ts: float = 10.0, cpu: float = 20.0):
+def make_perf_row(device: str = "dev-1", ts: float = 10.0, cpu: float = 20.0,
+                  procs: str = "[]", batt_temp: object = None,
+                  batt_volt: object = None, batt_health: object = None):
     return (device, ts, cpu, 4096.0, 2048.0, 60.0, 0,
-            "com.example/.MainActivity", "com.example")
+            "com.example/.MainActivity", "com.example",
+            procs, batt_temp, batt_volt, batt_health)
 
 
 def make_network_row(device: str = "dev-1", ts: float = 10.0, rx: int = 100):
@@ -477,6 +480,76 @@ async def test_metrics_save_and_query_roundtrip(metrics_repo):
     assert rows[0]["cpu_percent"] == 10.0
     assert rows[0]["current_activity"] == "com.example/.MainActivity"
     assert rows[0]["device_id"] == "dev-1"
+
+
+async def test_metrics_perf_new_columns_roundtrip(metrics_repo):
+    """方案 37 D4 新 4 列置尾可写可读：cpu_processes JSON 串原样、电池直存（None 也直存）。"""
+    procs = '[{"proc": "init", "user": 0.5, "kernel": 0.1}]'
+    await metrics_repo.save_perf_samples_bulk([
+        make_perf_row(ts=10.0, cpu=20.0, procs=procs, batt_temp=31.0,
+                      batt_volt=4200, batt_health="GOOD"),
+        make_perf_row(ts=20.0, cpu=21.0),  # 全 None/空表
+    ])
+
+    rows = await metrics_repo.query_perf_samples("dev-1")
+
+    assert rows[0]["cpu_processes"] == procs
+    assert rows[0]["battery_temp"] == 31.0
+    assert rows[0]["battery_voltage"] == 4200
+    assert rows[0]["battery_health"] == "GOOD"
+    assert rows[1]["cpu_processes"] == "[]"
+    assert rows[1]["battery_temp"] is None
+
+
+async def test_metrics_perf_migration_adds_missing_columns(db_path):
+    """旧库（9 列 perf_samples 无 4 新列）→ init_db 逐列 ALTER 补齐；
+    历史行保留且新列 NULL；迁移后 13 元组写入可用。
+
+    旧库文件用独立连接构造（模拟上个版本进程写出的既有文件）。
+    WAL 下他连 ALTER 不会使池内既有连接的 schema 缓存失效（实测
+    wal_checkpoint 也不行）：迁移后 init_db 须重置共享连接池，后续
+    写入走 ALTER 提交后新建的连接方可读到扩列 schema——本测试的
+    迁移后写入即锁定该行为。
+    """
+    async with aiosqlite.connect(db_path) as legacy_conn:
+        await legacy_conn.executescript("""
+            CREATE TABLE perf_samples (
+                device_id TEXT NOT NULL, ts REAL NOT NULL, cpu_percent REAL,
+                total_memory_mb REAL, used_memory_mb REAL, fps REAL,
+                jank_count INTEGER, current_activity TEXT, top_package TEXT
+            )
+        """)
+        await legacy_conn.execute(
+            "INSERT INTO perf_samples VALUES (?,?,?,?,?,?,?,?,?)",
+            ("dev-legacy", 1.0, 2.0, 3.0, 4.0, 5.0, 0, "act", "pkg"),
+        )
+        await legacy_conn.commit()
+
+    repo = SqliteMetricsRepository(db_path)
+    await repo.init_db()
+    await repo.init_db()  # 幂等：已补齐列不再重复 ALTER
+
+    names = [r[1] for r in await raw_fetchall(db_path, "PRAGMA table_info(perf_samples)")]
+    assert names[:9] == ["device_id", "ts", "cpu_percent", "total_memory_mb",
+                         "used_memory_mb", "fps", "jank_count",
+                         "current_activity", "top_package"]
+    assert names[9:] == ["cpu_processes", "battery_temp", "battery_voltage",
+                         "battery_health"]
+
+    rows = await repo.query_perf_samples("dev-legacy")
+    assert rows[0]["cpu_percent"] == 2.0
+    assert rows[0]["cpu_processes"] is None  # 旧行新列 NULL（诚实空值）
+    assert rows[0]["battery_health"] is None
+
+    # 迁移后新格式写入/回读正常
+    await repo.save_perf_samples_bulk([
+        make_perf_row(device="dev-legacy", ts=2.0, procs="[{\"proc\": \"x\", "
+                      "\"user\": 1.0, \"kernel\": 2.0}]", batt_temp=30.0,
+                      batt_volt=4100, batt_health="GOOD"),
+    ])
+    new_rows = await repo.query_perf_samples("dev-legacy", from_ts=2.0)
+    assert new_rows[0]["cpu_processes"] == '[{"proc": "x", "user": 1.0, "kernel": 2.0}]'
+    assert new_rows[0]["battery_temp"] == 30.0
 
 
 async def test_metrics_query_range_filter_inclusive(metrics_repo):

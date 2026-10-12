@@ -697,6 +697,8 @@ class SqliteMetricsRepository(MetricsRepository):
     PERF_COLUMNS = (
         "device_id", "ts", "cpu_percent", "total_memory_mb", "used_memory_mb",
         "fps", "jank_count", "current_activity", "top_package",
+        # 方案 37 D4 置尾扩列（additive：既有库迁移补齐，历史行新列 NULL）
+        "cpu_processes", "battery_temp", "battery_voltage", "battery_health",
     )
     NETWORK_COLUMNS = (
         "device_id", "ts", "rx_bytes", "tx_bytes", "rx_rate_kbps",
@@ -707,8 +709,9 @@ class SqliteMetricsRepository(MetricsRepository):
         self.db_path = db_path or settings().database.path
 
     async def init_db(self) -> None:
-        """创建指标表与索引（幂等）。"""
+        """创建指标表与索引（幂等）+ perf_samples 置尾扩列迁移（方案 37 D4）。"""
         pool = await get_pool(self.db_path)
+        added = False
         async with pool.connection() as conn:
             await conn.executescript(
                 """
@@ -721,7 +724,11 @@ class SqliteMetricsRepository(MetricsRepository):
                     fps         REAL,
                     jank_count  INTEGER,
                     current_activity TEXT,
-                    top_package TEXT
+                    top_package TEXT,
+                    cpu_processes TEXT,
+                    battery_temp REAL,
+                    battery_voltage REAL,
+                    battery_health TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_perf_samples_device_ts ON perf_samples(device_id, ts);
                 CREATE INDEX IF NOT EXISTS idx_perf_samples_ts ON perf_samples(ts);
@@ -741,7 +748,31 @@ class SqliteMetricsRepository(MetricsRepository):
                 CREATE INDEX IF NOT EXISTS idx_network_samples_ts ON network_samples(ts);
                 """
             )
+            # perf_samples 置尾扩列迁移（方案 37 D4；旧库兼容：逐列检查
+            # PRAGMA table_info 后 ALTER 补齐，历史数据不丢、新列 NULL）
+            cursor = await conn.execute("PRAGMA table_info(perf_samples)")
+            cols = [row[1] for row in await cursor.fetchall()]
+            for name, ddl in (
+                ("cpu_processes", "TEXT"),
+                ("battery_temp", "REAL"),
+                ("battery_voltage", "REAL"),
+                ("battery_health", "TEXT"),
+            ):
+                if name not in cols:
+                    await conn.execute(
+                        f"ALTER TABLE perf_samples ADD COLUMN {name} {ddl}"
+                    )
+                    added = True
             await conn.commit()
+        if added:
+            # 任一列发生过 ALTER → 重置本库共享连接池。WAL 模式下连接
+            # 在他连 ALTER 前已加载的 schema 缓存不会失效（主库头 change
+            # counter 直到 checkpoint 才更新，实测 checkpoint 后旧连接仍
+            # 持旧 schema，其 INSERT 按旧列数编译报错）；只有 ALTER 提交后
+            # 新建的连接首次 prepare 才读到扩列后 schema。启动期无并发流量，
+            # 重置安全（下次 get_pool 惰性重建）。
+            await pool.close()
+            _POOLS.pop(self.db_path, None)
 
     async def save_perf_samples_bulk(self, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
@@ -749,7 +780,7 @@ class SqliteMetricsRepository(MetricsRepository):
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
             await conn.executemany(
-                "INSERT INTO perf_samples VALUES (?,?,?,?,?,?,?,?,?)", rows
+                "INSERT INTO perf_samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
             )
             await conn.commit()
 

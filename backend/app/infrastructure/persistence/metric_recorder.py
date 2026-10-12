@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import json
 from typing import Any
 
 from app.core.logging import get_logger
@@ -58,9 +59,18 @@ class MetricRecorder:
             pass
 
     def submit_perf(self, device_id: str, m: PerformanceMetrics) -> None:
+        """性能采样入批（方案 37 D4：cpu_processes 落库前 JSON 序列化为
+        数组串，空表 "[]"；电池三字段直存，None 也直存为 NULL）。"""
         self._perf_rows.append((
             device_id, m.ts, m.cpu_percent, m.total_memory_mb, m.used_memory_mb,
             m.fps, m.jank_count, m.current_activity, m.top_package,
+            json.dumps([
+                {"proc": p.proc, "user": p.user, "kernel": p.kernel}
+                for p in m.cpu_processes
+            ]),
+            m.battery_temp,
+            m.battery_voltage,
+            m.battery_health,
         ))
         self._kick_if_full()
 

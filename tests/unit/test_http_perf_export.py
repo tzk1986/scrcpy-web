@@ -14,6 +14,9 @@ Perf / Network 导出与录制端点（方案 18 Step 4-6）行为测试
 服务层替身经 app.dependency_overrides 注入，不触碰真实 ADB / SQLite。
 """
 
+import csv
+import io
+import json
 from datetime import datetime
 from typing import Any
 
@@ -71,6 +74,33 @@ NET_ROWS: list[dict[str, Any]] = [
         "wifi_ssid": "MyWiFi",
     },
 ]
+
+# 带方案 37 D4 新键的行：模拟 D3 _metrics_to_dict / parse-back 后的两源同形态输出
+PERF_ROWS_NEW: list[dict[str, Any]] = [
+    {
+        **PERF_ROWS[0],
+        "cpu_processes": [
+            {"proc": "kworker/0:1", "user": 1.2, "kernel": 0.3},
+            {"proc": "system_server", "user": 0.6, "kernel": 0.1},
+        ],
+        "battery_temp": 31.0,
+        "battery_voltage": 4200,
+        "battery_health": "GOOD",
+    },
+    {
+        **PERF_ROWS[1],
+        "cpu_processes": [],
+        "battery_temp": None,
+        "battery_voltage": None,
+        "battery_health": "UNKNOWN",
+    },
+]
+
+_OLD_CSV_COLS = [
+    "ts", "ts_iso", "cpu_percent", "total_memory_mb", "used_memory_mb",
+    "fps", "jank_count", "current_activity", "top_package",
+]
+_NEW_CSV_COLS = ["cpu_processes", "battery_temp", "battery_voltage", "battery_health"]
 
 
 class FakePerformanceService:
@@ -189,18 +219,23 @@ def test_perf_export_csv_content_and_disposition() -> None:
     assert "text/csv" in res.headers["content-type"]
 
     header, line1, line2 = res.text.splitlines()
+    # 旧 9 列前缀不回归 + 新 4 列置尾（方案 37 D4 additive）
     assert header == ("ts,ts_iso,cpu_percent,total_memory_mb,used_memory_mb,"
-                      "fps,jank_count,current_activity,top_package")
+                      "fps,jank_count,current_activity,top_package,"
+                      "cpu_processes,battery_temp,battery_voltage,battery_health")
     assert "1726045200.123" in line1
     assert expect_iso(1726045200.123) in line1
     assert "23.5" in line1
     assert "com.example/.MainActivity" in line1
     assert "1726045260.5" in line2
     assert "7" in line2
+    # 旧行（无新键）→ 新 4 列单元格为空串（诚实空值，旧读取方无感）
+    assert line1.endswith("com.example,,,,")
+    assert line2.endswith("com.example,,,,")
 
     # 文件名：device_id "192.168.8.18:5555" → 净化后不含 ':'
     disposition = res.headers["content-disposition"]
-    assert disposition.startswith(f'attachment; filename="perf_192.168.8.18_5555_')
+    assert disposition.startswith('attachment; filename="perf_192.168.8.18_5555_')
     assert disposition.endswith('.csv"')
     assert ":" not in disposition
 
@@ -208,6 +243,50 @@ def test_perf_export_csv_content_and_disposition() -> None:
     assert res.headers["x-export-count"] == "2"
     assert res.headers["x-export-oldest-ts"] == "1726045200.123"
     assert res.headers["x-export-newest-ts"] == "1726045260.5"
+
+
+def test_csv_header_old_columns_first_then_new() -> None:
+    """导出表头锁定：旧 9 列前缀逐项不回归，新 4 列追加置尾（方案 37 D4）。"""
+    from app.interfaces.http.performance import _CSV_HEADER
+
+    assert _CSV_HEADER[:len(_OLD_CSV_COLS)] == _OLD_CSV_COLS
+    assert _CSV_HEADER[len(_OLD_CSV_COLS):] == _NEW_CSV_COLS
+
+
+def test_perf_export_csv_new_columns_appended_with_values() -> None:
+    """新 4 列置尾与行值逐项对位；cpu_processes 单元格 = json.dumps(list)。"""
+    fake = FakePerformanceService(PERF_ROWS_NEW)
+    with override(get_performance_service, fake):
+        res = make_client().get(f"/api/perf/{DEV}/export", params={"format": "csv"})
+
+    assert res.status_code == 200
+    reader = csv.reader(io.StringIO(res.text))
+    header, row1, row2 = list(reader)
+
+    assert header[:9] == _OLD_CSV_COLS
+    assert header[9:] == _NEW_CSV_COLS
+    # 旧列值逐项前缀断言（不回归）
+    assert row1[:9] == ["1726045200.123", expect_iso(1726045200.123), "23.5",
+                        "4096.0", "2048.0", "60.0", "0",
+                        "com.example/.MainActivity", "com.example"]
+    # cpu_processes 单元格 = json.dumps(list) 字符串（csv reader 已反转义）
+    assert row1[9] == json.dumps(PERF_ROWS_NEW[0]["cpu_processes"])
+    assert row1[10:] == ["31.0", "4200", "GOOD"]
+    # 空进程表 → "[]"；battery None → 空串（诚实空值）
+    assert row2[9] == "[]"
+    assert row2[10:] == ["", "", "UNKNOWN"]
+    # 新键值不影响元数据头
+    assert res.headers["x-export-count"] == "2"
+
+
+def test_perf_export_json_new_keys_carried() -> None:
+    """JSON 导出原样携带新键（buffer 源形态）。"""
+    fake = FakePerformanceService(PERF_ROWS_NEW)
+    with override(get_performance_service, fake):
+        res = make_client().get(f"/api/perf/{DEV}/export", params={"format": "json"})
+
+    assert res.status_code == 200
+    assert res.json() == PERF_ROWS_NEW
 
 
 def test_perf_export_json_content() -> None:
@@ -353,7 +432,7 @@ def test_network_export_csv_content_and_disposition() -> None:
     assert "1726000120.5" in line2
 
     disposition = res.headers["content-disposition"]
-    assert disposition.startswith(f'attachment; filename="network_192.168.8.18_5555_')
+    assert disposition.startswith('attachment; filename="network_192.168.8.18_5555_')
     assert disposition.endswith('.csv"')
     assert ":" not in disposition
 

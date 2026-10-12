@@ -36,10 +36,12 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/perf", tags=["performance"])
 
-# 导出 CSV 列顺序（方案 18 Step 4）
+# 导出 CSV 列顺序（方案 18 Step 4）；方案 37 D4 additive：旧 9 列前缀
+# 序不变，新 4 列置尾（旧读取方按位解析零回归）
 _CSV_HEADER = [
     "ts", "ts_iso", "cpu_percent", "total_memory_mb", "used_memory_mb",
     "fps", "jank_count", "current_activity", "top_package",
+    "cpu_processes", "battery_temp", "battery_voltage", "battery_health",
 ]
 _EXPORT_LIMIT_DEFAULT = 50000
 _EXPORT_LIMIT_MAX = 200000
@@ -48,6 +50,19 @@ _EXPORT_LIMIT_MAX = 200000
 def _ts_iso(ts: float) -> str:
     """epoch 秒 → 本地时区 ISO8601（人工核对用）。"""
     return datetime.fromtimestamp(ts).isoformat()
+
+
+def _procs_cell(row: dict[str, Any]) -> str:
+    """cpu_processes 单元格：list → json.dumps 串（csv writer 自动转义）；
+    缺失/None/坏形 → 空串（旧缓存行诚实空值）。"""
+    procs = row.get("cpu_processes")
+    return json.dumps(procs, ensure_ascii=False) if isinstance(procs, list) else ""
+
+
+def _cell(row: dict[str, Any], key: str) -> Any:
+    """CSV 单元格取值：None → 空串（旧缓存行新列 NULL 的诚实空值）。"""
+    value = row.get(key)
+    return "" if value is None else value
 
 
 @router.get("/{device_id}/metrics")
@@ -203,6 +218,11 @@ async def export_metrics(
                 row.get("jank_count", ""),
                 row.get("current_activity", ""),
                 row.get("top_package", ""),
+                # 方案 37 D4 新 4 列置尾；旧缓存行缺列/None → 空串
+                _procs_cell(row),
+                _cell(row, "battery_temp"),
+                _cell(row, "battery_voltage"),
+                _cell(row, "battery_health"),
             ])
         content = output.getvalue()
         media_type = "text/csv"
