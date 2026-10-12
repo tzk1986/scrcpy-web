@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-12（验证包，未发布 Release）
+
+### Added
+
+- 设备文件管理（方案 39）：新增独立页 `/device/:id/files`（设备详情入口）——目录浏览（面包屑导航、符号链接目标显示、大小/时间/权限列）、上传（多文件顺序单飞、真实百分比 + adb 段诚实不确定态进度）、下载（单文件原名 / 多选打包 zip）、重命名（非法名前端先校验）、删除（多选强确认、目录递归警示、逐条结果汇总）；后端 6 个 HTTP 端点 + FileService（写白名单 /sdcard 与 /data/local/tmp、路径净化、shlex.quote 防注入、设备级传输互斥、暂存用完即清 + TTL/孤儿清扫）
+
+### Fixed
+
+- 截图预览弹窗竖屏长图被拉伸（0.7.4 发布后修复收编）：canvas 按比例封顶渲染
+
 ## [0.7.4] - 2026-10-12
 
 ### Added
