@@ -53,6 +53,22 @@ export interface RecordingSession {
   local_path: string // done 后为主机落盘产物路径；空串=无产物
 }
 
+/** 单条 Service 运行时状态（方案 37 C4，对应后端 ServiceInfo）。 */
+export interface RuntimeServiceInfo {
+  name: string // "pkg/class" 组件名
+  state: string // running / stopped / unknown
+}
+
+/** 应用运行时状态（方案 37 C4，对应后端 RuntimeInfo + parse_warning）。 */
+export interface RuntimeInfo {
+  pkg: string
+  top_activity: string
+  resumed: string
+  services: RuntimeServiceInfo[]
+  providers: string[]
+  parse_warning: string
+}
+
 // 创建 axios 实例，配置基础 URL 和超时
 const client = axios.create({
   baseURL: '/api',
@@ -435,6 +451,17 @@ export const api = {
   async getAppMemory(deviceId: string, packageName: string) {
     const res = await client.get(`/apps/${encodeURIComponent(deviceId)}/${packageName}/memory`)
     return res.data
+  },
+
+  /**
+   * 获取应用运行时状态（当前栈 / Resumed / Service / Provider）。
+   * 对应：GET /api/apps/{deviceId}/{package}/runtime
+   */
+  async getAppRuntime(deviceId: string, packageName: string): Promise<RuntimeInfo> {
+    const res = await client.get(
+      `/apps/${encodeURIComponent(deviceId)}/${encodeURIComponent(packageName)}/runtime`
+    )
+    return res.data as RuntimeInfo
   },
 
   // ==================== 网络监控 API ====================

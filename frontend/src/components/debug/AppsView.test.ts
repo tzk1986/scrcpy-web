@@ -26,6 +26,7 @@ vi.mock('element-plus', () => ({
 const mockApi = vi.hoisted(() => ({
   listApps: vi.fn(),
   getAppInfo: vi.fn(),
+  getAppRuntime: vi.fn(),
   launchApp: vi.fn().mockResolvedValue({}),
   stopApp: vi.fn().mockResolvedValue({}),
 }))
@@ -82,7 +83,26 @@ const ElTableStub = {
   name: 'ElTable',
   props: ['data'],
   emits: ['row-click'],
-  template: '<div class="stub-table"><slot /></div>',
+  template:
+    '<div class="stub-table"><div v-for="(row, i) in data || []" :key="i" class="stub-table-row">{{ row.package_name || row.name }} {{ row.state || "" }}</div><slot /></div>',
+}
+
+const ElAlertStub = {
+  name: 'ElAlert',
+  props: ['type', 'title', 'description'],
+  template: '<div class="stub-alert">{{ title }}{{ description }}</div>',
+}
+
+const ElDescriptionsStub = {
+  name: 'ElDescriptions',
+  props: ['column', 'border', 'size'],
+  template: '<div class="stub-descriptions"><slot /></div>',
+}
+
+const ElDescriptionsItemStub = {
+  name: 'ElDescriptionsItem',
+  props: ['label', 'span'],
+  template: '<div class="stub-descriptions-item">{{ label }}<slot /></div>',
 }
 
 function mountView() {
@@ -101,8 +121,9 @@ function mountView() {
         'el-dropdown': true,
         'el-dropdown-menu': true,
         'el-dropdown-item': true,
-        'el-descriptions': true,
-        'el-descriptions-item': true,
+        'el-descriptions': ElDescriptionsStub,
+        'el-descriptions-item': ElDescriptionsItemStub,
+        'el-alert': ElAlertStub,
       },
       directives: { loading: {} },
     },
@@ -112,6 +133,7 @@ function mountView() {
 beforeEach(() => {
   mockApi.listApps.mockReset()
   mockApi.getAppInfo.mockReset()
+  mockApi.getAppRuntime.mockReset()
   mockApi.launchApp.mockClear()
   mockApi.stopApp.mockClear()
   h.ElMessage.success.mockClear()
@@ -179,6 +201,100 @@ describe('AppsView', () => {
     const detailButtons = dialog.findAll('button').map((b) => b.text())
     expect(detailButtons).toContain('清除数据')
     expect(detailButtons).toContain('卸载应用')
+  })
+
+  // ==================== 方案 37 C5：运行时区块 ====================
+
+  const cleanRuntime = {
+    pkg: 'com.example.chat',
+    top_activity: 'com.example.chat/.ChatActivity',
+    resumed: 'com.example.chat/.ChatActivity',
+    services: [
+      { name: 'com.example.chat/.ChatService', state: 'running' },
+      { name: 'com.example.chat/.PushService', state: 'stopped' },
+    ],
+    providers: ['com.example.chat/.ChatProvider'],
+    parse_warning: '',
+  }
+
+  /** 挂载 → 等待列表 → 行点击打开详情弹窗 → 等待并行拉取完成 */
+  async function openDetail(wrapper: ReturnType<typeof mountView>) {
+    await flushPromises()
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('row-click', userApp)
+    await flushPromises()
+  }
+
+  it('renders runtime card on selecting an app', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    mockApi.getAppRuntime.mockResolvedValue(cleanRuntime)
+    const wrapper = mountView()
+    await openDetail(wrapper)
+
+    expect(mockApi.getAppRuntime).toHaveBeenCalledWith('dev1', 'com.example.chat')
+    const dialog = wrapper.find('.stub-dialog')
+    expect(dialog.text()).toContain('运行时')
+    // 当前栈 / Resumed Activity 值渲染
+    expect(dialog.text()).toContain('com.example.chat/.ChatActivity')
+    // Service 表行存在（组件名 + 状态）
+    expect(dialog.text()).toContain('com.example.chat/.ChatService running')
+    expect(dialog.text()).toContain('com.example.chat/.PushService stopped')
+    // providers 不渲染（YAGNI，数据仅留在 api 返回类型里）
+    expect(dialog.text()).not.toContain('ChatProvider')
+  })
+
+  it('shows parse_warning alert when returned', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    mockApi.getAppRuntime.mockResolvedValue({ ...cleanRuntime, parse_warning: 'providers 段解析失败' })
+    const wrapper = mountView()
+    await openDetail(wrapper)
+
+    const alert = wrapper.find('.stub-alert')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('部分运行时字段解析缺失：providers 段解析失败')
+  })
+
+  it('refresh button re-queries and updates table', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    mockApi.getAppRuntime.mockResolvedValue(cleanRuntime)
+    const wrapper = mountView()
+    await openDetail(wrapper)
+    expect(mockApi.getAppRuntime).toHaveBeenCalledTimes(1)
+
+    mockApi.getAppRuntime.mockResolvedValue({
+      ...cleanRuntime,
+      resumed: 'com.example.chat/.NewActivity',
+      services: [{ name: 'com.example.chat/.NewService', state: 'running' }],
+    })
+    const refreshBtn = wrapper
+      .findAll('.stub-dialog button')
+      .find((b) => b.text().includes('刷新运行时'))
+    expect(refreshBtn).toBeDefined()
+    await refreshBtn!.trigger('click')
+    await flushPromises()
+
+    expect(mockApi.getAppRuntime).toHaveBeenCalledTimes(2)
+    const dialog = wrapper.find('.stub-dialog')
+    expect(dialog.text()).toContain('com.example.chat/.NewActivity')
+    expect(dialog.text()).toContain('com.example.chat/.NewService')
+    expect(dialog.text()).not.toContain('com.example.chat/.ChatService')
+  })
+
+  it('shows inline failure hint when runtime query rejects', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    mockApi.getAppRuntime.mockRejectedValue(new Error('boom'))
+    const wrapper = mountView()
+    await openDetail(wrapper)
+
+    const dialog = wrapper.find('.stub-dialog')
+    expect(dialog.text()).toContain('运行时查询失败')
+    // Service 空态：无表行渲染
+    expect(dialog.findAll('.stub-dialog .stub-table-row').length).toBe(0)
+    // 不打 ElMessage（与 detailLoading 内联风格一致）
+    expect(h.ElMessage.error).not.toHaveBeenCalled()
   })
 
   it('点击刷新按钮强制重新拉取列表', async () => {

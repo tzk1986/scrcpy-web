@@ -17,6 +17,7 @@
     - 搜索过滤（按包名）
     - 筛选（全部/用户/系统/运行中）
     - 操作按钮（启动/停止/更多）
+    - 详情弹窗运行时区块（方案 37 C5：栈/Resumed + Service 清单，按需查询不轮询）
 -->
 
 <template>
@@ -205,6 +206,42 @@
             </el-button>
           </div>
         </div>
+
+        <!-- 运行时（方案 37 C5：按需查询 GET /api/apps/{device}/{package}/runtime） -->
+        <div class="detail-section">
+          <h4>运行时</h4>
+          <el-alert
+            v-if="runtimeInfo && runtimeInfo.parse_warning"
+            type="warning"
+            :title="`部分运行时字段解析缺失：${runtimeInfo.parse_warning}`"
+            :closable="false"
+            show-icon
+            class="runtime-alert"
+          />
+          <div v-if="runtimeFailed" class="text-muted">运行时查询失败</div>
+          <template v-else-if="runtimeInfo">
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="当前栈">
+                <span v-if="runtimeInfo.top_activity">{{ runtimeInfo.top_activity }}</span>
+                <span v-else class="text-muted">-</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="Resumed Activity">
+                <span v-if="runtimeInfo.resumed">{{ runtimeInfo.resumed }}</span>
+                <span v-else class="text-muted">-</span>
+              </el-descriptions-item>
+            </el-descriptions>
+            <el-table :data="runtimeInfo.services" size="small" class="service-table">
+              <el-table-column label="组件名" prop="name" min-width="220" />
+              <el-table-column label="状态" prop="state" width="90" align="center" />
+            </el-table>
+            <div v-if="runtimeInfo.services.length === 0" class="text-muted">无 Service 记录</div>
+          </template>
+          <div class="runtime-actions">
+            <el-button size="small" :loading="runtimeLoading" @click="refreshRuntime">
+              刷新运行时
+            </el-button>
+          </div>
+        </div>
       </div>
     </el-dialog>
   </div>
@@ -215,6 +252,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/services/api'
+import type { RuntimeInfo } from '@/services/api'
 
 interface AppInfo {
   package_name: string
@@ -245,6 +283,11 @@ const detailDialogVisible = ref(false)
 const selectedApp = ref<AppInfo | null>(null)
 const detailInfo = ref<Partial<AppInfo>>({})
 const detailLoading = ref(false)
+
+// 运行时区块（方案 37 C5）：按需查询，不做轮询
+const runtimeInfo = ref<RuntimeInfo | null>(null)
+const runtimeLoading = ref(false)
+const runtimeFailed = ref(false)
 
 // 过滤后的应用列表
 const filteredApps = computed(() => {
@@ -378,8 +421,29 @@ async function handleCommand(command: string, packageName: string) {
 function showAppDetail(row: AppInfo) {
   selectedApp.value = row
   detailInfo.value = row
+  // 重置运行时区块状态，弹窗打开时与详情并行拉取
+  runtimeInfo.value = null
+  runtimeFailed.value = false
   detailDialogVisible.value = true
   refreshDetail()
+  refreshRuntime()
+}
+
+// 运行时查询（方案 37 C5）：按需拉取，失败走区块内联提示（不打 ElMessage）
+async function refreshRuntime() {
+  if (!selectedApp.value) return
+
+  runtimeLoading.value = true
+  try {
+    runtimeInfo.value = await api.getAppRuntime(props.deviceId, selectedApp.value.package_name)
+    runtimeFailed.value = false
+  } catch (e) {
+    console.error('[AppsView] Failed to load app runtime:', e)
+    runtimeInfo.value = null
+    runtimeFailed.value = true
+  } finally {
+    runtimeLoading.value = false
+  }
 }
 
 async function refreshDetail() {
@@ -509,5 +573,18 @@ async function refreshDetail() {
 
 .action-buttons-grid .el-button {
   width: 100%;
+}
+
+/* 运行时区块样式 */
+.runtime-alert {
+  margin-bottom: 10px;
+}
+
+.service-table {
+  margin-bottom: 6px;
+}
+
+.runtime-actions {
+  margin-top: 10px;
 }
 </style>
