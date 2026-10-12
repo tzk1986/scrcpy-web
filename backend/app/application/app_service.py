@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.exceptions import InvalidIdentifierError
+from app.core.exceptions import AdbError, InvalidIdentifierError
 from app.core.logging import get_logger
 from app.domain.identifiers import is_valid_package_name
 from app.domain.ports import AdbDriver
@@ -521,3 +521,51 @@ class AppService:
         if not is_valid_package_name(package):
             raise InvalidIdentifierError("package")
         return await self._get_app_memory(device_id, package)
+
+    async def get_runtime_info(self, device_id: str, package: str) -> dict[str, object]:
+        """
+        查询应用运行时状态（方案 37 C3）。
+
+        把 ADB 层 RuntimeInfo 收敛为前端可直用的 dict：
+        - top_activity / resumed 为空串视为解析项缺失，各追加一条 parse_warning；
+        - services / providers 为空清单属合法空，不计 warning；
+        - AdbError 不抛出，收敛为空形态 dict（parse_warning 提示整体失败，截 200 字符内）。
+
+        参数：
+            device_id: 设备 ID。
+            package: 包名（端点路径参数，直接作为返回 dict 的 pkg 键）。
+
+        返回：
+            {pkg, top_activity, resumed, services, providers, parse_warning}
+        """
+        if not is_valid_package_name(package):
+            raise InvalidIdentifierError("package")
+        try:
+            info = await self.adb.get_runtime_info(device_id)
+        except AdbError as e:
+            logger.warning(
+                "get_app_runtime_failed", device=device_id, package=package, error=str(e)
+            )
+            message = f"ADB 查询失败: {e}"
+            return {
+                "pkg": package,
+                "top_activity": "",
+                "resumed": "",
+                "services": [],
+                "providers": [],
+                "parse_warning": message[:200],
+            }
+
+        warnings: list[str] = []
+        if not info.resumed:
+            warnings.append("resumed 缺失")
+        if not info.top_activity:
+            warnings.append("top_activity 缺失")
+        return {
+            "pkg": package,
+            "top_activity": info.top_activity,
+            "resumed": info.resumed,
+            "services": info.services,
+            "providers": info.providers,
+            "parse_warning": "; ".join(warnings),
+        }
