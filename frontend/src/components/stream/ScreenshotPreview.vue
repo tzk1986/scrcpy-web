@@ -540,6 +540,9 @@ defineExpose({ getAnnotationCount: () => commands.value.length })
 .preview-canvas {
   display: block;
   max-width: 100%;
+  /* 竖屏长图按比例封顶（防 flex stretch 把元素盒压扁位图拉伸，方案 37 B7 修复项） */
+  max-height: 60vh;
+  width: auto;
   height: auto;
   cursor: crosshair;
   touch-action: none;
