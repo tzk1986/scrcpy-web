@@ -35,7 +35,13 @@ from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.domain.device import DeviceInfo
 from app.domain.ports import ShellSession
-from app.domain.runtime import RuntimeInfo, ServiceInfo, TopActivityInfo
+from app.domain.runtime import (
+    BatteryInfo,
+    CpuProcessInfo,
+    RuntimeInfo,
+    ServiceInfo,
+    TopActivityInfo,
+)
 from app.infrastructure.adb.reachability import probe_tcp, scan_open_hosts
 
 logger = get_logger(__name__)
@@ -189,6 +195,114 @@ def parse_providers(text: str) -> list[str]:
         if m:
             providers.append(m.group(1))
     return providers
+
+
+# --- 方案 37 D2：dumpsys cpuinfo / dumpsys battery 输出解析纯函数（模块层，
+# 供 get_cpu_usage / get_battery_info 直接调用与单测喂 fixture；逐行正则锚定，
+# 未知格式行天然跳过——漂移样本锁定「不抛」）---
+
+# 进程行正则（真实样本三变体：带 faults 后缀、无 faults 后缀、`+` 前缀且无
+# faults；进程名内可含冒号——kworker/3:0、kworker/u9:1、kworker/0:1H-kblockd，
+# (.+?):\s+ 非贪婪定位名尾「冒号+空白」，/ faults: 后缀不参与）。TOTAL 汇总行
+# （`1.9% TOTAL: ...`）因 pid 段非数字自然不匹配。
+_PROC_CPU_RE = re.compile(
+    r"^\s*\+?\s*(\d+(?:\.\d+)?)%\s+(\d+)/(.+?):\s+"
+    r"(\d+(?:\.\d+)?)% user \+ (\d+(?:\.\d+)?)% kernel"
+)
+
+# battery 字段行正则：行首字段名锚定（drift 样本中 `Max charging voltage:` 仍含
+# voltage 一词，裸子串断言会误命中）；re.M 逐行搜索。
+_BATTERY_LEVEL_RE = re.compile(r"^ *level:\s*(\d+)", re.M)
+_BATTERY_TEMP_RE = re.compile(r"^ *temperature:\s*(\d+)", re.M)
+_BATTERY_VOLTAGE_RE = re.compile(r"^ *voltage:\s*(\d+)", re.M)
+_BATTERY_HEALTH_RE = re.compile(r"^ *health:\s*(\d+)", re.M)
+
+# BatteryManager.BATTERY_HEALTH_* 码 → 枚举名（未识别码 → UNKNOWN）。
+_HEALTH_NAME_BY_CODE: dict[int, str] = {
+    1: "UNKNOWN",
+    2: "GOOD",
+    3: "OVERHEAT",
+    4: "DEAD",
+    5: "OVER_VOLTAGE",
+    6: "UNSPECIFIED_FAILURE",
+    7: "COLD",
+}
+
+
+def parse_cpuinfo(text: str) -> list[CpuProcessInfo]:
+    """
+    解析 dumpsys cpuinfo 输出的进程级 CPU 明细（方案 37 D2）。
+
+    先行定位 `CPU usage from` 头行，其后逐进程行以行首正则锚定
+    「N% pid/名: X% user + Y% kernel」：名段取 pid/ 后至名尾（不含 pid），
+    非贪婪「冒号+空白」定位名尾，`/ faults:` 后缀不参与；`+` 前缀新进程
+    形态按普通进程解析。TOTAL 汇总行形态不符自然跳过。头行缺失或进程段
+    为空 → 空列表（不抛）。
+
+    参数：
+        text: dumpsys cpuinfo 完整输出。
+
+    返回：
+        CpuProcessInfo 清单；无进程时为空列表。
+    """
+    marker = text.find("CPU usage from")
+    if marker == -1:
+        return []
+    procs: list[CpuProcessInfo] = []
+    for line in text[marker:].splitlines():
+        m = _PROC_CPU_RE.match(line)
+        if m:
+            procs.append(
+                CpuProcessInfo(
+                    proc=m.group(3),
+                    user=float(m.group(4)),
+                    kernel=float(m.group(5)),
+                )
+            )
+    return procs
+
+
+def parse_battery(text: str) -> BatteryInfo:
+    """
+    解析 dumpsys battery 输出四字段（方案 37 D2）。
+
+    行首字段名锚定（`^ *key:`，re.M）；temperature 原值为十分之一摄氏度，
+    解析层 ÷10 后为摄氏浮点（26 → 2.6、424 → 42.4，板级怪值如实不特判）；
+    health 码按 BATTERY_HEALTH_* 枚举映射为串（未识别码 → UNKNOWN）。
+    行缺失/不可解析 → None（level → 0），不抛。
+
+    参数：
+        text: dumpsys battery 完整输出。
+
+    返回：
+        BatteryInfo（level/temperature/voltage/health）。
+    """
+    level = 0
+    m = _BATTERY_LEVEL_RE.search(text)
+    if m:
+        level = int(m.group(1))
+
+    temperature: float | None = None
+    m = _BATTERY_TEMP_RE.search(text)
+    if m:
+        temperature = int(m.group(1)) / 10.0
+
+    voltage: int | None = None
+    m = _BATTERY_VOLTAGE_RE.search(text)
+    if m:
+        voltage = int(m.group(1))
+
+    health: str | None = None
+    m = _BATTERY_HEALTH_RE.search(text)
+    if m:
+        health = _HEALTH_NAME_BY_CODE.get(int(m.group(1)), "UNKNOWN")
+
+    return BatteryInfo(
+        level=level,
+        temperature=temperature,
+        voltage=voltage,
+        health=health,
+    )
 
 
 class AdbCliDriver:
@@ -1112,3 +1226,48 @@ class AdbCliDriver:
             services=services,
             providers=providers,
         )
+
+    async def get_cpu_usage(self, device_id: str) -> list[CpuProcessInfo]:
+        """
+        查询设备 CPU 使用率进程级明细（方案 37 D2）。
+
+        单命令 `adb shell dumpsys cpuinfo`（不做 gather——D3 采样循环自有
+        布局），输出交 parse_cpuinfo 解析；`CPU usage from` 头行缺失或
+        进程段为空 → 空列表。cpuinfo 输出量小，超时沿用快命令口径
+        （_INFO_CMD_TIMEOUT）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            CpuProcessInfo 清单；无进程时为空列表。
+
+        异常：
+            AdbError: 命令失败或超时（调用方 D3 容错）。
+        """
+        output = await self._run_serial(
+            device_id, "shell", "dumpsys", "cpuinfo", timeout=self._INFO_CMD_TIMEOUT
+        )
+        return parse_cpuinfo(output)
+
+    async def get_battery_info(self, device_id: str) -> BatteryInfo:
+        """
+        查询设备电池四字段（方案 37 D2）。
+
+        单命令 `adb shell dumpsys battery`，输出交 parse_battery 解析
+        （level/temperature/voltage/health；缺字段 None/0 不抛）。
+        整命令 AdbError 不吞、向上抛（调用方 D3 容错）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            BatteryInfo；缺失字段为 None（level → 0）。
+
+        异常：
+            AdbError: 命令失败或超时。
+        """
+        output = await self._run_serial(
+            device_id, "shell", "dumpsys", "battery", timeout=self._INFO_CMD_TIMEOUT
+        )
+        return parse_battery(output)

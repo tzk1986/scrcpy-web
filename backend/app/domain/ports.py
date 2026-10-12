@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from app.domain.device import DeviceInfo
-from app.domain.runtime import RuntimeInfo
+from app.domain.runtime import BatteryInfo, CpuProcessInfo, RuntimeInfo
 from app.domain.session import DebugSession
 
 
@@ -522,6 +522,44 @@ class AdbDriver(Protocol):
 
         异常：
             AdbError: activity 或 services 命令失败或超时时（providers 失败仅置空清单）。
+        """
+        ...
+
+    async def get_cpu_usage(self, device_id: str) -> list[CpuProcessInfo]:
+        """
+        查询设备 CPU 使用率进程级明细（方案 37 D2）。
+
+        单命令 `adb shell dumpsys cpuinfo`：定位 `CPU usage from` 头行后，
+        逐进程行解析占用百分比（含 `+` 前缀新进程形态）。头行缺失或
+        进程段为空 → 空列表。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            CpuProcessInfo 清单；无进程时为空列表。
+
+        异常：
+            AdbError: 命令失败或超时（调用方 D3 容错）。
+        """
+        ...
+
+    async def get_battery_info(self, device_id: str) -> BatteryInfo:
+        """
+        查询设备电池四字段（方案 37 D2）。
+
+        单命令 `adb shell dumpsys battery`：level（缺失 → 0）、
+        temperature（×0.1 摄氏浮点）、voltage（整数）、health（枚举串
+        映射，未识别码 → "UNKNOWN"）。缺字段 → None，不抛。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            填充四字段的 BatteryInfo；缺失字段为 None（level → 0）。
+
+        异常：
+            AdbError: 命令失败或超时（调用方 D3 容错）。
         """
         ...
 
