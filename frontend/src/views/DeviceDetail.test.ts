@@ -7,8 +7,10 @@
  *   - getDevice 失败时回退默认分辨率 1080x1920 且不抛错
  *   - DebugPanel 上报停靠位置切换布局方向（column-layout）
  *   - 点击「断开」关闭调试会话并返回上一页
+ *   - 截图按钮（方案 37 B7 改道）：抓帧结果打开 ScreenshotPreview 预览弹窗（不再直接下载）
  *
- * 说明：VideoPlayer / DebugPanel 以轻量 stub 替代，避免拖入视频流与调试面板的完整依赖。
+ * 说明：VideoPlayer / DebugPanel / ScreenshotPreview 以轻量 stub 替代，避免拖入视频流、
+ * 调试面板与标注组件的完整依赖。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
@@ -34,12 +36,6 @@ vi.mock('@/stores/device', () => ({
   useDeviceStore: () => ({ setThumbnailFromBlob: setThumbnailMock }),
 }))
 
-/** happy-dom 无 createObjectURL / revokeObjectURL 实现（截图下载链路需要，m9 先例） */
-const urlStub = vi.hoisted(() => ({
-  createObjectURL: vi.fn(),
-  revokeObjectURL: vi.fn(),
-}))
-
 import DeviceDetail from './DeviceDetail.vue'
 
 const VideoPlayerStub = {
@@ -62,6 +58,14 @@ const DebugPanelStub = {
   template: '<div class="dp-stub" />',
 }
 
+/** 方案 37 B7：截图预览弹窗 stub（标注行为由 ScreenshotPreview.test 单独覆盖） */
+const ScreenshotPreviewStub = {
+  name: 'ScreenshotPreview',
+  props: ['visible', 'image', 'deviceId'],
+  emits: ['close'],
+  template: '<div class="sp-stub" />',
+}
+
 const ElButtonStub = {
   name: 'ElButton',
   template: '<button class="stub-btn" type="button"><slot /></button>',
@@ -79,6 +83,7 @@ async function mountView(): Promise<VueWrapper> {
       stubs: {
         VideoPlayer: VideoPlayerStub,
         DebugPanel: DebugPanelStub,
+        ScreenshotPreview: ScreenshotPreviewStub,
         'el-button': ElButtonStub,
       },
     },
@@ -99,16 +104,6 @@ beforeEach(() => {
   setThumbnailMock.mockReset()
   elMessageMock.info.mockReset()
   anchorClickSpy.mockClear()
-  urlStub.createObjectURL.mockReset().mockImplementation(() => 'blob:shot')
-  urlStub.revokeObjectURL.mockReset()
-  Object.defineProperty(URL, 'createObjectURL', {
-    configurable: true,
-    value: urlStub.createObjectURL,
-  })
-  Object.defineProperty(URL, 'revokeObjectURL', {
-    configurable: true,
-    value: urlStub.revokeObjectURL,
-  })
 })
 
 describe('DeviceDetail', () => {
@@ -177,7 +172,7 @@ describe('DeviceDetail', () => {
   })
 })
 
-describe('DeviceDetail 截图按钮（方案 40 A）', () => {
+describe('DeviceDetail 截图按钮（方案 37 B7 改道）', () => {
   async function clickScreenshot(wrapper: VueWrapper) {
     const shotBtn = wrapper.findAll('button').find((b) => b.text().includes('截图'))
     expect(shotBtn).toBeDefined()
@@ -185,7 +180,7 @@ describe('DeviceDetail 截图按钮（方案 40 A）', () => {
     await flushPromises()
   }
 
-  it('流抓帧结果直接下载 PNG 且不提示回退', async () => {
+  it('流抓帧结果交给预览弹窗标注（不再直接下载）', async () => {
     mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
     captureSnapshotMock.mockResolvedValue({
       blob: new Blob(['frame-png'], { type: 'image/png' }),
@@ -196,13 +191,16 @@ describe('DeviceDetail 截图按钮（方案 40 A）', () => {
     await clickScreenshot(wrapper)
 
     expect(captureSnapshotMock).toHaveBeenCalledTimes(1)
-    expect(urlStub.createObjectURL).toHaveBeenCalledTimes(1)
-    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
+    const preview = wrapper.findComponent({ name: 'ScreenshotPreview' })
+    expect(preview.props('visible')).toBe(true)
+    expect(preview.props('image')).toBeInstanceOf(Blob)
+    expect(preview.props('deviceId')).toBe('dev1')
+    expect(anchorClickSpy).not.toHaveBeenCalled()
     expect(elMessageMock.info).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('回退路径时提示文案且仍触发下载', async () => {
+  it('回退路径时提示文案且同样打开预览弹窗', async () => {
     mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
     captureSnapshotMock.mockResolvedValue({
       blob: new Blob(['api-png']),
@@ -213,8 +211,8 @@ describe('DeviceDetail 截图按钮（方案 40 A）', () => {
     await clickScreenshot(wrapper)
 
     expect(elMessageMock.info).toHaveBeenCalledWith('当前无视频流，已回退设备端截图')
-    expect(urlStub.createObjectURL).toHaveBeenCalledTimes(1)
-    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
+    expect(wrapper.findComponent({ name: 'ScreenshotPreview' }).props('visible')).toBe(true)
+    expect(anchorClickSpy).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

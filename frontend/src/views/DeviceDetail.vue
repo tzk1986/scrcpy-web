@@ -31,10 +31,13 @@
     - 调试面板可停靠（底部/右侧）、可拖拽调整大小
     - 创建调试会话（自动）
     - 断开按钮：关闭 WebSocket 和调试会话，返回列表页
+    - 截图按钮（方案 37 B7）：抓帧 → ScreenshotPreview 预览弹窗标注/导出（不再直接下载）
 
   子组件关系：
     DeviceDetail.vue → VideoPlayer.vue
                      → DebugPanel.vue
+                     → RecordingPanel.vue
+                     → ScreenshotPreview.vue（截图预览弹窗）
                      → stores/debug.ts
 -->
 <template>
@@ -62,6 +65,14 @@
         @position-change="panelPosition = $event"
       />
     </div>
+
+    <!-- 截图预览弹窗（方案 37 B7）：标注 + 导出 PNG / 直接保存，下载在弹窗内进行 -->
+    <ScreenshotPreview
+      :visible="screenshotVisible"
+      :image="screenshotImage"
+      :device-id="deviceId"
+      @close="screenshotVisible = false"
+    />
   </div>
 </template>
 
@@ -71,6 +82,7 @@ import { ElMessage } from 'element-plus'
 import { api } from '@/services/api'
 import DebugPanel from '@/components/debug/DebugPanel.vue'
 import RecordingPanel from '@/components/stream/RecordingPanel.vue'
+import ScreenshotPreview from '@/components/stream/ScreenshotPreview.vue'
 import VideoPlayer from '@/components/stream/VideoPlayer.vue'
 import { useDebugStore } from '@/stores/debug'
 import { useDeviceStore } from '@/stores/device'
@@ -84,6 +96,9 @@ const deviceResolution = ref<[number, number]>([1080, 1920])
 /** 调试面板停靠位置，用于切换布局方向。 */
 const panelPosition = ref<'bottom' | 'right'>('right')
 const videoPlayerRef = ref<InstanceType<typeof VideoPlayer>>()
+/** 截图预览弹窗（方案 37 B7）：可见性 + 抓帧产物（Blob 交组件内部管理 object URL） */
+const screenshotVisible = ref(false)
+const screenshotImage = ref<Blob | string | null>(null)
 
 /**
  * 组件挂载时初始化：
@@ -125,8 +140,9 @@ function onFirstFrame(blob: Blob) {
 }
 
 /**
- * 截图按钮（方案 40 A）：优先取视频流渲染帧（方向天然正）；
- * 无视频流时回退设备端截图并提示（后端判据重建后方向已修正，方案 40 B）。
+ * 截图按钮（方案 37 B7 改道）：优先取视频流渲染帧（方向天然正，方案 40 A）；
+ * 无视频流时回退设备端截图并提示（方案 40 B）。产物交给 ScreenshotPreview
+ * 预览弹窗标注与下载（不再直接触发下载，下载收敛到弹窗工具栏）。
  */
 async function captureScreenshot() {
   const player = videoPlayerRef.value
@@ -135,13 +151,8 @@ async function captureScreenshot() {
   if (source === 'fallback') {
     ElMessage.info('当前无视频流，已回退设备端截图')
   }
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${deviceId.replace(/[^a-zA-Z0-9._-]/g, '_')}_screenshot.png`
-  a.click()
-  // 下载仅读取 blob URL 一次，延迟回收避免大图占用内存长期滞留
-  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  screenshotImage.value = blob
+  screenshotVisible.value = true
 }
 </script>
 
