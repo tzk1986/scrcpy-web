@@ -21,7 +21,14 @@
     ├── ScanBusyError            — 已有扫描进行中，重复请求被拒（409，方案 36）
     ├── InvalidScanRangeError    — 扫描网段非法或超上限（422，方案 36）
     ├── ConflictError            — 同一设备已有进行态录屏会话（409，方案 37 B3）
-    └── RecordingNotFoundError   — 设备没有录屏会话（404，方案 37 B4）
+    ├── RecordingNotFoundError   — 设备没有录屏会话（404，方案 37 B4）
+    ├── InvalidPathError         — 设备文件路径格式非法（400，方案 39）
+    ├── PathNotFoundError        — 设备端路径不存在（404，方案 39）
+    ├── TransferBusyError        — 同一设备已有进行中的文件传输（409，方案 39）
+    ├── TargetExistsError        — 重命名目标已存在（409，方案 39）
+    ├── FileTooLargeError        — 上传超出单文件上限（413，方案 39）
+    ├── JobNotFoundError         — 传输任务 ID 无效/过期/跨设备（404，方案 39）
+    └── NotAFileError            — 下载目标是目录（400，方案 39）
 
 所有异常都携带一个机器可读的 ``code`` 字段（如 "DEVICE_NOT_FOUND"）
 以及一个人可读的 ``message``。这让前端可以根据 ``error.code`` 进行
@@ -168,6 +175,74 @@ class RecordingNotFoundError(OpenScrcpyException):
 
     def __init__(self, device_id: str) -> None:
         super().__init__(f"设备 {device_id} 没有录屏会话", code="NO_RECORDING")
+
+
+class InvalidPathError(OpenScrcpyException):
+    """设备文件路径格式非法（方案 39）。
+
+    消息不回显原值：避免攻击载荷反射面（仿 InvalidIdentifierError）。
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Invalid path: {reason}", code="INVALID_PATH")
+
+
+class PathNotFoundError(OpenScrcpyException):
+    """设备端路径不存在/查询不到条目（方案 39）。"""
+
+    status_code = 404
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"Path not found: {path}", code="PATH_NOT_FOUND")
+
+
+class TransferBusyError(OpenScrcpyException):
+    """传输互斥：同一设备已有进行中的上传/下载（方案 39，对齐方案 35 连接治理语义）。"""
+
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(
+            "该设备已有进行中的文件传输，请等待其完成后再试",
+            code="TRANSFER_BUSY",
+        )
+
+
+class TargetExistsError(OpenScrcpyException):
+    """重命名目标已存在（方案 39）。"""
+
+    status_code = 409
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"Target already exists: {path}", code="TARGET_EXISTS")
+
+
+class FileTooLargeError(OpenScrcpyException):
+    """上传文件超出单文件上限（方案 39）。"""
+
+    status_code = 413
+
+    def __init__(self, limit_bytes: int) -> None:
+        super().__init__(
+            f"File exceeds upload limit of {limit_bytes} bytes",
+            code="FILE_TOO_LARGE",
+        )
+
+
+class JobNotFoundError(OpenScrcpyException):
+    """传输任务 ID 无效/已过期/不属于该设备（方案 39；不区分原因以防探测）。"""
+
+    status_code = 404
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"Transfer job not found: {job_id}", code="JOB_NOT_FOUND")
+
+
+class NotAFileError(OpenScrcpyException):
+    """下载目标是目录（首版不支持目录直下，方案 39）。"""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"Not a file (download unsupported): {path}", code="NOT_A_FILE")
 
 
 # ---------------------------------------------------------------------------

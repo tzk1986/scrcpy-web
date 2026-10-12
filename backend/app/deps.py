@@ -30,6 +30,7 @@ from functools import lru_cache
 
 from app.application.app_service import AppService
 from app.application.debug_service import DebugService
+from app.application.file_service import FileService
 from app.application.device_service import DeviceService
 from app.application.network_service import NetworkService
 from app.application.performance_service import PerformanceService
@@ -120,6 +121,16 @@ def get_recording_service() -> RecordingService:
     每请求新建实例会让单设备互斥失效、周期清理任务泄漏。
     """
     return RecordingService(adb=get_adb_driver())
+
+
+@lru_cache()
+def get_file_service() -> FileService:
+    """返回进程级 FileService 单例（方案 39）。
+
+    必须单例：任务表、暂存登记与单设备传输互斥均为进程内共享状态，
+    每请求新建实例会让互斥失效、TTL 回收与孤儿暂存清扫失准。
+    """
+    return FileService(adb=get_adb_driver())
 
 
 @lru_cache()

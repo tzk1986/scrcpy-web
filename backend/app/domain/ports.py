@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from app.domain.device import DeviceInfo
+from app.domain.files import FileEntry
 from app.domain.runtime import BatteryInfo, CpuProcessInfo, RuntimeInfo
 from app.domain.session import DebugSession
 
@@ -303,7 +304,9 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def push(self, device_id: str, local: str, remote: str) -> None:
+    async def push(
+        self, device_id: str, local: str, remote: str, timeout: int | None = None
+    ) -> None:
         """
         将文件从主机推送到设备。
 
@@ -311,10 +314,13 @@ class AdbDriver(Protocol):
             device_id: ADB 序列号。
             local: 主机文件路径。
             remote: 设备文件路径。
+            timeout: 覆盖默认超时（秒）；大文件传输须显式传长超时。
         """
         ...
 
-    async def pull(self, device_id: str, remote: str, local: str) -> None:
+    async def pull(
+        self, device_id: str, remote: str, local: str, timeout: int | None = None
+    ) -> None:
         """
         将文件从设备拉到主机。
 
@@ -322,6 +328,53 @@ class AdbDriver(Protocol):
             device_id: ADB 序列号。
             remote: 设备文件路径。
             local: 主机文件路径。
+            timeout: 覆盖默认超时（秒）；大文件传输须显式传长超时。
+        """
+        ...
+
+    async def list_dir(self, device_id: str, path: str) -> list[FileEntry]:
+        """
+        列出设备目录条目（toybox ls -la 解析）。
+
+        实现侧必须对无尾斜杠路径补 "/"（符号链接目录否则只回显链接行），
+        并对非 UTF-8 文件名字节以替换符容错。
+
+        参数：
+            device_id: ADB 序列号。
+            path: 设备目录路径。
+
+        返回：
+            FileEntry 列表（不含 . 与 ..；total 行忽略）。
+
+        异常：
+            AdbError: 路径不存在/无权限（stderr 文本由应用层映射）。
+        """
+        ...
+
+    async def stat_size(self, device_id: str, path: str) -> FileEntry:
+        """
+        查询单个条目（toybox ls -ld，取条目本身不补尾斜杠）。
+
+        异常：
+            AdbError: 路径不存在/无权限，或输出不可解析。
+        """
+        ...
+
+    async def rename_path(self, device_id: str, old: str, new: str) -> None:
+        """
+        设备端重命名/移动（shell mv，argv 侧已 shlex.quote）。
+
+        异常：
+            AdbError: mv 失败（目标存在与否由应用层先行检查）。
+        """
+        ...
+
+    async def delete_path(self, device_id: str, path: str, is_dir: bool) -> None:
+        """
+        设备端删除（目录 rm -r；文件与软链 rm -f——软链不得递归其目标）。
+
+        异常：
+            AdbError: rm 失败。
         """
         ...
 
