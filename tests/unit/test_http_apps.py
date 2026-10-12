@@ -2,7 +2,7 @@
 应用管理 HTTP 端点（backend/app/interfaces/http/apps.py）行为测试
 =================================================================
 
-用 hand-rolled FakeAppService 经 dependency_overrides 注入，覆盖 7 个端点：
+用 hand-rolled FakeAppService 经 dependency_overrides 注入，覆盖 8 个端点：
     - GET  /api/apps/{device_id}                     列表（统计聚合、空列表、include_system）
     - GET  /api/apps/{device_id}/{package}           详情（命中 / 404）
     - POST /api/apps/{device_id}/{package}/launch    启动（成功 / 500）
@@ -10,16 +10,19 @@
     - POST /api/apps/{device_id}/{package}/uninstall 卸载（成功 / 500）
     - POST /api/apps/{device_id}/{package}/clear-data 清数据（成功 / 500）
     - GET  /api/apps/{device_id}/{package}/memory    内存（命中 / 404）
+    - GET  /api/apps/{device_id}/{package}/runtime   运行时状态（结构六键 / 序列化归一 / 透传）
 
 不触碰真实 ADB。
 """
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.application.app_service import AppInfo
+from app.application.app_service import AppInfo, AppService
 from app.deps import get_app_service
+from app.domain.runtime import RuntimeInfo, ServiceInfo
 
 from .http_testkit import make_client, override
 
@@ -57,6 +60,14 @@ class FakeAppService:
         self.uninstall_result = True
         self.clear_result = True
         self.memory_kb: int | None = 4096
+        self.runtime_info: dict[str, Any] = {
+            "pkg": PKG,
+            "top_activity": f"{PKG}/.MainActivity",
+            "resumed": f"{PKG}/.MainActivity",
+            "services": [{"name": f"{PKG}/.Worker", "state": "running"}],
+            "providers": [f"{PKG}/.Provider"],
+            "parse_warning": "",
+        }
 
     async def list_apps(self, device_id: str, include_system: bool = False) -> list[AppInfo]:
         self.calls.append(("list_apps", device_id, include_system))
@@ -85,6 +96,10 @@ class FakeAppService:
     async def get_app_memory(self, device_id: str, package: str) -> int | None:
         self.calls.append(("get_app_memory", device_id, package))
         return self.memory_kb
+
+    async def get_runtime_info(self, device_id: str, package: str) -> dict[str, Any]:
+        self.calls.append(("get_runtime_info", device_id, package))
+        return self.runtime_info
 
 
 @pytest.fixture
@@ -251,3 +266,66 @@ def test_get_app_memory_not_available_404(fake: FakeAppService) -> None:
 
     assert response.status_code == 404
     assert PKG in response.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/apps/{device_id}/{package}/runtime
+# ---------------------------------------------------------------------------
+
+def test_runtime_endpoint_shape(fake: FakeAppService) -> None:
+    """结构含六个键（pkg/top_activity/resumed/services/providers/parse_warning）。"""
+    client = make_client()
+    with override(get_app_service, fake):
+        response = client.get(f"/api/apps/{DEV}/{PKG}/runtime")
+
+    assert response.status_code == 200
+    body = response.json()
+    for key in ("pkg", "top_activity", "resumed", "services", "providers", "parse_warning"):
+        assert key in body
+    assert fake.calls == [("get_runtime_info", DEV, PKG)]
+
+
+def test_runtime_endpoint_dataclass_serialized_to_plain_dict() -> None:
+    """真 AppService 透传服务层 dict 时，ServiceInfo dataclass 被序列化为纯 dict。
+
+    锁死接口层 jsonable_encoder 归一的序列化坑：C3 服务层 services 字段是
+    list[ServiceInfo]（dataclass），不归一化会触发 JSON 序列化 TypeError → 500。
+    """
+    adb = MagicMock()
+    adb.get_runtime_info = AsyncMock(
+        return_value=RuntimeInfo(
+            pkg="com.x",
+            top_activity="com.x/.Main",
+            resumed="com.x/.Main",
+            services=[ServiceInfo(name="com.x/.S", state="running")],
+            providers=["com.x/.P"],
+        )
+    )
+    client = make_client()
+    with override(get_app_service, AppService(adb)):
+        response = client.get("/api/apps/d1/com.x/runtime")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["services"] == [{"name": "com.x/.S", "state": "running"}]
+    assert body["providers"] == ["com.x/.P"]
+    assert body["pkg"] == "com.x"
+
+
+def test_runtime_endpoint_transparent_passthrough(fake: FakeAppService) -> None:
+    """端点逐字段透传服务层 dict（非空 parse_warning、空解析形态）。"""
+    fake.runtime_info = {
+        "pkg": PKG,
+        "top_activity": "",
+        "resumed": "",
+        "services": [],
+        "providers": [],
+        "parse_warning": "resumed 缺失; top_activity 缺失",
+    }
+    client = make_client()
+    with override(get_app_service, fake):
+        response = client.get(f"/api/apps/{DEV}/{PKG}/runtime")
+
+    assert response.status_code == 200
+    assert response.json() == fake.runtime_info
+    assert fake.calls == [("get_runtime_info", DEV, PKG)]

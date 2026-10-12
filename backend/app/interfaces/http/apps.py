@@ -12,13 +12,15 @@
 - POST /api/apps/{device_id}/{package}/uninstall  卸载
 - POST /api/apps/{device_id}/{package}/clear-data  清除数据
 - GET /api/apps/{device_id}/{package}/memory   内存占用
+- GET /api/apps/{device_id}/{package}/runtime  运行时状态
 
-参考方案文档：方案/14-调试面板其他标签完善.md
+参考方案文档：方案/14-调试面板其他标签完善.md、方案/37-首批功能完善与安全审查.md
 """
 
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.encoders import jsonable_encoder
 
 from app.application.app_service import AppInfo, AppService
 from app.deps import get_app_service
@@ -217,3 +219,23 @@ async def get_app_memory(
         raise HTTPException(status_code=404, detail=f"Memory info not available for: {package}")
 
     return {"package": package, "memory_kb": memory_kb}
+
+
+@router.get("/{device_id}/{package}/runtime")
+async def get_app_runtime(
+    device_id: str,
+    package: str,
+    service: AppService = Depends(get_app_service),
+) -> Any:
+    """
+    获取应用运行时状态。
+
+    参数：
+        device_id: 设备 ID。
+        package: 应用包名。
+        service: 应用管理服务。
+
+    返回：
+        JSON 对象：{pkg, top_activity, resumed, services, providers, parse_warning}。
+    """
+    return jsonable_encoder(await service.get_runtime_info(device_id, package))
