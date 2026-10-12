@@ -9,6 +9,9 @@
  *   - 停止：done + local_path → video 预览（/file 端点）+ 下载链接
  *   - 互斥：start 409 → ElMessage.error 提示且保持空闲（录屏入口仍在）
  *   - 卸载：录制中仅提示服务端 60 秒上限兜底，不调 stop API
+ *   - webm 导出（B6）：done 态显示「导出 webm」按钮；点击调用
+ *     exportWebmClip(videoEl) 并触发 clip.webm 下载；失败提示且按钮恢复；
+ *     浏览器不支持时按钮禁用（webmExporter 模块整体 mock）
  *
  * 说明：仿 AppsView.test.ts 模式——vi.hoisted + vi.mock('element-plus') +
  * vi.mock('@/services/api')；el-button 用轻量 stub 替代。
@@ -34,6 +37,12 @@ const mockApi = vi.hoisted(() => ({
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
+const mockExporter = vi.hoisted(() => ({
+  exportWebmClip: vi.fn(),
+  isWebmRecorderSupported: vi.fn(),
+}))
+vi.mock('@/utils/webmExporter', () => mockExporter)
+
 import RecordingPanel, { formatElapsed } from './RecordingPanel.vue'
 
 const ElButtonStub = {
@@ -48,6 +57,16 @@ function mountPanel() {
       stubs: { 'el-button': ElButtonStub },
     },
   })
+}
+
+/** 挂载并进入 done 预览态（getRecording 返回 done + local_path）。 */
+async function mountDonePanel() {
+  mockApi.getRecording.mockResolvedValue({
+    session: sessionWith({ state: 'done', local_path: 'data/recordings/s1.mp4' }),
+  })
+  const wrapper = mountPanel()
+  await flushPromises()
+  return wrapper
 }
 
 /** 录制态会话（对应后端 RecordingSession 结构）。 */
@@ -67,6 +86,9 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
   for (const fn of Object.values(mockApi)) fn.mockReset()
   mockApi.getRecording.mockResolvedValue(undefined) // 默认无会话 → idle
+  mockExporter.exportWebmClip.mockReset()
+  mockExporter.isWebmRecorderSupported.mockReset()
+  mockExporter.isWebmRecorderSupported.mockReturnValue(true) // 默认支持 webm
   h.ElMessage.success.mockClear()
   h.ElMessage.error.mockClear()
   h.ElMessage.info.mockClear()
@@ -74,6 +96,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe('formatElapsed', () => {
@@ -94,6 +117,7 @@ describe('RecordingPanel', () => {
     expect(wrapper.find('.record-start').exists()).toBe(true)
     expect(wrapper.find('.record-stop').exists()).toBe(false)
     expect(wrapper.find('video').exists()).toBe(false)
+    expect(wrapper.find('.export-webm').exists()).toBe(false) // 仅 done 态显示导出按钮
   })
 
   it('点击录屏进入录制态：红点 + 计时 00:00 起推进到 00:05、停止按钮出现', async () => {
@@ -212,5 +236,61 @@ describe('RecordingPanel', () => {
     expect(h.ElMessage.error).toHaveBeenCalledWith('录制已结束但未生成录像文件')
     expect(wrapper.find('.record-start').exists()).toBe(true)
     expect(wrapper.find('video').exists()).toBe(false)
+  })
+
+  it('done 态显示「导出 webm」按钮（浏览器支持时可用）', async () => {
+    const wrapper = await mountDonePanel()
+
+    const btn = wrapper.find('.export-webm')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toContain('导出 webm')
+    expect(btn.attributes('disabled')).toBeUndefined()
+  })
+
+  it('浏览器不支持 webm 时导出按钮禁用（降级防御，不硬抛）', async () => {
+    mockExporter.isWebmRecorderSupported.mockReturnValue(false)
+    const wrapper = await mountDonePanel()
+
+    const btn = wrapper.find('.export-webm')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('disabled')).toBeDefined()
+  })
+
+  it('点击「导出 webm」：exportWebmClip 拿 video 元素 → Blob 触发 clip.webm 下载后 revoke', async () => {
+    const wrapper = await mountDonePanel()
+
+    const blob = new Blob(['clip-data'], { type: 'video/webm' })
+    mockExporter.exportWebmClip.mockResolvedValue(blob)
+    const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-clip')
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL')
+    // 对象持有而非 let 变量：避免 TS 控制流把闭包赋值收窄成 never
+    const clicked = { anchor: null as HTMLAnchorElement | null }
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.anchor = this
+      })
+
+    await wrapper.find('.export-webm').trigger('click')
+    await flushPromises()
+
+    expect(mockExporter.exportWebmClip).toHaveBeenCalledTimes(1)
+    expect(mockExporter.exportWebmClip.mock.calls[0][0]?.tagName).toBe('VIDEO')
+    expect(createUrlSpy).toHaveBeenCalledWith(blob)
+    expect(clicked.anchor?.download).toBe('clip.webm')
+    expect(clicked.anchor?.getAttribute('href')).toBe('blob:mock-clip')
+    expect(revokeSpy).toHaveBeenCalledWith('blob:mock-clip')
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('导出失败 → ElMessage.error 提示且按钮恢复可用', async () => {
+    const wrapper = await mountDonePanel()
+
+    mockExporter.exportWebmClip.mockRejectedValue(new Error('boom'))
+    await wrapper.find('.export-webm').trigger('click')
+    await flushPromises()
+
+    expect(h.ElMessage.error).toHaveBeenCalledWith('webm 导出失败')
+    expect(wrapper.find('.export-webm').attributes('disabled')).toBeUndefined()
   })
 })
