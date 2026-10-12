@@ -107,3 +107,94 @@ adb -s 192.168.8.19:5555 shell dumpsys activity providers | tr -d '\r' >> dumpsy
 - C2（应用检查解析 + 漂移鲁棒性单测）、C3 —— 方案 37 子项 C 的后继任务。
 - 文件为真实设备原始输出（除 drift 样本按上述方式注入），未 synthetically 捏造
   真实设备没有的内容。
+
+---
+
+# dumpsys cpuinfo/battery 真机样本 fixtures（方案 37 D1）
+
+本目录追加 Task 19（D1）采集的双真机 `dumpsys cpuinfo` / `dumpsys battery` 原始输出，
+供 D2（性能监控解析）单元测试作 fixture 使用。C1 节原文一字未动，本节为纯追加。
+
+## 采集概况
+
+- 采集日期：2026-10-12
+- 采集环境：Windows 开发机，adb 36.0.0
+- 双机口径：**192.168.8.18:5555（rk3568_r，Android 11）+ 192.168.8.25:5555（rk3288，
+  Android 7.1.2）**。第三台 .33 当次离线，按控制器裁决不强求、未采替班样本。
+- 归一处理：采集时经 `tr -d '\r'` 去 CR，落盘 UTF-8、LF 换行；6 个文件逐个经
+  `open(f, encoding='utf-8').read()` 验证可解码，全部通过；均以换行符结尾。
+- 空载如实记录：两机均为空载状态，cpuinfo 行数少（.25 仅 8 条进程行 + 头尾）、
+  大量 `0%` 进程、.18 采样窗口内最高占用仅 3.7%。原样入库，未人为加负载或改数值。
+
+## 各文件明细
+
+### dumpsys_cpuinfo_18.txt（66 行）
+
+- 设备：192.168.8.18:5555，Android 11
+- 结构：`Load:` 行 + `CPU usage from …:` 头行 + 51 条 `  N% pid/name:` 进程行 +
+  11 条 ` +N% pid/name:` 新进程行 + 末行 `3.5% TOTAL: … iowait + … irq + … softirq`
+- 版本形态：TOTAL 行含 user/kernel/iowait/irq/softirq 五分量
+
+### dumpsys_cpuinfo_25.txt（12 行）
+
+- 设备：192.168.8.25:5555，Android 7.1.2
+- 结构：`Load:` 行 + `CPU usage from …:` 头行 + 8 条进程行 + 末行 `1.9% TOTAL: …`
+- 版本形态差异：TOTAL 行仅 user/kernel 两分量（无 iowait/irq/softirq）；进程行无
+  `+` 前缀新进程形态。D2 解析须兼容两种 TOTAL 分量集。
+
+采集命令（两机相同模式）：
+
+```bash
+adb -s 192.168.8.18:5555 shell dumpsys cpuinfo | tr -d '\r' > dumpsys_cpuinfo_18.txt
+adb -s 192.168.8.25:5555 shell dumpsys cpuinfo | tr -d '\r' > dumpsys_cpuinfo_25.txt
+```
+
+### dumpsys_battery_18.txt（16 行）
+
+- 设备：192.168.8.18:5555，Android 11
+- 字段：AC/USB powered 均 true、status 3、health 2、level 50、voltage 3、
+  current 0、temperature 26、technology Li-ion，含 Max charging current/voltage、
+  Charge counter 共 15 个字段行
+
+### dumpsys_battery_25.txt（15 行）
+
+- 设备：192.168.8.25:5555，Android 7.1.2
+- 双机字段差异（如实入库）：**无 `current:` 行**（.18 有）；`technology:` 键在但值为空；
+  USB powered false；status 2（.18 为 3）；temperature 424（.18 为 26）。
+  Max charging current/voltage、Charge counter 两机均有。
+- D2 注意：`current` 缺失与 `technology` 空值均为真实形态，解析须容忍字段缺省。
+
+采集命令：
+
+```bash
+adb -s 192.168.8.18:5555 shell dumpsys battery | tr -d '\r' > dumpsys_battery_18.txt
+adb -s 192.168.8.25:5555 shell dumpsys battery | tr -d '\r' > dumpsys_battery_25.txt
+```
+
+### dumpsys_cpuinfo_drift.txt（9 行，由 .18 样本裁剪）
+
+漂移样本，供 D2 断言「解析 0 条进程记录且不抛」。构造方式（文件头注释亦有记录，
+注释刻意不含任何解析锚点关键字）：
+
+1. **删除汇总锚点行**：末行 `TOTAL` 统计行删除。
+2. **删除全部进程占用率行**：51 条 `  N% pid/…` 与 11 条 ` +N% pid/…` 形态全删。
+3. **保留设备原有非进程行**：`Load: 0.11 / 0.09 / 0.09` 与 `CPU usage from …:` 两行。
+4. **注入 3 条未知前缀行**：`# injected: unknown prefix line copy#1 / copy#2 / tail`。
+
+后置条件（已验证）：文件内 grep 无 `TOTAL`、无任何 `N% pid/` 进程行形态。
+
+### dumpsys_battery_drift.txt（19 行，由 .18 样本裁剪）
+
+漂移样本，供 D2 断言「temperature/voltage/health 三字段解析为空且不抛」。构造方式：
+
+1. **删除三个字段行**：`health: 2`、`voltage: 3`、`temperature: 26` 三行（行首锚定）删除。
+2. **其余原行全部保留**：AC/USB/Wireless、Max charging current/voltage、Charge counter、
+   status、present、level、scale、current、technology 原样保留。
+3. **注入 2 条未知前缀行**：首行后 1 条、文件尾 1 条 `# injected: unknown prefix line …`。
+4. 特别说明：保留行中的 `Max charging voltage: 0` 仍含 `voltage` 一词，
+   D2 漂移断言**必须以行首字段名锚定**（如 `^\s+voltage:`），勿做裸子串断言。
+
+## 消费方
+
+- D2（性能监控 cpuinfo/battery 解析 + 漂移鲁棒性单测）—— 方案 37 子项 D 的后继任务。
+- 双机文件为真实设备原始输出（除 drift 按上述方式裁剪注入），未捏造设备没有的内容。

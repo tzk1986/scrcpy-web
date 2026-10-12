@@ -1,0 +1,66 @@
+Load: 0.11 / 0.09 / 0.09
+CPU usage from 303382ms to 3334ms ago (2026-10-12 13:06:12.832 to 2026-10-12 13:11:12.880):
+  3.7% 16328/com.duzkj.facecash: 2.9% user + 0.7% kernel / faults: 15168 minor
+  1.2% 808/com.android.networkstack.process: 1.1% user + 0.1% kernel / faults: 11087 minor
+  1.1% 143/rknn_server: 0.2% user + 0.9% kernel
+  0.9% 169/surfaceflinger: 0.5% user + 0.3% kernel / faults: 2372 minor
+  0.7% 492/system_server: 0.6% user + 0.1% kernel / faults: 5244 minor
+  0.4% 135/logd: 0.3% user + 0.1% kernel / faults: 4 minor
+  0.4% 205/android.hardware.graphics.composer@2.1-service: 0.2% user + 0.2% kernel / faults: 310 minor
+  0.2% 333/aicwf_busrx_thr: 0% user + 0.2% kernel
+  0.1% 31586/kworker/0:2-events_freezable: 0% user + 0.1% kernel
+  0% 400/wificond: 0% user + 0% kernel
+  0% 332/aicwf_bustx_thr: 0% user + 0% kernel
+  0% 330/mdnsd: 0% user + 0% kernel / faults: 1 minor
+  0% 17807/com.android.systemui: 0% user + 0% kernel / faults: 106 minor
+  0% 49/cfinteractive: 0% user + 0% kernel
+  0% 231/netd: 0% user + 0% kernel / faults: 19 minor
+  0% 331/aicwf_pwrctl: 0% user + 0% kernel
+  0% 14279/wpa_supplicant: 0% user + 0% kernel
+  0% 255/android.hardware.wifi@1.0-service: 0% user + 0% kernel / faults: 76 minor
+  0% 317/adbd: 0% user + 0% kernel / faults: 1440 minor
+  0% 10/rcu_preempt: 0% user + 0% kernel
+  0% 195/jbd2/mmcblk2p15: 0% user + 0% kernel
+  0% 841/com.adtv: 0% user + 0% kernel / faults: 163 minor
+  0% 31758/kworker/u8:3-devfreq_workq: 0% user + 0% kernel
+  0% 31837/kworker/2:1-events_freezable: 0% user + 0% kernel
+  0% 31892/kworker/u9:1-kbase_pm_poweroff_wait: 0% user + 0% kernel
+  0% 28590/kworker/3:1H-kblockd: 0% user + 0% kernel
+  0% 31338/kworker/u8:0-devfreq_workq: 0% user + 0% kernel
+  0% 31465/kworker/2:1H-kblockd: 0% user + 0% kernel
+  0% 250/android.hardware.health@2.1-service: 0% user + 0% kernel
+  0% 31510/kworker/u9:0-kbase_pm_poweroff_wait: 0% user + 0% kernel
+  0% 31878/kworker/0:2H-mmc_complete: 0% user + 0% kernel
+  0% 167/android.system.suspend@1.0-service: 0% user + 0% kernel
+  0% 264/android.hardware.power-service.rockchip: 0% user + 0% kernel
+  0% 340/sh: 0% user + 0% kernel / faults: 1390 minor
+  0% 341/sh: 0% user + 0% kernel / faults: 790 minor
+  0% 343/sh: 0% user + 0% kernel / faults: 824 minor
+  0% 31502/kworker/1:0H-kblockd: 0% user + 0% kernel
+  0% 31891/kworker/1:0-events_freezable: 0% user + 0% kernel
+  0% 137/servicemanager: 0% user + 0% kernel
+  0% 230/statsd: 0% user + 0% kernel
+  0% 31726/kworker/0:0H: 0% user + 0% kernel
+  0% 9/ksoftirqd/0: 0% user + 0% kernel
+  0% 85/ion_system_heap: 0% user + 0% kernel
+  0% 138/hwservicemanager: 0% user + 0% kernel
+  0% 399/storaged: 0% user + 0% kernel
+  0% 901/com.android.phone: 0% user + 0% kernel / faults: 6 minor
+  0% 1226/com.softwinner.launcher: 0% user + 0% kernel / faults: 9 minor
+  0% 1354/com.ys.ys_receiver: 0% user + 0% kernel / faults: 12 minor
+  0% 1671/com.ys.checknet: 0% user + 0% kernel / faults: 15 minor
+  0% 31487/kworker/u8:1-gpu_power_off_wq: 0% user + 0% kernel
+  0% 31859/kworker/3:0-mm_percpu_wq: 0% user + 0% kernel
+ +0% 31895/kworker/1:2H: 0% user + 0% kernel
+ +0% 31956/kworker/2:0-events_freezable: 0% user + 0% kernel
+ +0% 31969/kworker/2:0H-kblockd: 0% user + 0% kernel
+ +0% 31976/kworker/3:0H-kblockd: 0% user + 0% kernel
+ +0% 31979/kworker/0:1: 0% user + 0% kernel
+ +0% 31995/kworker/u8:2-devfreq_workq: 0% user + 0% kernel
+ +0% 31996/kworker/3:2-mm_percpu_wq: 0% user + 0% kernel
+ +0% 32020/logcat: 0% user + 0% kernel
+ +0% 32029/sleep: 0% user + 0% kernel
+ +0% 32033/sleep: 0% user + 0% kernel
+ +0% 32035/sleep: 0% user + 0% kernel
+ +0% 32036/kworker/0:1H-kblockd: 0% user + 0% kernel
+3.5% TOTAL: 1.5% user + 0.9% kernel + 0% iowait + 0.8% irq + 0.1% softirq

@@ -1,0 +1,9 @@
+# drift sample（方案 37 D1）：由 dumpsys_cpuinfo_18.txt（192.168.8.18:5555, Android 11）裁剪构造
+# 注入方式：删除汇总统计行与全部进程占用率行（含加号前缀的新进程形态），仅保留
+#          设备原有两条非进程头行，并注入 3 条井号 injected 冒号开头的未知前缀行。
+# 预期：解析端应得 0 条进程记录且不抛异常。明细见本目录 README.md 的 D1 采集节。
+Load: 0.11 / 0.09 / 0.09
+CPU usage from 303382ms to 3334ms ago (2026-10-12 13:06:12.832 to 2026-10-12 13:11:12.880):
+# injected: unknown prefix line copy#1
+# injected: unknown prefix line copy#2
+# injected: unknown prefix line tail

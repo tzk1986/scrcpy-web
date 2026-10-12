@@ -1,0 +1,19 @@
+# drift sample（方案 37 D1）：由 dumpsys_battery_18.txt（192.168.8.18:5555, Android 11）裁剪构造
+# 注入方式：删除温度、电压、健康度三条字段行，其余原行全部保留；
+#          注入 2 条井号 injected 冒号开头的未知前缀行（首行后 1 条、文件尾 1 条）。
+# 预期：解析端三字段应得空/None 且不抛异常。明细见本目录 README.md 的 D1 采集节。
+Current Battery Service state:
+# injected: unknown prefix line copy#1
+  AC powered: true
+  USB powered: true
+  Wireless powered: false
+  Max charging current: 0
+  Max charging voltage: 0
+  Charge counter: 0
+  status: 3
+  present: true
+  level: 50
+  scale: 100
+  current: 0
+  technology: Li-ion
+# injected: unknown prefix line tail
