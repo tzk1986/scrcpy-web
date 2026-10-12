@@ -17,7 +17,7 @@
 参考方案文档：方案/14-调试面板其他标签完善.md、方案/37-首批功能完善与安全审查.md
 """
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -226,7 +226,7 @@ async def get_app_runtime(
     device_id: str,
     package: str,
     service: AppService = Depends(get_app_service),
-) -> Any:
+) -> dict[str, Any]:
     """
     获取应用运行时状态。
 
@@ -238,4 +238,4 @@ async def get_app_runtime(
     返回：
         JSON 对象：{pkg, top_activity, resumed, services, providers, parse_warning}。
     """
-    return jsonable_encoder(await service.get_runtime_info(device_id, package))
+    return cast(dict[str, Any], jsonable_encoder(await service.get_runtime_info(device_id, package)))

@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.application.app_service import AppInfo, AppService
+from app.core.exceptions import InvalidIdentifierError
 from app.deps import get_app_service
 from app.domain.runtime import RuntimeInfo, ServiceInfo
 
@@ -68,6 +69,7 @@ class FakeAppService:
             "providers": [f"{PKG}/.Provider"],
             "parse_warning": "",
         }
+        self.runtime_error: Exception | None = None
 
     async def list_apps(self, device_id: str, include_system: bool = False) -> list[AppInfo]:
         self.calls.append(("list_apps", device_id, include_system))
@@ -99,6 +101,8 @@ class FakeAppService:
 
     async def get_runtime_info(self, device_id: str, package: str) -> dict[str, Any]:
         self.calls.append(("get_runtime_info", device_id, package))
+        if self.runtime_error is not None:
+            raise self.runtime_error
         return self.runtime_info
 
 
@@ -288,8 +292,11 @@ def test_runtime_endpoint_shape(fake: FakeAppService) -> None:
 def test_runtime_endpoint_dataclass_serialized_to_plain_dict() -> None:
     """真 AppService 透传服务层 dict 时，ServiceInfo dataclass 被序列化为纯 dict。
 
-    锁死接口层 jsonable_encoder 归一的序列化坑：C3 服务层 services 字段是
-    list[ServiceInfo]（dataclass），不归一化会触发 JSON 序列化 TypeError → 500。
+    锁定接口层归一化语义：C3 服务层 services 字段是 list[ServiceInfo]
+    （dataclass）。当前 FastAPI 的 response 编码器可兜底序列化 dataclass
+    （移除 jsonable_encoder 在当前版本下仍返回 200 而非 500），apps.py 保留
+    jsonable_encoder 是版本前瞻防御——显式归一为纯 JSON 形态，不依赖
+    编码器兜底行为。
     """
     adb = MagicMock()
     adb.get_runtime_info = AsyncMock(
@@ -329,3 +336,18 @@ def test_runtime_endpoint_transparent_passthrough(fake: FakeAppService) -> None:
     assert response.status_code == 200
     assert response.json() == fake.runtime_info
     assert fake.calls == [("get_runtime_info", DEV, PKG)]
+
+
+def test_runtime_endpoint_invalid_package_400(fake: FakeAppService) -> None:
+    """路径包名非法 → 服务抛 InvalidIdentifierError → 400，且不回显原值。"""
+    fake.runtime_error = InvalidIdentifierError("package")
+    client = make_client()
+    with override(get_app_service, fake):
+        response = client.get(f"/api/apps/{DEV}/bad-pkg/runtime")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "INVALID_IDENTIFIER"
+    assert body["error"]["message"] == "Invalid package format"
+    assert "bad-pkg" not in body["error"]["message"]
+    assert fake.calls == [("get_runtime_info", DEV, "bad-pkg")]

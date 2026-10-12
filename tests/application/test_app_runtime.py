@@ -109,3 +109,24 @@ async def test_runtime_services_providers_passthrough():
     out = await _service_with(info).get_runtime_info(DEVICE, "com.x")
     assert out["services"] == services
     assert out["providers"] == providers
+
+
+async def test_runtime_empty_services_providers_no_warning():
+    """空 services/providers 清单是合法空，不产生 parse_warning（与 resumed 缺失分离）。"""
+    info = RuntimeInfo(
+        pkg="x", top_activity="com.a/.B", resumed="com.a/.B", services=[], providers=[]
+    )
+    out = await _service_with(info).get_runtime_info(DEVICE, "com.x")
+    assert out["services"] == []
+    assert out["providers"] == []
+    assert out["parse_warning"] == ""
+
+
+async def test_runtime_adberror_warning_truncated_to_200_chars():
+    """AdbError 摘要 parse_warning 截断 200 字符（防超长错误文本撑大响应体）。"""
+    adb = MagicMock()
+    adb.get_runtime_info = AsyncMock(side_effect=AdbError("x" * 500))
+    out = await AppService(adb).get_runtime_info(DEVICE, "com.x")
+    assert len(out["parse_warning"]) == 200
+    assert out["parse_warning"].startswith("ADB 查询失败: ")
+    assert out["parse_warning"].endswith("xx")
