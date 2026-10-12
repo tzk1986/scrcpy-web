@@ -107,14 +107,6 @@ def svc(adb: FakeAdb) -> FileService:
     return FileService(adb=adb)  # type: ignore[arg-type]
 
 
-def _open_tempdirs() -> list[Path]:
-    return [p for p in Path(tempfile.gettempdir()).glob("scrcpy-filejob-*") if p.is_dir()]
-
-
-def _count_tempdirs() -> int:
-    return len(_open_tempdirs())
-
-
 # ---------- normalize / 白名单矩阵（Review Focus #4）----------
 
 
@@ -173,7 +165,6 @@ async def test_list_dir_error_mapping(svc: FileService) -> None:
 async def test_download_single_success_and_cleanup(svc: FileService, adb: FakeAdb) -> None:
     adb.entries["/sdcard/a.txt"] = make_entry("a.txt", size=7)
     adb.pull_contents["/sdcard/a.txt"] = b"content"
-    base = _count_tempdirs()
     job, artifact, filename = await svc.prepare_download("d", ["/sdcard/a.txt"])
     assert filename == "a.txt"
     assert artifact.read_bytes() == b"content"
@@ -181,10 +172,13 @@ async def test_download_single_success_and_cleanup(svc: FileService, adb: FakeAd
     assert job.total_size == 7
     assert adb.pulled[0][0] == "/sdcard/a.txt"
     assert adb.pulled[0][2] == svc.TRANSFER_TIMEOUT
+    # 精确断言本 job 工作目录被删——不按全局前缀计数（同机其他服务的
+    # scrcpy-filejob-* 目录会在断言窗口内增删，全局计数跨进程不稳定）
+    wd = svc._workdirs[job.id]
     svc.finalize_download(job.id)
     assert job.status == "done" and job.finished_at is not None
     assert not artifact.exists()
-    assert _count_tempdirs() == base
+    assert not wd.exists()
     # 锁已释放：再来一次不互斥
     job2, _, _ = await svc.prepare_download("d", ["/sdcard/a.txt"])
     assert job2.id != job.id
@@ -280,7 +274,6 @@ def _chunk_reader(chunks: list[bytes]):
 
 
 async def test_upload_success(svc: FileService, adb: FakeAdb) -> None:
-    base = _count_tempdirs()
     job = await svc.upload("d", "/sdcard/Download", "n.txt", _chunk_reader([b"x" * 10, b"x" * 10, b""]))
     assert job.status == "done"
     assert job.direction == "upload"
@@ -288,7 +281,8 @@ async def test_upload_success(svc: FileService, adb: FakeAdb) -> None:
     _dev, _local, remote, timeout = adb.pushed[0]
     assert remote == "/sdcard/Download/n.txt"
     assert timeout == svc.TRANSFER_TIMEOUT
-    assert _count_tempdirs() == base  # 即传即清
+    # 即传即清：登记已清（目录实删由 download 用例经同一清理路径钉住）
+    assert job.id not in svc._workdirs
     # 锁释放：可再次上传
     job2 = await svc.upload("d", "/data/local/tmp", "m", _chunk_reader([b"1"]))
     assert job2.status == "done"
@@ -296,11 +290,10 @@ async def test_upload_success(svc: FileService, adb: FakeAdb) -> None:
 
 async def test_upload_limit_413(svc: FileService, adb: FakeAdb) -> None:
     svc.MAX_UPLOAD_BYTES = 8
-    base = _count_tempdirs()
     with pytest.raises(FileTooLargeError):
         await svc.upload("d", "/sdcard", "big.bin", _chunk_reader([b"x" * 10, b"x" * 10]))
     assert adb.pushed == []
-    assert _count_tempdirs() == base
+    assert not svc._workdirs  # 异常路径也即传即清（svc 为本用例私有实例）
     # 锁释放
     job = await svc.upload("d", "/sdcard", "ok.bin", _chunk_reader([b"x"]))
     assert job.status == "done"
