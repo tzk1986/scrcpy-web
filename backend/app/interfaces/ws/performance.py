@@ -7,7 +7,7 @@
 提供实时性能指标推送：
 - WS /ws/perf/{device_id}  实时推送性能指标
 
-消息格式：
+消息格式（前 11 键来自 service._metrics_to_dict，方案 37 D3 追加 3/4 键）：
     服务端 → 客户端：
         {
             "ts": 1726045200.123,
@@ -18,6 +18,10 @@
             "jank_count": 0,
             "current_activity": "com.example/.MainActivity",
             "top_package": "com.example",
+            "cpu_processes": [{"proc": "kworker/0:1", "user": 1.2, "kernel": 0.3}],
+            "battery_temp": 31.0,
+            "battery_voltage": 4200,
+            "battery_health": "GOOD",
             "alerts": [{"id": "cpu_percent", "value": 87.2, "threshold": 80,
                         "direction": "above", "since": 1726045200.0,
                         "notify": true}]
@@ -61,19 +65,11 @@ async def stream_metrics(
     logger.info("performance_ws_connected", device=device_id)
 
     try:
-        # 实时推送指标
+        # 实时推送指标：序列化收敛到 service._metrics_to_dict（方案 37 D3 DRY），
+        # 新键自动携带；alerts 语义与旧实现一致（取样本 ts 的活动快照）
         async for metrics in service.stream_metrics(device_id):
-            data = {
-                "ts": metrics.ts,
-                "cpu_percent": metrics.cpu_percent,
-                "total_memory_mb": metrics.total_memory_mb,
-                "used_memory_mb": metrics.used_memory_mb,
-                "fps": metrics.fps,
-                "jank_count": metrics.jank_count,
-                "current_activity": metrics.current_activity,
-                "top_package": metrics.top_package,
-                "alerts": service.get_alerts(device_id, metrics.ts),
-            }
+            data = service._metrics_to_dict(metrics)
+            data["alerts"] = service.get_alerts(device_id, metrics.ts)
             await websocket.send_json(data)
 
     except WebSocketDisconnect:

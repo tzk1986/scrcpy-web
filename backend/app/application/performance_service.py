@@ -284,7 +284,12 @@ class PerformanceService:
                 self._schedule_idle_guard(device_id)
 
     def _metrics_to_dict(self, m: PerformanceMetrics) -> dict[str, Any]:
-        """将 PerformanceMetrics 转为字典（用于 JSON 序列化）。"""
+        """将 PerformanceMetrics 转为字典（用于 JSON 序列化）。
+
+        方案 37 D3：旧 8 键相对序与值零变化，末尾追加 4 新键。
+        cpu_processes 必须纯值 dict 化——dataclass 列表无法被
+        WS send_json / json.dumps 直接序列化。
+        """
         return {
             "ts": m.ts,
             "cpu_percent": m.cpu_percent,
@@ -294,6 +299,13 @@ class PerformanceService:
             "jank_count": m.jank_count,
             "current_activity": m.current_activity,
             "top_package": m.top_package,
+            "cpu_processes": [
+                {"proc": p.proc, "user": p.user, "kernel": p.kernel}
+                for p in m.cpu_processes
+            ],
+            "battery_temp": m.battery_temp,
+            "battery_voltage": m.battery_voltage,
+            "battery_health": m.battery_health,
         }
 
     # ------------------------------------------------------------------

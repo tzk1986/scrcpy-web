@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import json
 import time
 from collections import deque
 
@@ -21,6 +22,8 @@ import pytest
 from app.application.performance_service import PerformanceService
 from app.core.config import settings
 from app.core.exceptions import AdbError
+from app.domain.runtime import CpuProcessInfo
+from app.infrastructure.performance.sampler import PerformanceMetrics
 
 
 class DeadAdb:
@@ -274,3 +277,52 @@ async def test_sampling_loop_evaluates_each_round():
     await service.stop_monitoring("dev-C")
     assert spy.synced >= 2
     assert {"cpu_percent", "memory_percent", "fps"} <= set(spy.evaluated)
+
+
+# ---------------------------------------------------------------------------
+# 序列化新键（方案 37 D3）
+# ---------------------------------------------------------------------------
+
+def test_metrics_to_dict_includes_new_keys():
+    """_metrics_to_dict 追加 4 新键；旧 8 键相对序与值零变化。"""
+    m = PerformanceMetrics(
+        ts=1726045200.123, cpu_percent=23.5, total_memory_mb=4096.0,
+        used_memory_mb=2048.0, fps=60.0, jank_count=0,
+        current_activity="com.example/.MainActivity", top_package="com.example",
+        cpu_processes=[CpuProcessInfo("kworker/0:1", 1.2, 0.3),
+                       CpuProcessInfo("system_server", 0.6, 0.1)],
+        battery_temp=31.0, battery_voltage=4200, battery_health="GOOD",
+    )
+    service = PerformanceService(DeadAdb())
+
+    d = service._metrics_to_dict(m)
+
+    # 旧 8 键相对序零变化
+    assert list(d.keys())[:8] == [
+        "ts", "cpu_percent", "total_memory_mb", "used_memory_mb",
+        "fps", "jank_count", "current_activity", "top_package",
+    ]
+    assert d["ts"] == 1726045200.123
+    assert d["cpu_percent"] == 23.5
+    # cpu_processes 纯值 dict 化（dataclass 原样无法 json.dumps）
+    assert d["cpu_processes"] == [
+        {"proc": "kworker/0:1", "user": 1.2, "kernel": 0.3},
+        {"proc": "system_server", "user": 0.6, "kernel": 0.1},
+    ]
+    assert d["battery_temp"] == 31.0      # 摄氏值（BatteryInfo 已 ÷10，不再换算）
+    assert d["battery_voltage"] == 4200
+    assert d["battery_health"] == "GOOD"
+
+
+def test_metrics_to_dict_output_json_serializable():
+    """全 dict 输出可 json.dumps（WS send_json / HTTP JSONResponse 直接可用）。"""
+    m = PerformanceMetrics(
+        ts=1726045200.123, cpu_percent=23.5, total_memory_mb=4096.0,
+        used_memory_mb=2048.0, fps=60.0, jank_count=0,
+        current_activity="com.example/.MainActivity", top_package="com.example",
+        cpu_processes=[CpuProcessInfo("kworker/0:1", 1.2, 0.3)],
+        battery_temp=None, battery_voltage=None, battery_health="UNKNOWN",
+    )
+    service = PerformanceService(DeadAdb())
+
+    json.dumps(service._metrics_to_dict(m))  # 不抛

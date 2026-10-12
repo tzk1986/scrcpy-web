@@ -9,6 +9,8 @@
 - 内存使用情况（MemTotal - MemAvailable）
 - 帧率（从 dumpsys gfxinfo 获取）
 - 当前前台 Activity
+- 进程级 CPU 明细（从 dumpsys cpuinfo 获取，方案 37 D3 辅助指标）
+- 电池温度/电压/健康（从 dumpsys battery 获取，方案 37 D3 辅助指标）
 
 参考：
 - Android /proc 文件系统：https://www.kernel.org/doc/html/latest/filesystems/proc.html
@@ -18,12 +20,13 @@
 import asyncio
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from app.core.exceptions import AdbError
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
+from app.domain.runtime import BatteryInfo, CpuProcessInfo
 
 logger = get_logger(__name__)
 
@@ -43,6 +46,11 @@ class PerformanceMetrics:
     # fps 是否为本轮实测值（沿用 _last_fps / 空窗为 False）。仅服务端告警判定用，
     # 不进 _metrics_to_dict / WS 消息 / 落库（方案 24 §4.3）
     fps_fresh: bool = False
+    # ---- 方案 37 D3 新增（带默认值保旧构造；辅助指标失败降级为默认值） ----
+    cpu_processes: list[CpuProcessInfo] = field(default_factory=list)  # 进程级 CPU 明细
+    battery_temp: float | None = None    # 电池温度（摄氏，BatteryInfo 已 ÷10）
+    battery_voltage: int | None = None   # 电池电压（原值）
+    battery_health: str = "UNKNOWN"      # 健康枚举串（采集层 None → UNKNOWN 归一）
 
 
 class PerformanceSampler:
@@ -126,11 +134,21 @@ class PerformanceSampler:
         self._round += 1
 
         # activity/cpu/mem 互不依赖，并发采集；fps 依赖 activity 的 package，
-        # 且 gfxinfo 最重按轮次降频
-        (activity, package), cpu, (mem_total, mem_used) = await asyncio.gather(
+        # 且 gfxinfo 最重按轮次降频。方案 37 D3：进程 CPU 明细与电池四字段为
+        # 辅助指标，safe 变体吞掉全部失败（不参与 sample() 停采失败计数），
+        # 与既有三命令同轮一次性 gather（无嵌套 task）
+        (
+            (activity, package),
+            cpu,
+            (mem_total, mem_used),
+            cpu_processes,
+            batt,
+        ) = await asyncio.gather(
             self._get_current_activity(),
             self._get_cpu_usage(),
             self._get_memory_usage(),
+            self._get_cpu_processes_safe(),
+            self._get_battery_safe(),
         )
         if self._round % self.GFXINFO_INTERVAL == 1:
             fps, jank, fps_fresh = await self._get_fps_and_jank(now, package)
@@ -147,6 +165,10 @@ class PerformanceSampler:
             current_activity=activity,
             top_package=package,
             fps_fresh=fps_fresh,
+            cpu_processes=cpu_processes,
+            battery_temp=batt.temperature,
+            battery_voltage=batt.voltage,
+            battery_health=batt.health if batt.health is not None else "UNKNOWN",
         )
 
     async def _shell(self, cmd: str) -> str:
@@ -238,6 +260,33 @@ class PerformanceSampler:
         except Exception as e:
             logger.warning("get_memory_usage_failed", device=self.device_id, error=str(e))
             return 0.0, 0.0
+
+    async def _get_cpu_processes_safe(self) -> list[CpuProcessInfo]:
+        """
+        获取进程级 CPU 明细（方案 37 D3 辅助指标）。
+
+        与 CPU/内存等主指标不同，本命令任何失败（AdbError / 超时 /
+        bug 异常 / 替身未实现）一律降级为空清单——不得向上传播，
+        否则会误导 sample() 计入停采失败计数，毁掉整次采样。
+        """
+        try:
+            return list(await self.adb.get_cpu_usage(self.device_id))
+        except (AdbError, asyncio.TimeoutError, Exception) as e:
+            logger.warning("get_cpu_processes_failed", device=self.device_id, error=str(e))
+            return []
+
+    async def _get_battery_safe(self) -> BatteryInfo:
+        """
+        获取电池四字段（方案 37 D3 辅助指标）。
+
+        与 _get_cpu_processes_safe 同 swallow 语义：任何失败降级为
+        默认值 BatteryInfo(level=0, None, None, "UNKNOWN")，不毁整次采样。
+        """
+        try:
+            return await self.adb.get_battery_info(self.device_id)
+        except (AdbError, asyncio.TimeoutError, Exception) as e:
+            logger.warning("get_battery_info_failed", device=self.device_id, error=str(e))
+            return BatteryInfo(level=0, temperature=None, voltage=None, health="UNKNOWN")
 
     async def _get_fps_and_jank(
         self, now: float, package: str
