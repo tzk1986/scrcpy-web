@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from app.domain.device import DeviceInfo
+from app.domain.runtime import RuntimeInfo
 from app.domain.session import DebugSession
 
 
@@ -500,6 +501,27 @@ class AdbDriver(Protocol):
         参数：
             device_id: ADB 序列号。
             remote_path: 设备端文件路径。
+        """
+        ...
+
+    async def get_runtime_info(self, device_id: str) -> RuntimeInfo:
+        """
+        查询设备应用运行时状态（方案 37 C2）。
+
+        三条 dumpsys 子命令并发执行，各自解析后组装：
+            - dumpsys activity           → top/resumed 锚定解析
+            - dumpsys activity services  → Service 清单
+            - dumpsys activity providers → Provider 清单（旧设备不支持时置空清单）
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            填充了当前 top/resumed 组件、pkg 与服务/Provider 清单的 RuntimeInfo；
+            解析不到的行锚定字段为空串。
+
+        异常：
+            AdbError: activity 或 services 命令失败或超时时（providers 失败仅置空清单）。
         """
         ...
 

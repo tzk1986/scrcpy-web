@@ -15,13 +15,17 @@
   的输出以注释头分隔追加在同设备主文件尾部：
   `# --- dumpsys activity services ---`、`# --- dumpsys activity providers ---`。
   C2 解析逐行锚定，混排无害。
+- 「双来源」披露（C1 评审补正）：三机主输出均自带服务记录内嵌块，与追加
+  services 段并存——.18 内嵌 34 / .25 内嵌 28 / .19 内嵌 18；C2 解析重复行
+  照单全收，不做合并。
 
 ## 各文件明细
 
 ### dumpsys_activity_18.txt（11924 行）
 
 - 设备：192.168.8.18:5555，型号 rk3568_r，Android 11
-- 结构：主输出 1-10784；services 段 10785-11521（68 条 ServiceRecord）；
+- 结构：主输出 1-10784（内嵌服务块 34 条 ServiceRecord）；services 段
+  10785-11521（追加 34 条 ServiceRecord，双来源并存共 68 条）；
   providers 段 11522-11924（真实 provider 记录）
 - 锚定行形态：仅 1 条 `mResumedActivity`；无 `topResumedActivity`/`mFocusedActivity`；
   另有 Android 11 形态的 `mFocusedApp=` 行（C2 需注意版本差异）
@@ -39,7 +43,8 @@ adb -s 192.168.8.18:5555 shell dumpsys activity providers | tr -d '\r' >> dumpsy
 ### dumpsys_activity_25.txt（1670 行）
 
 - 设备：192.168.8.25:5555，型号 rk3288，Android 7.1.2
-- 结构：主输出 1-803；services 段 804-1398（28 条 ServiceRecord）；
+- 结构：主输出 1-803（内嵌服务块 28 条 ServiceRecord）；services 段
+  804-1398（追加 28 条 ServiceRecord，双来源并存共 56 条）；
   providers 段 1399-1670
 - 锚定行：`mResumedActivity` 1 条（原 676 行）、`mFocusedActivity` 1 条（原 712 行）、
   无 `topResumedActivity`

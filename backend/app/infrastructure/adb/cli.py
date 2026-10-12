@@ -26,6 +26,7 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 
 import asyncio
 import os
+import re
 from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
@@ -34,6 +35,7 @@ from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.domain.device import DeviceInfo
 from app.domain.ports import ShellSession
+from app.domain.runtime import RuntimeInfo, ServiceInfo, TopActivityInfo
 from app.infrastructure.adb.reachability import probe_tcp, scan_open_hosts
 
 logger = get_logger(__name__)
@@ -62,6 +64,131 @@ def _strip_lead_junk(data: bytes, magic: bytes) -> bytes:
 def _strip_adb_prefix(text: str) -> str:
     """剥掉 _run 错误文本自带的 "ADB command failed: " 前缀（组合摘要防双前缀）。"""
     return text[len(_ADB_FAILED_PREFIX):] if text.startswith(_ADB_FAILED_PREFIX) else text
+
+
+# dumpsys activity 系运行时查询的超时（秒，方案 37 C2）：输出体量
+# 100KB-500KB（三机连采样本 87KB-435KB），_INFO_CMD_TIMEOUT 的 5s 对慢设备偏紧，
+# 故单独放宽到 10s；仍远低于诊断类命令的 adb.timeout（30s）。
+_RUNTIME_CMD_TIMEOUT = 10
+
+# --- 方案 37 C2：dumpsys activity 输出解析纯函数（模块层，供 get_runtime_info
+# 直接调用与单测喂 fixture；逐行正则锚定，不依赖行号/字段顺序，未知格式行
+# 天然跳过——漂移样本（tests/application/fixtures/README.md）锁定「不抛」）---
+
+# 行锚定（re.M 级）：先整行捕获，再由组件正则从行内容中提取 "pkg/class"。
+_RESUMED_ACTIVITY_RE = re.compile(r"^ *mResumedActivity: (.+)$", re.M)
+# top 备位链：7.1.2 形态 mFocusedActivity，Android 11 形态 mFocusedApp=（两正则皆试）。
+_FOCUSED_ACTIVITY_RE = re.compile(r"^ *mFocusedActivity: (.+)$", re.M)
+_FOCUSED_APP_RE = re.compile(r"^ *mFocusedApp=(.+)$", re.M)
+_COMPONENT_RE = re.compile(r"([\w.]+)/(\.?[\w.]+)")
+
+# services：锚定 ServiceRecord{ 行首轮廓（* 前缀，主输出内嵌块与追加段同构），
+# 名称取记录头尾段；重复行照单全收（双来源并存时不合并）。
+_SERVICE_RECORD_RE = re.compile(r"^\s*\*\s*ServiceRecord\{\S+\s+u\d+\s+(.+)\}$")
+# 状态来源：记录 stanza 体内的 4 空格 app= 续行（null=stopped，ProcessRecord=running），
+# 扫描到非缩进续行即止（不跨 stanza）。
+_SERVICE_APP_RE = re.compile(r"^    app=(.+)$")
+_PROVIDER_RECORD_RE = re.compile(r"^\s*\*\s*ContentProviderRecord\{\S+\s+u\d+\s+(.+)\}$")
+
+
+def _extract_component(record_content: str) -> str:
+    """从 ActivityRecord{...} 行内容提取 "pkg/class" 组件串；形态不符返回空串。"""
+    m = _COMPONENT_RE.search(record_content)
+    return f"{m.group(1)}/{m.group(2)}" if m else ""
+
+
+def parse_activity_runtime(text: str) -> RuntimeInfo:
+    """
+    解析 dumpsys activity 主输出的顶层状态（方案 37 C2）。
+
+    resumed ← mResumedActivity 行；top_activity ← mFocusedActivity /
+    mFocusedApp= 备位链（形态版本差异，两者皆试）。任一锚定行缺失 → 空串。
+
+    参数：
+        text: dumpsys activity 完整输出。
+
+    返回：
+        只填充 pkg/top_activity/resumed 的 RuntimeInfo（services/providers
+        由专用命令的 parse_services/parse_providers 组装）。
+    """
+    resumed = ""
+    m = _RESUMED_ACTIVITY_RE.search(text)
+    if m:
+        resumed = _extract_component(m.group(1))
+
+    top_activity = ""
+    m = _FOCUSED_ACTIVITY_RE.search(text)
+    if not m:
+        m = _FOCUSED_APP_RE.search(text)
+    if m:
+        top_activity = _extract_component(m.group(1))
+
+    snapshot = TopActivityInfo(
+        pkg=resumed.split("/", 1)[0] if resumed else "",
+        top_activity=top_activity,
+        resumed=resumed,
+    )
+    return RuntimeInfo(
+        pkg=snapshot.pkg,
+        top_activity=snapshot.top_activity,
+        resumed=snapshot.resumed,
+        services=[],
+        providers=[],
+    )
+
+
+def parse_services(text: str) -> list[ServiceInfo]:
+    """
+    解析 dumpsys activity services 输出的 Service 清单（方案 37 C2）。
+
+    锚定 ServiceRecord{ 行首轮廓提取「pkg/class」组件名；状态取 stanza 体内
+    紧随的 4 空格 app= 续行（null=stopped，ProcessRecord=running），扫到
+    非缩进续行即止（app= 缺失 → unknown，不跨 stanza 取邻行）。
+    双来源并存时重复行照单全收。
+
+    参数：
+        text: dumpsys activity services 完整输出（混入主输出内嵌块亦兼容）。
+
+    返回：
+        ServiceInfo 清单；无记录时为空列表。
+    """
+    services: list[ServiceInfo] = []
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = _SERVICE_RECORD_RE.match(line)
+        if not m:
+            continue
+        state = "unknown"
+        for follow in lines[i + 1:]:
+            if not follow.startswith("    "):
+                break
+            am = _SERVICE_APP_RE.match(follow)
+            if am:
+                state = "stopped" if am.group(1) == "null" else "running"
+                break
+        services.append(ServiceInfo(name=m.group(1), state=state))
+    return services
+
+
+def parse_providers(text: str) -> list[str]:
+    """
+    解析 dumpsys activity providers 输出的 Provider 清单（方案 37 C2）。
+
+    锚定 ContentProviderRecord{ 行首轮廓提取「pkg/class」组件串；
+    无记录/格式漂移 → 空列表（不抛）。
+
+    参数：
+        text: dumpsys activity providers 完整输出。
+
+    返回：
+        Provider 组件串清单；无记录时为空列表。
+    """
+    providers: list[str] = []
+    for line in text.splitlines():
+        m = _PROVIDER_RECORD_RE.match(line)
+        if m:
+            providers.append(m.group(1))
+    return providers
 
 
 class AdbCliDriver:
@@ -924,3 +1051,64 @@ class AdbCliDriver:
             await self._run_serial(device_id, "shell", "rm", "-f", remote_path)
         except AdbError:
             logger.warning("rm_remote_failed", device=device_id, remote=remote_path)
+
+    async def get_runtime_info(self, device_id: str) -> RuntimeInfo:
+        """
+        查询设备应用运行时状态（方案 37 C2）。
+
+        三条 dumpsys 子命令独立并发（模式同 get_device_info）——单台总耗时上界
+        压到 max(单条) ≤ _RUNTIME_CMD_TIMEOUT。return_exceptions=True 必不可少：
+        首异常取消其余命令会跳过 _run 的超时 kill 收尾路径，留下孤儿 adb 进程。
+        activity/services 失败按「整查询失败」语义冒泡；providers 例外——
+        旧设备子命令不支持时整份静默置空清单（本次三机实测 7.1.2 亦完整返回，
+        见 tests/application/fixtures/README.md）。
+
+        参数：
+            device_id: ADB 序列号。
+
+        返回：
+            填充了 pkg/top_activity/resumed/services/providers 的 RuntimeInfo；
+            解析不到的行锚定字段为空串、清单为空列表。
+
+        异常：
+            AdbError: activity 或 services 命令失败或超时时（文本含命令名）。
+        """
+        results = await asyncio.gather(
+            self._run_serial(
+                device_id, "shell", "dumpsys", "activity",
+                timeout=_RUNTIME_CMD_TIMEOUT,
+            ),
+            self._run_serial(
+                device_id, "shell", "dumpsys", "activity", "services",
+                timeout=_RUNTIME_CMD_TIMEOUT,
+            ),
+            self._run_serial(
+                device_id, "shell", "dumpsys", "activity", "providers",
+                timeout=_RUNTIME_CMD_TIMEOUT,
+            ),
+            return_exceptions=True,
+        )
+        activity_out, services_out, providers_out = results
+
+        # 三份结果分别判断（不能照抄 get_device_info 的统一 raise-first）：
+        # providers 异常仅置空清单，activity/services 异常冒泡且文本含命令名
+        if isinstance(activity_out, BaseException):
+            raise AdbError(f"dumpsys activity 查询失败: {activity_out}")
+        if isinstance(services_out, BaseException):
+            raise AdbError(f"dumpsys activity services 查询失败: {services_out}")
+        providers: list[str] = []
+        if not isinstance(providers_out, BaseException):
+            providers = parse_providers(providers_out)
+
+        # 异常已在上方逐一排除，mypy 沿 isinstance 分支收窄，剩余元素
+        # 类型由各命令签名保证（此处无需再 cast）
+        activity = parse_activity_runtime(activity_out)
+        services = parse_services(services_out)
+
+        return RuntimeInfo(
+            pkg=activity.pkg,
+            top_activity=activity.top_activity,
+            resumed=activity.resumed,
+            services=services,
+            providers=providers,
+        )
