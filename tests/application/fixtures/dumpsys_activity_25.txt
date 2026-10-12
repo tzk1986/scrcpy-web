@@ -1,0 +1,1670 @@
+ACTIVITY MANAGER PENDING INTENTS (dumpsys activity intents)
+  * PendingIntentRecord{fb8a8ea android startActivity}
+  * PendingIntentRecord{6d43484 android broadcastIntent}
+  * PendingIntentRecord{272c46d android broadcastIntent}
+  * PendingIntentRecord{c0508a2 android broadcastIntent}
+  * PendingIntentRecord{6123933 android startActivity}
+  * PendingIntentRecord{3a214f0 android startActivity}
+  * PendingIntentRecord{43a69 android broadcastIntent}
+  * PendingIntentRecord{1cf0cee android broadcastIntent}
+  * PendingIntentRecord{92d358f android broadcastIntent}
+  * PendingIntentRecord{a2b901c android broadcastIntent}
+  * PendingIntentRecord{c1d1425 android broadcastIntent}
+  * PendingIntentRecord{e2309fa com.android.inputmethod.latin broadcastIntent}
+  * PendingIntentRecord{3519bab android broadcastIntent}
+  * PendingIntentRecord{86f9208 android broadcastIntent}
+  * PendingIntentRecord{2fcda1 android broadcastIntent}
+  * PendingIntentRecord{87cbc6 android broadcastIntent}
+  * PendingIntentRecord{b0c4787 android startActivity}
+  * PendingIntentRecord{b6fc6b4 android broadcastIntent}
+  * PendingIntentRecord{67777fc android broadcastIntent}
+
+ACTIVITY MANAGER BROADCAST STATE (dumpsys activity broadcasts)
+  Historical broadcasts [foreground]:
+  #0: BroadcastRecord{5aa2dd u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #1: BroadcastRecord{824de52 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #2: BroadcastRecord{8dbd523 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #3: BroadcastRecord{c9c9a20 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #4: BroadcastRecord{a638fd9 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #5: BroadcastRecord{d0e8d9e u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #6: BroadcastRecord{48ca07f u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #7: BroadcastRecord{a01384c u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #8: BroadcastRecord{8745095 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #9: BroadcastRecord{251e5aa u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #10: BroadcastRecord{c54c59b u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #11: BroadcastRecord{52f8d38 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #12: BroadcastRecord{3966111 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #13: BroadcastRecord{cc0b276 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #14: BroadcastRecord{4ec44e4 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #15: BroadcastRecord{1eefd4d u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #16: BroadcastRecord{a7d8002 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #17: BroadcastRecord{7fc4d13 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #18: BroadcastRecord{59acb50 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #19: BroadcastRecord{cbb2149 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #20: BroadcastRecord{7479a4e u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #21: BroadcastRecord{d4a76f u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #22: BroadcastRecord{4694c7c u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #23: BroadcastRecord{a0b8905 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #24: BroadcastRecord{9870d5a u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #25: BroadcastRecord{22e4b8b u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #26: BroadcastRecord{13cb468 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #27: BroadcastRecord{640b081 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #28: BroadcastRecord{418a526 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #29: BroadcastRecord{2341567 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #30: BroadcastRecord{35caf14 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #31: BroadcastRecord{946d3bd u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #32: BroadcastRecord{8d9edb2 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #33: BroadcastRecord{4e2a103 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #34: BroadcastRecord{cdfa880 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #35: BroadcastRecord{391eeb9 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #36: BroadcastRecord{7f532fe u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #37: BroadcastRecord{7644a5f u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #38: BroadcastRecord{8d6ccac u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #39: BroadcastRecord{ed9bd75 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #40: BroadcastRecord{7ed810a u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #41: BroadcastRecord{52d2d7b u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #42: BroadcastRecord{3a0798 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #43: BroadcastRecord{e95bbf1 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #44: BroadcastRecord{26aa3d6 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #45: BroadcastRecord{2d72657 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #46: BroadcastRecord{1940544 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #47: BroadcastRecord{c39262d u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #48: BroadcastRecord{1c52762 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #49: BroadcastRecord{abdd0f3 u-1 android.intent.action.TIME_TICK}
+    act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #50: act=android.intent.action.TIME_TICK flg=0x50000014 (has extras)
+    +1ms dispatch +31ms finish
+    enq=2026-10-12 12:03:59 disp=2026-10-12 12:04:00 fin=2026-10-12 12:04:00
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  ...
+
+  Historical broadcasts [background]:
+  #0: BroadcastRecord{76e31b0 u0 android.intent.action.MEDIA_SCANNER_SCAN_FILE}
+    act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/openscrcpy_fix2_verify.mp4 flg=0x10
+  #1: BroadcastRecord{b2ef829 u-1 android.net.wifi.LINK_CONFIGURATION_CHANGED}
+    act=android.net.wifi.LINK_CONFIGURATION_CHANGED flg=0x4000010 (has extras)
+    extras: Bundle[{linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}}]
+  #2: BroadcastRecord{b5257ae u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -38, Link speed: 26Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #3: BroadcastRecord{75a894f u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #4: BroadcastRecord{97cb8dc u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #5: BroadcastRecord{95ede5 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #6: BroadcastRecord{27040ba u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #7: BroadcastRecord{7606b6b u0 android.app.backup.intent.RUN}
+    act=android.app.backup.intent.RUN flg=0x40000010
+  #8: BroadcastRecord{48a86c8 u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -31, Link speed: 21Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #9: BroadcastRecord{abc8361 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #10: BroadcastRecord{51ae86 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #11: BroadcastRecord{7985347 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #12: BroadcastRecord{5254774 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #13: BroadcastRecord{45cf49d u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -30, Link speed: 19Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #14: BroadcastRecord{c8a2d12 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #15: BroadcastRecord{e7cdce3 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #16: BroadcastRecord{10966e0 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #17: BroadcastRecord{f993d99 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #18: BroadcastRecord{25a085e u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -30, Link speed: 21Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #19: BroadcastRecord{596643f u-1 android.intent.action.TIME_SET}
+    act=android.intent.action.TIME_SET flg=0x24000010
+  #20: BroadcastRecord{b4e110c u0 com.android.server.NetworkTimeUpdateService.action.POLL}
+    act=com.android.server.NetworkTimeUpdateService.action.POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #21: BroadcastRecord{4b71a55 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #22: BroadcastRecord{eba4c6a u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #23: BroadcastRecord{c97055b u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #24: BroadcastRecord{f5131f8 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #25: BroadcastRecord{9c06d1 u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -31, Link speed: 21Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #26: BroadcastRecord{328c536 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #27: BroadcastRecord{2369c37 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #28: BroadcastRecord{e6375a4 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #29: BroadcastRecord{f093f0d u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #30: BroadcastRecord{933fec2 u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -30, Link speed: 21Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #31: BroadcastRecord{ecec4d3 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #32: BroadcastRecord{c344810 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #33: BroadcastRecord{c97bf09 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #34: BroadcastRecord{2c7450e u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #35: BroadcastRecord{cb6db2f u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -32, Link speed: 21Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #36: BroadcastRecord{5fdd53c u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #37: BroadcastRecord{c7442c5 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #38: BroadcastRecord{336a41a u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #39: BroadcastRecord{a5ffb4b u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #40: BroadcastRecord{710928 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #41: BroadcastRecord{ddb4641 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #42: BroadcastRecord{d0ae7e6 u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -31, Link speed: 21Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #43: BroadcastRecord{2310127 u0 com.android.inputmethod.dictionarypack.aosp.UPDATE_NOW}
+    act=com.android.inputmethod.dictionarypack.aosp.UPDATE_NOW flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #44: BroadcastRecord{8618fd4 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #45: BroadcastRecord{d55057d u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #46: BroadcastRecord{8d9c72 u-1 android.net.wifi.STATE_CHANGE}
+    act=android.net.wifi.STATE_CHANGE flg=0x4000010 (has extras)
+    extras: Bundle[{networkInfo=[type: WIFI[], state: CONNECTED/CONNECTED, reason: (unspecified), extra: "TP-LINK_6C6B", failover: false, available: true, roaming: false, metered: false], wifiInfo=SSID: TP-LINK_6C6B, BSSID: 6c:b1:58:e3:06:07, MAC: 02:00:00:00:00:00, Supplicant state: COMPLETED, RSSI: -32, Link speed: 21Mbps, Frequency: 2412MHz, Net ID: 0, Metered hint: false, score: 60, linkProperties={InterfaceName: wlan0 LinkAddresses: [fe80::afb:eaff:fe43:4154/64,192.168.8.25/24,]  Routes: [fe80::/64 -> :: wlan0,192.168.8.0/24 -> 0.0.0.0 wlan0,0.0.0.0/0 -> 192.168.8.254 wlan0,] DnsAddresses: [210.22.70.3,210.22.70.225,] Domains: null MTU: 0 TcpBufferSizes: 524288,1048576,2097152,262144,524288,1048576}, bssid=6c:b1:58:e3:06:07}]
+  #47: BroadcastRecord{42288c3 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #48: BroadcastRecord{231d540 u-1 com.android.server.action.NETWORK_STATS_UPDATED}
+    act=com.android.server.action.NETWORK_STATS_UPDATED flg=0x40000010
+  #49: BroadcastRecord{db17c79 u0 com.android.server.action.NETWORK_STATS_POLL}
+    act=com.android.server.action.NETWORK_STATS_POLL flg=0x14 (has extras)
+    extras: Bundle[{android.intent.extra.ALARM_COUNT=1}]
+  #50: act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///sdcard/openscrcpy_fix2_verify.mp4 flg=0x10
+    0 dispatch +6ms finish
+    enq=2026-10-12 11:47:27 disp=2026-10-12 11:47:27 fin=2026-10-12 11:47:27
+  ...
+
+  Sticky broadcasts for user -1:
+  * Sticky action android.intent.action.SERVICE_STATE
+  * Sticky action android.net.wifi.WIFI_STATE_CHANGED
+  * Sticky action android.net.wifi.p2p.CONNECTION_STATE_CHANGE
+  * Sticky action android.net.conn.TETHER_STATE_CHANGED
+  * Sticky action android.media.ACTION_SCO_AUDIO_STATE_UPDATED
+  * Sticky action android.net.wifi.p2p.THIS_DEVICE_CHANGED
+  * Sticky action android.intent.action.BATTERY_CHANGED
+  * Sticky action android.net.conn.CONNECTIVITY_CHANGE
+  * Sticky action android.telephony.action.CARRIER_CONFIG_CHANGED
+  * Sticky action android.intent.action.ANY_DATA_STATE
+  * Sticky action android.provider.Telephony.SPN_STRINGS_UPDATED
+  * Sticky action android.net.nsd.STATE_CHANGED
+  * Sticky action android.hardware.usb.action.USB_STATE
+  * Sticky action android.net.wifi.RSSI_CHANGED
+  * Sticky action android.net.wifi.STATE_CHANGE
+  * Sticky action android.intent.action.SIM_STATE_CHANGED
+  * Sticky action android.media.INTERNAL_RINGER_MODE_CHANGED_ACTION
+  * Sticky action android.net.wifi.supplicant.STATE_CHANGE
+  * Sticky action android.net.wifi.p2p.PERSISTENT_GROUPS_CHANGED
+  * Sticky action android.net.conn.INET_CONDITION_ACTION
+  * Sticky action android.media.SCO_AUDIO_STATE_CHANGED
+  * Sticky action android.os.UpdateLock.UPDATE_LOCK_CHANGED
+  * Sticky action android.media.MASTER_MUTE_CHANGED_ACTION
+  * Sticky action wifi_scan_available
+  * Sticky action android.intent.action.DP_PLUGGED
+  * Sticky action android.net.wifi.p2p.STATE_CHANGED
+  * Sticky action android.intent.action.HDMI_PLUGGED
+  * Sticky action android.media.RINGER_MODE_CHANGED
+
+ACTIVITY MANAGER CONTENT PROVIDERS (dumpsys activity providers)
+  Published single-user content providers (by class):
+  * ContentProviderRecord{7150dbe u0 com.android.providers.settings/.SettingsProvider}
+    proc=ProcessRecord{ae2c030 484:system/1000}
+    singleton=true
+    authority=settings
+    10 connections, 0 external handles
+      -> 689:com.android.systemui/u0a19 s1/1 u0/0 +4d3h29m34s990ms
+      -> 680:com.android.phone/1001 s1/1 u0/0 +4d3h29m34s846ms
+      -> 1161:com.softwinner.launcher/1000 s1/1 u0/0 +4d3h29m32s764ms
+      -> 1210:android.process.media/u0a7 s1/1 u0/0 +4d3h29m32s294ms
+      -> 1366:android.process.acore/u0a1 s1/1 u0/0 +4d3h29m31s494ms
+      -> 1535:com.iflytek.inputmethod/u0a55 s1/1 u0/0 +4d3h29m28s706ms
+      -> 1564:com.iflytek.inputmethod.assist/u0a55 s1/1 u0/0 +4d3h29m24s917ms
+      -> 15942:com.duzkj.facecash/u0a80 s1/1 u0/0 +2d1h49m16s409ms
+      -> 16518:com.android.defcontainer/u0a4 s1/1 u0/0 +2d1h38m0s936ms
+      -> 9004:com.android.settings/1000 s1/1 u0/0 +1h13m18s95ms
+  * ContentProviderRecord{d1aee1f u0 com.android.providers.telephony/.HbpcdLookupProvider}
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    singleton=true
+    authority=hbpcd_lookup
+  * ContentProviderRecord{3ff056c u0 com.android.providers.telephony/.TelephonyProvider}
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    singleton=true
+    authority=telephony
+  * ContentProviderRecord{4c46735 u0 com.android.providers.telephony/.SmsProvider}
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    singleton=true
+    authority=sms
+  * ContentProviderRecord{71047ca u0 android/com.android.server.am.DumpHeapProvider}
+    proc=ProcessRecord{ae2c030 484:system/1000}
+    singleton=true
+    authority=com.android.server.heapdump
+  * ContentProviderRecord{80a4d3b u0 com.android.providers.telephony/.MmsSmsProvider}
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    singleton=true
+    authority=mms-sms
+  * ContentProviderRecord{68d0c58 u0 com.android.providers.telephony/.MmsProvider}
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    singleton=true
+    authority=mms
+
+  Published user 0 content providers (by class):
+  * ContentProviderRecord{7e141b1 u0 com.android.inputmethod.latin/com.android.inputmethod.dictionarypack.DictionaryProvider}
+    proc=ProcessRecord{8b58b6f 1384:com.android.inputmethod.latin/u0a34}
+    authority=com.android.inputmethod.dictionarypack.aosp
+  * ContentProviderRecord{cd31696 u0 com.android.phone/.IccProvider}
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    authority=icc
+  * ContentProviderRecord{4c68217 u0 com.android.settings/android.support.v4.content.FileProvider}
+    proc=ProcessRecord{34ed510 9004:com.android.settings/1000}
+    authority=com.android.settings.files
+  * ContentProviderRecord{8f29604 u0 com.duzkj.facecash/androidx.core.content.FileProvider}
+    proc=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    authority=com.duzkj.facecash.fileProvider
+  * ContentProviderRecord{41747ed u0 com.android.providers.media/.MediaProvider}
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    authority=media
+  * ContentProviderRecord{a728b3 u0 com.iflytek.inputmethod/.remote.config.AssistConfigProvider}
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    authority=com.iflytek.inputmethod.assist
+  * ContentProviderRecord{3050e70 u0 com.android.providers.contacts/.VoicemailContentProvider}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=com.android.voicemail
+  * ContentProviderRecord{e7e626e u0 com.svox.pico/.providers.SettingsProvider}
+    proc=ProcessRecord{ce19d0f 16584:com.svox.pico/u0a39}
+    authority=com.svox.pico.providers.SettingsProvider
+  * ContentProviderRecord{284a19c u0 com.android.gallery3d/.filtershow.provider.SharedImageProvider}
+    proc=ProcessRecord{65e87a5 16542:com.android.gallery3d/1000}
+    authority=com.android.gallery3d.filtershow.provider.SharedImageProvider
+  * ContentProviderRecord{232377a u0 com.android.gallery3d/com.android.photos.data.PhotoProvider}
+    proc=ProcessRecord{65e87a5 16542:com.android.gallery3d/1000}
+    authority=com.android.gallery3d.photoprovider
+  * ContentProviderRecord{ea4fb2b u0 com.iflytek.inputmethod/.thirdpart.bytedance.sdk.opensdk.multipro.TTMultiProvider}
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    authority=com.iflytek.inputmethod.TTMultiProvider
+  * ContentProviderRecord{f083b88 u0 com.android.providers.blockednumber/.BlockedNumberProvider}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=com.android.blockednumber
+  * ContentProviderRecord{bd4f921 u0 com.iflytek.inputmethod/.remote.config.MainConfigProvider}
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    authority=com.iflytek.inputmethod
+  * ContentProviderRecord{e1c5146 u0 com.android.providers.media/.MediaDocumentsProvider}
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    authority=com.android.providers.media.documents
+  * ContentProviderRecord{4f61f07 u0 com.iflytek.inputmethod/.thirdpart.UsFileProvider}
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    authority=com.iflytek.inputmethod.usfileprovider
+  * ContentProviderRecord{a98834 u0 com.android.providers.downloads/.DownloadProvider}
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    authority=downloads
+  * ContentProviderRecord{be7065d u0 com.android.providers.contacts/.CallLogProvider}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    launchingApp=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=call_log
+  * ContentProviderRecord{e3c3bd2 u0 com.android.rockchip/android.support.v4.content.FileProvider}
+    proc=ProcessRecord{4ba4a3 1510:com.android.rockchip/1000}
+    authority=com.android.rockchip.fileprovider
+  * ContentProviderRecord{570f3a0 u0 com.iflytek.inputmethod/.thirdpart.TTFileProvider}
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    authority=com.iflytek.inputmethod.TTFileProvider
+  * ContentProviderRecord{912ab59 u0 com.duzkj.facecash/me.jessyan.autosize.InitProvider}
+    proc=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    authority=com.duzkj.facecash.autosize-init-provider
+  * ContentProviderRecord{cfe431e u0 com.duzkj.facecash/androidx.startup.InitializationProvider}
+    proc=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    authority=com.duzkj.facecash.androidx-startup
+  * ContentProviderRecord{7e9e7ff u0 com.iflytek.inputmethod/.recovery.internal.RecoveryProvider}
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    authority=com.iflytek.inputmethod.depend.recovery.new
+  * ContentProviderRecord{181a9cc u0 com.android.settings/.search.SettingsSearchIndexablesProvider}
+    proc=ProcessRecord{34ed510 9004:com.android.settings/1000}
+    authority=com.android.settings
+  * ContentProviderRecord{5b9a415 u0 com.iflytek.inputmethod/androidx.core.content.FileProvider}
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    authority=com.iflytek.inputmethod.fileProvider
+  * ContentProviderRecord{d47732a u0 com.android.providers.contacts/.debug.DumpFileProvider}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=com.android.contacts.dumpfile
+  * ContentProviderRecord{8ff051b u0 com.android.gallery3d/.provider.GalleryProvider}
+    proc=ProcessRecord{65e87a5 16542:com.android.gallery3d/1000}
+    authority=com.android.gallery3d.provider
+  * ContentProviderRecord{60596b8 u0 com.android.providers.contacts/.ContactMetadataProvider}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=com.android.contacts.metadata
+  * ContentProviderRecord{e9d6c91 u0 com.android.providers.userdictionary/.UserDictionaryProvider}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=user_dictionary
+  * ContentProviderRecord{94197f6 u0 com.iflytek.inputmethod/.thirdpart.VistaFileProvider}
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    authority=com.iflytek.inputmethod.fileprovider
+  * ContentProviderRecord{b7ed7f7 u0 com.android.phone/.PhoneSearchIndexablesProvider}
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    authority=com.android.phone
+  * ContentProviderRecord{ad96664 u0 com.android.providers.contacts/.ShadowCallLogProvider}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=call_log_shadow
+  * ContentProviderRecord{11b40cd u0 com.android.providers.contacts/.ContactsProvider2}
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    authority=contacts;com.android.contacts
+  * ContentProviderRecord{1e73d82 u0 com.android.providers.downloads/.DownloadStorageProvider}
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    authority=com.android.providers.downloads.documents
+
+ACTIVITY MANAGER URI PERMISSIONS (dumpsys activity permissions)
+  Granted Uri Permissions:
+  * UID 10025 holds:
+    UriPermission{8befc93 0 @ content://downloads/all_downloads/1}
+
+ACTIVITY MANAGER SERVICES (dumpsys activity services)
+  User 0 active services:
+  * ServiceRecord{6f884d0 u0 com.android.bluetooth/.hid.HidService}
+    app=null
+    created=-4d3h29m33s595ms started=false connections=2
+    Connections:
+      act=android.bluetooth.IBluetoothInputDevice -> 9004:com.android.settings/1000
+      act=android.bluetooth.IBluetoothInputDevice -> 689:com.android.systemui/u0a19
+  * ServiceRecord{45db0c7 u0 com.android.systemui/.keyguard.KeyguardService}
+    app=ProcessRecord{8b59d81 689:com.android.systemui/u0a19}
+    created=-4d3h29m34s180ms started=false connections=1
+    Connections:
+      flg=0x100 -> 484:system/1000
+  * ServiceRecord{e245947 u0 com.android.systemui/.ImageWallpaper}
+    app=ProcessRecord{8b59d81 689:com.android.systemui/u0a19}
+    created=-4d3h29m34s270ms started=false connections=1
+    Connections:
+      act=android.service.wallpaper.WallpaperService -> 484:system/1000
+  * ServiceRecord{c077bf u0 com.duzkj.facecash/.serialport.ShellService}
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    created=-1d16h29m54s667ms started=false connections=1
+    Connections:
+       -> 15942:com.duzkj.facecash/u0a80
+  * ServiceRecord{6710d05 u0 com.ys.checknet/.CheckService}
+    app=ProcessRecord{9281cc9 1440:com.ys.checknet/u0a29}
+    created=-4d3h29m31s276ms started=true connections=0
+  * ServiceRecord{5173c75 u0 com.iflytek.inputmethod/.remote.ThirdSdkProcessService}
+    app=ProcessRecord{a48c7f3 24345:com.iflytek.inputmethod.thridsdk/u0a55}
+    created=-3d0h5m16s519ms started=false connections=1
+    Connections:
+       -> 1535:com.iflytek.inputmethod/u0a55
+  * ServiceRecord{6b8014d u0 android.rockchip.update.service/.RKUpdateService}
+    app=ProcessRecord{b4fafce 1115:android.rockchip.update.service/1000}
+    created=-4d3h29m31s647ms started=true connections=0
+  * ServiceRecord{fb419d5 u0 com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService}
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    created=-1d16h29m54s664ms started=true connections=1
+    Connections:
+       -> 15942:com.duzkj.facecash/u0a80
+  * ServiceRecord{6f8415a u0 com.ys.ys_receiver/.GuardService}
+    app=ProcessRecord{809e724 1275:com.ys.ys_receiver/1000}
+    created=-4d3h29m31s269ms started=true connections=0
+  * ServiceRecord{3295e8c u0 com.duzkj.facecash/.service.DevicePrintService}
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    created=-1d16h29m54s666ms started=true connections=0
+  * ServiceRecord{fd2ceef u0 com.android.bluetooth/.a2dp.A2dpService}
+    app=null
+    created=-4d3h29m35s131ms started=false connections=1
+    Connections:
+      act=android.bluetooth.IBluetoothA2dp -> 484:system/1000
+  * ServiceRecord{277152d u0 com.android.systemui/.SystemUIService}
+    app=ProcessRecord{8b59d81 689:com.android.systemui/u0a19}
+    created=-4d3h29m35s93ms started=true connections=0
+  * ServiceRecord{c4e3da5 u0 android/.hardware.location.GeofenceHardwareService}
+    app=ProcessRecord{ae2c030 484:system/1000}
+    created=-4d3h29m34s228ms started=false connections=1
+    Connections:
+       -> 484:system/1000
+  * ServiceRecord{efbd81a u0 com.iflytek.inputmethod/.remote.assist.AssistAppService}
+    app=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    created=-4d3h29m28s845ms started=false connections=5
+    Connections:
+       -> 1564:com.iflytek.inputmethod.assist/u0a55
+       -> 1535:com.iflytek.inputmethod/u0a55
+       -> 24345:com.iflytek.inputmethod.thridsdk/u0a55
+       -> 1535:com.iflytek.inputmethod/u0a55
+       -> 24345:com.iflytek.inputmethod.thridsdk/u0a55
+  * ServiceRecord{93a53fb u0 com.android.server.telecom/.components.BluetoothPhoneService}
+    app=ProcessRecord{ae2c030 484:system/1000}
+    created=-4d3h29m34s778ms started=true connections=0
+  * ServiceRecord{5ef0a5d u0 com.iflytek.inputmethod/.remote.MainProcessService}
+    app=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    created=-4d3h29m26s379ms started=false connections=2
+    Connections:
+       -> 1564:com.iflytek.inputmethod.assist/u0a55
+       -> 24345:com.iflytek.inputmethod.thridsdk/u0a55
+  * ServiceRecord{6ed90fd u0 com.android.server.telecom/.components.TelecomService}
+    app=ProcessRecord{ae2c030 484:system/1000}
+    created=-4d3h29m35s229ms started=false connections=1
+    Connections:
+      act=com.android.ITelecomService -> 484:system/1000
+  * ServiceRecord{a23ef9f u0 com.iflytek.inputmethod/.common.schedule.TriggerAlarmService}
+    app=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    created=-3d8h4m41s612ms started=true connections=0
+  * ServiceRecord{f4c15ea u0 com.duzkj.facecash/com.epfly.device.commons.ntp.NtpTimeCacheService}
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    created=-1d16h29m54s663ms started=true connections=0
+  * ServiceRecord{80bb59c u0 com.adtv/.poweronoff.PowerOffDetectService}
+    app=ProcessRecord{3a91dfc 1074:com.adtv/1000}
+    created=-4d3h29m26s863ms started=true connections=0
+  * ServiceRecord{a637e65 u0 com.android.smspush/.WapPushManager}
+    app=ProcessRecord{30cbc85 1134:com.android.smspush/u0a43}
+    created=-4d3h29m32s899ms started=false connections=2
+    Connections:
+      act=com.android.internal.telephony.IWapPushManager -> 680:com.android.phone/1001
+      act=com.android.internal.telephony.IWapPushManager -> 680:com.android.phone/1001
+  * ServiceRecord{a2f42c0 u0 com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService}
+    app=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    created=-4d3h24m13s922ms started=false connections=3
+    Connections:
+       -> 1535:com.iflytek.inputmethod/u0a55
+       -> 1564:com.iflytek.inputmethod.assist/u0a55
+       -> 1535:com.iflytek.inputmethod/u0a55
+  * ServiceRecord{d82733b u0 com.android.location.fused/.FusedLocationService}
+    app=ProcessRecord{ae2c030 484:system/1000}
+    created=-4d3h29m34s237ms started=false connections=1
+    Connections:
+      act=com.android.location.service.FusedLocationProvider -> 484:system/1000
+  * ServiceRecord{96e7cf u0 android/com.android.server.content.SyncJobService}
+    app=ProcessRecord{ae2c030 484:system/1000}
+    created=-4d3h29m34s717ms started=true connections=0
+  * ServiceRecord{398199 u0 com.iflytek.inputmethod/.FlyIME}
+    app=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    created=-4d3h29m29s769ms started=false connections=1
+    Connections:
+      act=android.view.InputMethod -> 484:system/1000
+  * ServiceRecord{bdcae60 u0 com.android.phone/.TelephonyDebugService}
+    app=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    created=-4d3h29m34s175ms started=true connections=0
+  * ServiceRecord{a4edb3 u0 android.ext.services/.notification.Ranker}
+    app=ProcessRecord{1bafada 1036:android.ext.services/u0a8}
+    created=-4d3h29m37s929ms started=false connections=1
+    Connections:
+      act=android.service.notification.NotificationRankerService -> 484:system/1000
+  * ServiceRecord{3a76b0b u0 com.android.bluetooth/.pan.PanService}
+    app=null
+    created=-4d3h29m33s592ms started=false connections=2
+    Connections:
+      act=android.bluetooth.IBluetoothPan -> 689:com.android.systemui/u0a19
+      act=android.bluetooth.IBluetoothPan -> 9004:com.android.settings/1000
+
+ACTIVITY MANAGER RECENT TASKS (dumpsys activity recents)
+  Recent tasks:
+  * Recent #0: TaskRecord{6681de8 #1380 A=com.android.settings U=0 StackId=1 sz=3}
+  * Recent #1: TaskRecord{ce19c01 #1379 A=com.duzkj.facecash U=0 StackId=1 sz=1}
+  * Recent #2: TaskRecord{35deaa6 #1375 A=com.android.systemui U=0 StackId=0 sz=1}
+  * Recent #3: TaskRecord{edface7 #1372 A=com.softwinner.launcher U=0 StackId=0 sz=1}
+  * Recent #4: TaskRecord{d953094 #1 I=com.android.settings/.FallbackHome U=0 StackId=-1 sz=0}
+
+ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)
+Display #0 (activities from top to bottom):
+  Stack #1:
+  mFullscreen=true
+  mBounds=null
+    Task id #1380
+    mFullscreen=true
+    mBounds=null
+    mMinWidth=-1
+    mMinHeight=-1
+    mLastNonFullscreenBounds=null
+      TaskRecord{6681de8 #1380 A=com.android.settings U=0 StackId=1 sz=3}
+      Intent { act=android.settings.SETTINGS flg=0x14000000 cmp=com.android.settings/.Settings }
+        Hist #2: ActivityRecord{ff64646 u0 com.android.settings/.SubSettings t1380}
+          Intent { act=android.intent.action.MAIN cmp=com.android.settings/.SubSettings (has extras) }
+          ProcessRecord{34ed510 9004:com.android.settings/1000}
+        Hist #1: ActivityRecord{b6a22be u0 com.android.settings/.Settings$DeviceInfoSettingsActivity t1380}
+          Intent { flg=0x8000 cmp=com.android.settings/.Settings$DeviceInfoSettingsActivity (has extras) }
+          ProcessRecord{34ed510 9004:com.android.settings/1000}
+        Hist #0: ActivityRecord{37937b9 u0 com.android.settings/.Settings t1380}
+          Intent { act=android.settings.SETTINGS flg=0x14000000 cmp=com.android.settings/.Settings }
+          ProcessRecord{34ed510 9004:com.android.settings/1000}
+    Task id #1379
+    mFullscreen=true
+    mBounds=null
+    mMinWidth=-1
+    mMinHeight=-1
+    mLastNonFullscreenBounds=null
+      TaskRecord{ce19c01 #1379 A=com.duzkj.facecash U=0 StackId=1 sz=1}
+      Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x10200000 cmp=com.duzkj.facecash/.module.common.StartActivity }
+        Hist #0: ActivityRecord{624692 u0 com.duzkj.facecash/.module.orderMeal.MainActivity t1379}
+          Intent { cmp=com.duzkj.facecash/.module.orderMeal.MainActivity (has extras) }
+          ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+
+    Running activities (most recent first):
+      TaskRecord{6681de8 #1380 A=com.android.settings U=0 StackId=1 sz=3}
+        Run #3: ActivityRecord{ff64646 u0 com.android.settings/.SubSettings t1380}
+        Run #2: ActivityRecord{b6a22be u0 com.android.settings/.Settings$DeviceInfoSettingsActivity t1380}
+        Run #1: ActivityRecord{37937b9 u0 com.android.settings/.Settings t1380}
+      TaskRecord{ce19c01 #1379 A=com.duzkj.facecash U=0 StackId=1 sz=1}
+        Run #0: ActivityRecord{624692 u0 com.duzkj.facecash/.module.orderMeal.MainActivity t1379}
+
+    mResumedActivity: ActivityRecord{ff64646 u0 com.android.settings/.SubSettings t1380}
+
+  Stack #0:
+  mFullscreen=true
+  mBounds=null
+    Task id #1375
+    mFullscreen=true
+    mBounds=null
+    mMinWidth=-1
+    mMinHeight=-1
+    mLastNonFullscreenBounds=null
+      TaskRecord{35deaa6 #1375 A=com.android.systemui U=0 StackId=0 sz=1}
+      Intent { flg=0x10804000 cmp=com.android.systemui/.recents.RecentsActivity bnds=[363,608][1003,1088] }
+        Hist #0: ActivityRecord{279691a u0 com.android.systemui/.recents.RecentsActivity t1375}
+          Intent { flg=0x10804000 cmp=com.android.systemui/.recents.RecentsActivity bnds=[363,608][1003,1088] }
+          ProcessRecord{8b59d81 689:com.android.systemui/u0a19}
+
+    Task id #1372
+    mFullscreen=true
+    mBounds=null
+    mMinWidth=-1
+    mMinHeight=-1
+    mLastNonFullscreenBounds=null
+      TaskRecord{edface7 #1372 A=com.softwinner.launcher U=0 StackId=0 sz=1}
+      Intent { act=android.intent.action.MAIN cat=[android.intent.category.HOME] flg=0x10000100 cmp=com.softwinner.launcher/.Launcher }
+        Hist #0: ActivityRecord{59012d7 u0 com.softwinner.launcher/.Launcher t1372}
+          Intent { act=android.intent.action.MAIN cat=[android.intent.category.HOME] flg=0x10000100 cmp=com.softwinner.launcher/.Launcher }
+          ProcessRecord{3caf73d 1161:com.softwinner.launcher/1000}
+
+    Running activities (most recent first):
+      TaskRecord{35deaa6 #1375 A=com.android.systemui U=0 StackId=0 sz=1}
+        Run #1: ActivityRecord{279691a u0 com.android.systemui/.recents.RecentsActivity t1375}
+      TaskRecord{edface7 #1372 A=com.softwinner.launcher U=0 StackId=0 sz=1}
+        Run #0: ActivityRecord{59012d7 u0 com.softwinner.launcher/.Launcher t1372}
+Display #1 (activities from top to bottom):
+
+  mFocusedActivity: ActivityRecord{ff64646 u0 com.android.settings/.SubSettings t1380}
+  mFocusedStack=ActivityStack{aee0b32 stackId=1, 2 tasks} mLastFocusedStack=ActivityStack{aee0b32 stackId=1, 2 tasks}
+  mSleepTimeout=false
+  mCurTaskIdForUser={0=1380}
+  mUserStackInFront={}
+  mActivityContainers={0=ActivtyContainer{0}A, 1=ActivtyContainer{1}A}
+  mLockTaskModeState=NONE mLockTaskPackages (userId:packages)=
+    0:[]
+ mLockTaskModeTasks[]
+
+ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)
+  Isolated process list (sorted by uid):
+    Isolated # 0: ProcessRecord{9703083 741:WebViewLoader-armeabi-v7a/1037}
+
+  UID states:
+    UID 1000: UidRecord{bdec200 1000 P  procs:8}
+    UID 1001: UidRecord{8f4ca39 1001 P  procs:1}
+    UID 1037: UidRecord{6eda87e 1037 CE bg:+4d3h29m35s97ms idle procs:1}
+    UID u0a1: UidRecord{bfb51df u0a1 CE bg:+4d3h29m31s603ms idle procs:1}
+    UID u0a4: UidRecord{e6dfe2c u0a4 CE bg:+2d1h37m50s911ms idle procs:1}
+    UID u0a7: UidRecord{a4ed0f5 u0a7 CE bg:+4d3h29m32s669ms idle procs:1}
+    UID u0a8: UidRecord{9b7ce8a u0a8 SB procs:1}
+    UID u0a11: UidRecord{ced2cfb u0a11 CE bg:+2d1h38m0s385ms idle procs:1}
+    UID u0a19: UidRecord{9d2d118 u0a19 P  procs:1}
+    UID u0a29: UidRecord{b088771 u0a29 S  bg:+4d3h29m31s333ms idle procs:1}
+    UID u0a34: UidRecord{e4c4956 u0a34 P  procs:1}
+    UID u0a39: UidRecord{3579dd7 u0a39 CE bg:+2d1h38m0s316ms idle procs:1}
+    UID u0a41: UidRecord{9afe6c4 u0a41 CE bg:+4d3h29m27s444ms idle procs:1}
+    UID u0a43: UidRecord{7cd29ad u0a43 IF procs:1}
+    UID u0a49: UidRecord{ddba4e2 u0a49 CE bg:+2d1h37m59s665ms idle procs:1}
+    UID u0a55: UidRecord{b8e4073 u0a55 SB procs:3}
+    UID u0a80: UidRecord{f26ab30 u0a80 S  bg:+1h13m17s421ms idle procs:1}
+
+  UID validation:
+    UID 1001: UidRecord{2bfb3a9 1001 P  procs:0}
+    UID 1037: UidRecord{2132d2e 1037 CE idle procs:0}
+    UID u0a1: UidRecord{98270cf u0a1 CE idle procs:0}
+    UID u0a4: UidRecord{a034a5c u0a4 CE idle procs:0}
+    UID u0a7: UidRecord{336e165 u0a7 CE idle procs:0}
+    UID u0a8: UidRecord{28ee3a u0a8 SB procs:0}
+    UID u0a11: UidRecord{4df4aeb u0a11 CE idle procs:0}
+    UID u0a19: UidRecord{8a8b048 u0a19 P  procs:0}
+    UID u0a29: UidRecord{5392ee1 u0a29 S  idle procs:0}
+    UID u0a34: UidRecord{8a7b406 u0a34 P  procs:0}
+    UID u0a39: UidRecord{ae5aac7 u0a39 CE idle procs:0}
+    UID u0a41: UidRecord{abc88f4 u0a41 CE idle procs:0}
+    UID u0a43: UidRecord{4b8d81d u0a43 IF procs:0}
+    UID u0a49: UidRecord{7fb0a92 u0a49 CE idle procs:0}
+    UID u0a55: UidRecord{2082c63 u0a55 SB procs:0}
+    UID u0a80: UidRecord{2934060 u0a80 S  idle procs:0}
+
+  Process LRU list (sorted by oom_adj, 25 total, non-act at 4, non-svc at 4):
+    PERS #24: sys   F/ /P  trm: 0 484:system/1000 (fixed)
+    PERS #23: pers  F/ /P  trm: 0 680:com.android.phone/1001 (fixed)
+    PERS #22: pers  F/ /P  trm: 0 689:com.android.systemui/u0a19 (fixed)
+    PERS #20: pers  F/ /P  trm: 0 1074:com.adtv/1000 (fixed)
+    PERS #19: pers  F/ /P  trm: 0 1384:com.android.inputmethod.latin/u0a34 (fixed)
+    Proc # 0: fore  T/A/T  trm: 0 9004:com.android.settings/1000 (top-activity)
+    Proc #21: vis   F/ /SB trm: 0 1036:android.ext.services/u0a8 (service)
+        android.ext.services/.notification.Ranker<=Proc{484:system/1000}
+    Proc #18: vis   F/ /IF trm: 0 1134:com.android.smspush/u0a43 (service)
+        com.android.smspush/.WapPushManager<=Proc{680:com.android.phone/1001}
+    Proc # 3: prcp  F/ /SB trm: 0 1535:com.iflytek.inputmethod/u0a55 (service)
+        com.iflytek.inputmethod/.FlyIME<=Proc{484:system/1000}
+    Proc # 2: home  B/ /HO trm: 0 1161:com.softwinner.launcher/1000 (home)
+    Proc # 1: prev  B/ /S  trm: 0 15942:com.duzkj.facecash/u0a80 (cch-started-ui-services)
+    Proc # 5: cch   B/ /S  trm: 0 1275:com.ys.ys_receiver/1000 (cch-started-services)
+    Proc # 6: cch   B/ /CE trm: 0 16518:com.android.defcontainer/u0a4 (cch-empty)
+    Proc # 4: cch   B/ /CE trm: 0 1210:android.process.media/u0a7 (cch-empty)
+    Proc # 9: cch+2 B/ /CE trm: 0 1366:android.process.acore/u0a1 (cch-empty)
+    Proc # 8: cch+2 B/ /CE trm: 0 16584:com.svox.pico/u0a39 (cch-empty)
+    Proc # 7: cch+2 B/ /CE trm: 0 16610:org.myklos.adbhelper/u0a49 (cch-empty)
+    Proc #12: cch+4 F/ /SB trm: 0 1564:com.iflytek.inputmethod.assist/u0a55 (cch-started-services)
+    Proc #11: cch+4 B/ /CE trm: 0 16542:com.android.gallery3d/1000 (cch-empty)
+    Proc #10: cch+4 B/ /CE trm: 0 16566:com.android.musicfx/u0a11 (cch-empty)
+    Proc #13: cch+6 F/ /SB trm: 0 24345:com.iflytek.inputmethod.thridsdk/u0a55 (cch-empty)
+    Proc #17: cch+6 B/ /S  trm: 0 1115:android.rockchip.update.service/1000 (cch-started-services)
+    Proc #16: cch+6 B/ /S  trm: 0 1440:com.ys.checknet/u0a29 (cch-started-services)
+    Proc #15: cch+6 B/ /CE trm: 0 1510:com.android.rockchip/1000 (cch-empty)
+    Proc #14: cch+6 B/ /CE trm: 0 1233:com.android.printspooler/u0a41 (cch-empty)
+
+  mStartedUsers:
+    User #0: state=RUNNING_UNLOCKED
+  mStartedUserArray: [0]
+  mUserLru: [0]
+  mHomeProcess: ProcessRecord{3caf73d 1161:com.softwinner.launcher/1000}
+  mPreviousProcess: ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+  mConfiguration: {1.0 dualscreenflag=ENABLE ?mcc?mnc [zh_CN] ldltr sw768dp w1366dp h744dp 160dpi xlrg long land ?touch qwerty/v/h dpad/v s.7}
+  mWakefulness=Awake
+  mSleepTokens=[]
+  mSleeping=false mLockScreenShown=LOCK_SCREEN_HIDDEN
+  mShuttingDown=false mTestPssMode=false
+# --- dumpsys activity services ---
+ACTIVITY MANAGER SERVICES (dumpsys activity services)
+  User 0 active services:
+  * ServiceRecord{6f884d0 u0 com.android.bluetooth/.hid.HidService}
+    intent={act=android.bluetooth.IBluetoothInputDevice cmp=com.android.bluetooth/.hid.HidService}
+    packageName=com.android.bluetooth
+    processName=com.android.bluetooth
+    baseDir=/system/app/Bluetooth/Bluetooth.apk
+    dataDir=/data/user_de/0/com.android.bluetooth
+    app=null
+    createTime=-4d3h29m33s795ms startingBgTimeout=--
+    lastActivity=-4d3h29m33s795ms restartTime=-- createdFromFg=true
+    Bindings:
+    * IntentBindRecord{8fd919}:
+      intent={act=android.bluetooth.IBluetoothInputDevice cmp=com.android.bluetooth/.hid.HidService}
+      binder=null
+      requested=false received=false hasBound=false doRebind=false
+      * Client AppBindRecord{3bb3dde ProcessRecord{34ed510 9004:com.android.settings/1000}}
+        Per-process Connections:
+          ConnectionRecord{f7d1a0e u0 com.android.bluetooth/.hid.HidService:@7dbc809}
+      * Client AppBindRecord{b472bbf ProcessRecord{8b59d81 689:com.android.systemui/u0a19}}
+        Per-process Connections:
+          ConnectionRecord{4bb4a67 u0 com.android.bluetooth/.hid.HidService:@e178e26}
+    All Connections:
+      ConnectionRecord{f7d1a0e u0 com.android.bluetooth/.hid.HidService:@7dbc809}
+      ConnectionRecord{4bb4a67 u0 com.android.bluetooth/.hid.HidService:@e178e26}
+
+  * ServiceRecord{45db0c7 u0 com.android.systemui/.keyguard.KeyguardService}
+    intent={cmp=com.android.systemui/.keyguard.KeyguardService}
+    packageName=com.android.systemui
+    processName=com.android.systemui
+    baseDir=/system/priv-app/SystemUI/SystemUI.apk
+    dataDir=/data/user_de/0/com.android.systemui
+    app=ProcessRecord{8b59d81 689:com.android.systemui/u0a19}
+    createTime=-4d3h29m34s381ms startingBgTimeout=--
+    lastActivity=-4d3h29m34s381ms restartTime=-4d3h29m34s381ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{15c028c CREATE}:
+      intent={flg=0x100 cmp=com.android.systemui/.keyguard.KeyguardService}
+      binder=android.os.BinderProxy@13bedd5
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{b959ea ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{8841206 u0 CR com.android.systemui/.keyguard.KeyguardService:@f7444e1}
+    All Connections:
+      ConnectionRecord{8841206 u0 CR com.android.systemui/.keyguard.KeyguardService:@f7444e1}
+
+  * ServiceRecord{e245947 u0 com.android.systemui/.ImageWallpaper}
+    intent={act=android.service.wallpaper.WallpaperService cmp=com.android.systemui/.ImageWallpaper}
+    packageName=com.android.systemui
+    processName=com.android.systemui
+    permission=android.permission.BIND_WALLPAPER
+    baseDir=/system/priv-app/SystemUI/SystemUI.apk
+    dataDir=/data/user_de/0/com.android.systemui
+    app=ProcessRecord{8b59d81 689:com.android.systemui/u0a19}
+    createTime=-4d3h29m34s471ms startingBgTimeout=--
+    lastActivity=-4d3h29m34s471ms restartTime=-4d3h29m34s471ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{d4cc4db CREATE}:
+      intent={act=android.service.wallpaper.WallpaperService cmp=com.android.systemui/.ImageWallpaper}
+      binder=android.os.BinderProxy@a0cbb78
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{f5a9251 ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{5120c86 u0 CR FGSA UI com.android.systemui/.ImageWallpaper:@eeb9961}
+    All Connections:
+      ConnectionRecord{5120c86 u0 CR FGSA UI com.android.systemui/.ImageWallpaper:@eeb9961}
+
+  * ServiceRecord{c077bf u0 com.duzkj.facecash/.serialport.ShellService}
+    intent={cmp=com.duzkj.facecash/.serialport.ShellService}
+    packageName=com.duzkj.facecash
+    processName=com.duzkj.facecash
+    baseDir=/data/app/com.duzkj.facecash-1/base.apk
+    dataDir=/data/user/0/com.duzkj.facecash
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    createTime=-1d16h29m54s868ms startingBgTimeout=--
+    lastActivity=-1d16h29m54s868ms restartTime=-1d16h29m54s868ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{dcb2ab6 CREATE}:
+      intent={cmp=com.duzkj.facecash/.serialport.ShellService}
+      binder=android.os.BinderProxy@548d3b7
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{70e1724 ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}}
+        Per-process Connections:
+          ConnectionRecord{15a39de u0 CR com.duzkj.facecash/.serialport.ShellService:@d9d4519}
+    All Connections:
+      ConnectionRecord{15a39de u0 CR com.duzkj.facecash/.serialport.ShellService:@d9d4519}
+
+  * ServiceRecord{6710d05 u0 com.ys.checknet/.CheckService}
+    intent={cmp=com.ys.checknet/.CheckService}
+    packageName=com.ys.checknet
+    processName=com.ys.checknet
+    baseDir=/system/app/CheckNet/CheckNet.apk
+    dataDir=/data/user/0/com.ys.checknet
+    app=ProcessRecord{9281cc9 1440:com.ys.checknet/u0a29}
+    createTime=-4d3h29m31s477ms startingBgTimeout=-4d3h29m16s477ms
+    lastActivity=-4d3h29m31s477ms restartTime=-4d3h29m31s477ms createdFromFg=false
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{5173c75 u0 com.iflytek.inputmethod/.remote.ThirdSdkProcessService}
+    intent={cmp=com.iflytek.inputmethod/.remote.ThirdSdkProcessService}
+    packageName=com.iflytek.inputmethod
+    processName=com.iflytek.inputmethod.thridsdk
+    baseDir=/data/app/com.iflytek.inputmethod-1/base.apk
+    dataDir=/data/user/0/com.iflytek.inputmethod
+    app=ProcessRecord{a48c7f3 24345:com.iflytek.inputmethod.thridsdk/u0a55}
+    createTime=-3d0h5m16s721ms startingBgTimeout=--
+    lastActivity=-3d0h5m16s698ms restartTime=-3d0h5m16s698ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{5e5028d CREATE}:
+      intent={cmp=com.iflytek.inputmethod/.remote.ThirdSdkProcessService}
+      binder=android.os.BinderProxy@f573c42
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{98cf453 ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{9aee7ac u0 CR com.iflytek.inputmethod/.remote.ThirdSdkProcessService:@6ff15f}
+    All Connections:
+      ConnectionRecord{9aee7ac u0 CR com.iflytek.inputmethod/.remote.ThirdSdkProcessService:@6ff15f}
+
+  * ServiceRecord{6b8014d u0 android.rockchip.update.service/.RKUpdateService}
+    intent={cmp=android.rockchip.update.service/.RKUpdateService}
+    packageName=android.rockchip.update.service
+    processName=android.rockchip.update.service
+    baseDir=/system/app/RKUpdateService/RKUpdateService.apk
+    dataDir=/data/user/0/android.rockchip.update.service
+    app=ProcessRecord{b4fafce 1115:android.rockchip.update.service/1000}
+    createTime=-4d3h29m31s849ms startingBgTimeout=-4d3h29m16s848ms
+    lastActivity=-4d3h29m31s845ms restartTime=-4d3h29m31s848ms createdFromFg=false
+    startRequested=true delayedStop=false stopIfKilled=true callStart=true lastStartId=2
+    Delivered Starts:
+    #0 id=1 dur=-4d3h29m31s848ms dxc=1
+      intent=Intent { cmp=android.rockchip.update.service/.RKUpdateService (has extras) }
+    #1 id=2 dur=-4d3h29m31s845ms dxc=1
+      intent=Intent { cmp=android.rockchip.update.service/.RKUpdateService (has extras) }
+
+  * ServiceRecord{fb419d5 u0 com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService}
+    intent={cmp=com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService}
+    packageName=com.duzkj.facecash
+    processName=com.duzkj.facecash
+    baseDir=/data/app/com.duzkj.facecash-1/base.apk
+    dataDir=/data/user/0/com.duzkj.facecash
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    createTime=-1d16h29m54s866ms startingBgTimeout=--
+    lastActivity=-1d16h29m54s863ms restartTime=-1d16h29m54s866ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=true callStart=true lastStartId=1
+    Bindings:
+    * IntentBindRecord{ea78190 CREATE}:
+      intent={cmp=com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService}
+      binder=android.os.BinderProxy@c2c3a89
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{7a0da8e ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}}
+        Per-process Connections:
+          ConnectionRecord{153d778 u0 CR com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService:@f0ed0db}
+    All Connections:
+      ConnectionRecord{153d778 u0 CR com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService:@f0ed0db}
+
+  * ServiceRecord{6f8415a u0 com.ys.ys_receiver/.GuardService}
+    intent={cmp=com.ys.ys_receiver/.GuardService}
+    packageName=com.ys.ys_receiver
+    processName=com.ys.ys_receiver
+    baseDir=/system/app/YSReceiver/YSReceiver.apk
+    dataDir=/data/user/0/com.ys.ys_receiver
+    app=ProcessRecord{809e724 1275:com.ys.ys_receiver/1000}
+    createTime=-4d3h29m31s471ms startingBgTimeout=-4d3h29m16s470ms
+    lastActivity=-4d3h29m31s471ms restartTime=-4d3h29m31s471ms createdFromFg=false
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{3295e8c u0 com.duzkj.facecash/.service.DevicePrintService}
+    intent={cmp=com.duzkj.facecash/.service.DevicePrintService}
+    packageName=com.duzkj.facecash
+    processName=com.duzkj.facecash
+    baseDir=/data/app/com.duzkj.facecash-1/base.apk
+    dataDir=/data/user/0/com.duzkj.facecash
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    createTime=-1d16h29m54s868ms startingBgTimeout=--
+    lastActivity=-1d16h29m54s867ms restartTime=-1d16h29m54s867ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{fd2ceef u0 com.android.bluetooth/.a2dp.A2dpService}
+    intent={act=android.bluetooth.IBluetoothA2dp cmp=com.android.bluetooth/.a2dp.A2dpService}
+    packageName=com.android.bluetooth
+    processName=com.android.bluetooth
+    baseDir=/system/app/Bluetooth/Bluetooth.apk
+    dataDir=/data/user_de/0/com.android.bluetooth
+    app=null
+    createTime=-4d3h29m35s333ms startingBgTimeout=--
+    lastActivity=-4d3h29m35s333ms restartTime=-- createdFromFg=true
+    Bindings:
+    * IntentBindRecord{9e882af}:
+      intent={act=android.bluetooth.IBluetoothA2dp cmp=com.android.bluetooth/.a2dp.A2dpService}
+      binder=null
+      requested=false received=false hasBound=false doRebind=false
+      * Client AppBindRecord{22b26bc ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{90536d6 u0 com.android.bluetooth/.a2dp.A2dpService:@982baf1}
+    All Connections:
+      ConnectionRecord{90536d6 u0 com.android.bluetooth/.a2dp.A2dpService:@982baf1}
+
+  * ServiceRecord{277152d u0 com.android.systemui/.SystemUIService}
+    intent={cmp=com.android.systemui/.SystemUIService}
+    packageName=com.android.systemui
+    processName=com.android.systemui
+    baseDir=/system/priv-app/SystemUI/SystemUI.apk
+    dataDir=/data/user_de/0/com.android.systemui
+    app=ProcessRecord{8b59d81 689:com.android.systemui/u0a19}
+    createTime=-4d3h29m35s296ms startingBgTimeout=--
+    lastActivity=-4d3h29m35s296ms restartTime=-4d3h29m35s296ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{c4e3da5 u0 android/.hardware.location.GeofenceHardwareService}
+    intent={cmp=android/.hardware.location.GeofenceHardwareService}
+    packageName=android
+    processName=system
+    permission=android.permission.LOCATION_HARDWARE
+    baseDir=/system/framework/framework-res.apk
+    dataDir=null
+    app=ProcessRecord{ae2c030 484:system/1000}
+    createTime=-4d3h29m34s431ms startingBgTimeout=--
+    lastActivity=-4d3h29m34s431ms restartTime=-4d3h29m34s431ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{394f645 CREATE}:
+      intent={cmp=android/.hardware.location.GeofenceHardwareService}
+      binder=android.hardware.location.GeofenceHardwareService$1@7d4119a
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{9c49acb ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{c296f9c u0 CR android/.hardware.location.GeofenceHardwareService:@200e30f}
+    All Connections:
+      ConnectionRecord{c296f9c u0 CR android/.hardware.location.GeofenceHardwareService:@200e30f}
+
+  * ServiceRecord{efbd81a u0 com.iflytek.inputmethod/.remote.assist.AssistAppService}
+    intent={cmp=com.iflytek.inputmethod/.remote.assist.AssistAppService}
+    packageName=com.iflytek.inputmethod
+    processName=com.iflytek.inputmethod.assist
+    baseDir=/data/app/com.iflytek.inputmethod-1/base.apk
+    dataDir=/data/user/0/com.iflytek.inputmethod
+    app=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    createTime=-4d3h29m29s48ms startingBgTimeout=--
+    lastActivity=-3d0h5m16s396ms restartTime=-4d3h29m29s20ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{3e1f2a8 CREATE}:
+      intent={cmp=com.iflytek.inputmethod/.remote.assist.AssistAppService}
+      binder=android.os.BinderProxy@513b1c1
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{5d1ad66 ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{e564bed u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@7b2a04}
+      * Client AppBindRecord{18a7 ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{21bbf2f u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@4e1390e}
+          ConnectionRecord{bfdc6c5 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@76ae93c}
+      * Client AppBindRecord{fb79154 ProcessRecord{a48c7f3 24345:com.iflytek.inputmethod.thridsdk/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{1c44729 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@6db5cb0}
+          ConnectionRecord{cb12ce5 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@a1193dc}
+    All Connections:
+      ConnectionRecord{e564bed u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@7b2a04}
+      ConnectionRecord{21bbf2f u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@4e1390e}
+      ConnectionRecord{1c44729 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@6db5cb0}
+      ConnectionRecord{bfdc6c5 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@76ae93c}
+      ConnectionRecord{cb12ce5 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@a1193dc}
+
+  * ServiceRecord{93a53fb u0 com.android.server.telecom/.components.BluetoothPhoneService}
+    intent={cmp=com.android.server.telecom/.components.BluetoothPhoneService}
+    packageName=com.android.server.telecom
+    processName=system
+    baseDir=/system/priv-app/Telecom/Telecom.apk
+    dataDir=/data/user_de/0/com.android.server.telecom
+    app=ProcessRecord{ae2c030 484:system/1000}
+    createTime=-4d3h29m34s981ms startingBgTimeout=--
+    lastActivity=-4d3h29m34s980ms restartTime=-4d3h29m34s980ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{5ef0a5d u0 com.iflytek.inputmethod/.remote.MainProcessService}
+    intent={cmp=com.iflytek.inputmethod/.remote.MainProcessService}
+    packageName=com.iflytek.inputmethod
+    processName=com.iflytek.inputmethod
+    baseDir=/data/app/com.iflytek.inputmethod-1/base.apk
+    dataDir=/data/user/0/com.iflytek.inputmethod
+    app=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    createTime=-4d3h29m26s582ms startingBgTimeout=--
+    lastActivity=-3d0h5m16s405ms restartTime=-4d3h29m26s582ms createdFromFg=false
+    Bindings:
+    * IntentBindRecord{a68a8fd CREATE}:
+      intent={cmp=com.iflytek.inputmethod/.remote.MainProcessService}
+      binder=android.os.BinderProxy@2bb39f2
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{88b9843 ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{57f1c34 u0 CR com.iflytek.inputmethod/.remote.MainProcessService:@158307}
+      * Client AppBindRecord{2a66ec0 ProcessRecord{a48c7f3 24345:com.iflytek.inputmethod.thridsdk/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{a1df04f u0 CR com.iflytek.inputmethod/.remote.MainProcessService:@f6faae}
+    All Connections:
+      ConnectionRecord{57f1c34 u0 CR com.iflytek.inputmethod/.remote.MainProcessService:@158307}
+      ConnectionRecord{a1df04f u0 CR com.iflytek.inputmethod/.remote.MainProcessService:@f6faae}
+
+  * ServiceRecord{6ed90fd u0 com.android.server.telecom/.components.TelecomService}
+    intent={act=com.android.ITelecomService cmp=com.android.server.telecom/.components.TelecomService}
+    packageName=com.android.server.telecom
+    processName=system
+    baseDir=/system/priv-app/Telecom/Telecom.apk
+    dataDir=/data/user_de/0/com.android.server.telecom
+    app=ProcessRecord{ae2c030 484:system/1000}
+    createTime=-4d3h29m35s432ms startingBgTimeout=--
+    lastActivity=-4d3h29m35s431ms restartTime=-4d3h29m35s431ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{f1bd7f9 CREATE}:
+      intent={act=com.android.ITelecomService cmp=com.android.server.telecom/.components.TelecomService}
+      binder=com.android.server.telecom.TelecomServiceImpl$1@e3f033e
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{3c5759f ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{91f1954 u0 CR IMP FGS com.android.server.telecom/.components.TelecomService:@7b0c0a7}
+    All Connections:
+      ConnectionRecord{91f1954 u0 CR IMP FGS com.android.server.telecom/.components.TelecomService:@7b0c0a7}
+
+  * ServiceRecord{a23ef9f u0 com.iflytek.inputmethod/.common.schedule.TriggerAlarmService}
+    intent={typ=schedule_type_-1504563529 cmp=com.iflytek.inputmethod/.common.schedule.TriggerAlarmService}
+    packageName=com.iflytek.inputmethod
+    processName=com.iflytek.inputmethod.assist
+    baseDir=/data/app/com.iflytek.inputmethod-1/base.apk
+    dataDir=/data/user/0/com.iflytek.inputmethod
+    app=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    createTime=-3d8h4m41s816ms startingBgTimeout=--
+    lastActivity=-3d8h4m41s816ms restartTime=-3d8h4m41s816ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{f4c15ea u0 com.duzkj.facecash/com.epfly.device.commons.ntp.NtpTimeCacheService}
+    intent={cmp=com.duzkj.facecash/com.epfly.device.commons.ntp.NtpTimeCacheService}
+    packageName=com.duzkj.facecash
+    processName=com.duzkj.facecash
+    baseDir=/data/app/com.duzkj.facecash-1/base.apk
+    dataDir=/data/user/0/com.duzkj.facecash
+    app=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    createTime=-1d16h29m54s867ms startingBgTimeout=--
+    lastActivity=-1d16h29m54s867ms restartTime=-1d16h29m54s867ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=true callStart=true lastStartId=1
+
+  * ServiceRecord{80bb59c u0 com.adtv/.poweronoff.PowerOffDetectService}
+    intent={cmp=com.adtv/.poweronoff.PowerOffDetectService}
+    packageName=com.adtv
+    processName=com.adtv
+    baseDir=/system/app/PowerOnOff/PowerOnOff.apk
+    dataDir=/data/user/0/com.adtv
+    app=ProcessRecord{3a91dfc 1074:com.adtv/1000}
+    createTime=-4d3h29m27s67ms startingBgTimeout=--
+    lastActivity=-4d3h29m27s67ms restartTime=-4d3h29m27s67ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{a637e65 u0 com.android.smspush/.WapPushManager}
+    intent={act=com.android.internal.telephony.IWapPushManager cmp=com.android.smspush/.WapPushManager}
+    packageName=com.android.smspush
+    processName=com.android.smspush
+    permission=com.android.smspush.WAPPUSH_MANAGER_BIND
+    baseDir=/system/app/WAPPushManager/WAPPushManager.apk
+    dataDir=/data/user/0/com.android.smspush
+    app=ProcessRecord{30cbc85 1134:com.android.smspush/u0a43}
+    createTime=-4d3h29m33s103ms startingBgTimeout=--
+    lastActivity=-4d3h29m33s39ms restartTime=-4d3h29m33s39ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{ce3b6ec CREATE}:
+      intent={act=com.android.internal.telephony.IWapPushManager cmp=com.android.smspush/.WapPushManager}
+      binder=android.os.BinderProxy@538fab5
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{2a4154a ProcessRecord{1cfb583 680:com.android.phone/1001}}
+        Per-process Connections:
+          ConnectionRecord{8245739 u0 CR com.android.smspush/.WapPushManager:@5106300}
+          ConnectionRecord{ef97256 u0 CR com.android.smspush/.WapPushManager:@4fcb471}
+    All Connections:
+      ConnectionRecord{ef97256 u0 CR com.android.smspush/.WapPushManager:@4fcb471}
+      ConnectionRecord{8245739 u0 CR com.android.smspush/.WapPushManager:@5106300}
+
+  * ServiceRecord{a2f42c0 u0 com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService}
+    intent={cmp=com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService}
+    packageName=com.iflytek.inputmethod
+    processName=com.iflytek.inputmethod
+    baseDir=/data/app/com.iflytek.inputmethod-1/base.apk
+    dataDir=/data/user/0/com.iflytek.inputmethod
+    app=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    createTime=-4d3h24m14s126ms startingBgTimeout=--
+    lastActivity=-4d3h1m39s655ms restartTime=-4d3h24m14s125ms createdFromFg=false
+    Bindings:
+    * IntentBindRecord{f95ccbb CREATE}:
+      intent={cmp=com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService}
+      binder=android.os.BinderProxy@acb55d8
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{9cb8d31 ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{233c43 u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@91aedf2}
+      * Client AppBindRecord{5963c16 ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}}
+        Per-process Connections:
+          ConnectionRecord{3602dc2 u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@89cca0d}
+          ConnectionRecord{ce5f73e u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@cf61bf9}
+    All Connections:
+      ConnectionRecord{3602dc2 u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@89cca0d}
+      ConnectionRecord{233c43 u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@91aedf2}
+      ConnectionRecord{ce5f73e u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@cf61bf9}
+
+  * ServiceRecord{d82733b u0 com.android.location.fused/.FusedLocationService}
+    intent={act=com.android.location.service.FusedLocationProvider cmp=com.android.location.fused/.FusedLocationService}
+    packageName=com.android.location.fused
+    processName=system
+    permission=android.permission.WRITE_SECURE_SETTINGS
+    baseDir=/system/priv-app/FusedLocation/FusedLocation.apk
+    dataDir=/data/user_de/0/com.android.location.fused
+    app=ProcessRecord{ae2c030 484:system/1000}
+    createTime=-4d3h29m34s441ms startingBgTimeout=--
+    lastActivity=-4d3h29m34s441ms restartTime=-4d3h29m34s441ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{64a7997 CREATE}:
+      intent={act=com.android.location.service.FusedLocationProvider cmp=com.android.location.fused/.FusedLocationService}
+      binder=com.android.location.provider.LocationProviderBase$Service@8bf784
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{51acb6d ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{5945ca u0 CR !FG !VIS com.android.location.fused/.FusedLocationService:@dba9d35}
+    All Connections:
+      ConnectionRecord{5945ca u0 CR !FG !VIS com.android.location.fused/.FusedLocationService:@dba9d35}
+
+  * ServiceRecord{96e7cf u0 android/com.android.server.content.SyncJobService}
+    intent={cmp=android/com.android.server.content.SyncJobService}
+    packageName=android
+    processName=system
+    permission=android.permission.BIND_JOB_SERVICE
+    baseDir=/system/framework/framework-res.apk
+    dataDir=null
+    app=ProcessRecord{ae2c030 484:system/1000}
+    createTime=-4d3h29m34s921ms startingBgTimeout=--
+    lastActivity=-4d3h29m34s921ms restartTime=-4d3h29m34s921ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=true callStart=true lastStartId=1
+
+  * ServiceRecord{398199 u0 com.iflytek.inputmethod/.FlyIME}
+    intent={act=android.view.InputMethod cmp=com.iflytek.inputmethod/.FlyIME}
+    packageName=com.iflytek.inputmethod
+    processName=com.iflytek.inputmethod
+    permission=android.permission.BIND_INPUT_METHOD
+    baseDir=/data/app/com.iflytek.inputmethod-1/base.apk
+    dataDir=/data/user/0/com.iflytek.inputmethod
+    app=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    createTime=-4d3h29m29s973ms startingBgTimeout=--
+    lastActivity=-2d20h4m35s661ms restartTime=-4d3h29m29s946ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{9b203a2 CREATE}:
+      intent={act=android.view.InputMethod cmp=com.iflytek.inputmethod/.FlyIME}
+      binder=android.os.BinderProxy@f331833
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{49307f0 ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{dea80e3 u0 CR !FG UI !VIS com.iflytek.inputmethod/.FlyIME:@c57e112}
+    All Connections:
+      ConnectionRecord{dea80e3 u0 CR !FG UI !VIS com.iflytek.inputmethod/.FlyIME:@c57e112}
+
+  * ServiceRecord{bdcae60 u0 com.android.phone/.TelephonyDebugService}
+    intent={cmp=com.android.phone/.TelephonyDebugService}
+    packageName=com.android.phone
+    processName=com.android.phone
+    permission=android.permission.DUMP
+    baseDir=/system/priv-app/TeleService/TeleService.apk
+    dataDir=/data/user_de/0/com.android.phone
+    app=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    createTime=-4d3h29m34s380ms startingBgTimeout=--
+    lastActivity=-4d3h29m34s380ms restartTime=-4d3h29m34s380ms createdFromFg=true
+    startRequested=true delayedStop=false stopIfKilled=false callStart=true lastStartId=1
+
+  * ServiceRecord{a4edb3 u0 android.ext.services/.notification.Ranker}
+    intent={act=android.service.notification.NotificationRankerService cmp=android.ext.services/.notification.Ranker}
+    packageName=android.ext.services
+    processName=android.ext.services
+    permission=android.permission.BIND_NOTIFICATION_RANKER_SERVICE
+    baseDir=/system/priv-app/ExtServices/ExtServices.apk
+    dataDir=/data/user_de/0/android.ext.services
+    app=ProcessRecord{1bafada 1036:android.ext.services/u0a8}
+    whitelistManager=true
+    createTime=-4d3h29m38s134ms startingBgTimeout=--
+    lastActivity=-4d3h29m33s292ms restartTime=-4d3h29m33s292ms createdFromFg=true
+    Bindings:
+    * IntentBindRecord{2a5b169 CREATE}:
+      intent={act=android.service.notification.NotificationRankerService cmp=android.ext.services/.notification.Ranker}
+      binder=android.os.BinderProxy@cd0b7ee
+      requested=true received=true hasBound=true doRebind=false
+      * Client AppBindRecord{cfd048f ProcessRecord{ae2c030 484:system/1000}}
+        Per-process Connections:
+          ConnectionRecord{d9ca2e u0 CR FGS android.ext.services/.notification.Ranker:@e3aa4a9}
+    All Connections:
+      ConnectionRecord{d9ca2e u0 CR FGS android.ext.services/.notification.Ranker:@e3aa4a9}
+
+  * ServiceRecord{3a76b0b u0 com.android.bluetooth/.pan.PanService}
+    intent={act=android.bluetooth.IBluetoothPan cmp=com.android.bluetooth/.pan.PanService}
+    packageName=com.android.bluetooth
+    processName=com.android.bluetooth
+    baseDir=/system/app/Bluetooth/Bluetooth.apk
+    dataDir=/data/user_de/0/com.android.bluetooth
+    app=null
+    createTime=-4d3h29m33s797ms startingBgTimeout=--
+    lastActivity=-4d3h29m33s797ms restartTime=-- createdFromFg=true
+    Bindings:
+    * IntentBindRecord{4b8b31c}:
+      intent={act=android.bluetooth.IBluetoothPan cmp=com.android.bluetooth/.pan.PanService}
+      binder=null
+      requested=false received=false hasBound=false doRebind=false
+      * Client AppBindRecord{cdefb25 ProcessRecord{34ed510 9004:com.android.settings/1000}}
+        Per-process Connections:
+          ConnectionRecord{26fdbc5 u0 com.android.bluetooth/.pan.PanService:@8b4323c}
+      * Client AppBindRecord{f1464fa ProcessRecord{8b59d81 689:com.android.systemui/u0a19}}
+        Per-process Connections:
+          ConnectionRecord{e5e66b2 u0 com.android.bluetooth/.pan.PanService:@29d90bd}
+    All Connections:
+      ConnectionRecord{e5e66b2 u0 com.android.bluetooth/.pan.PanService:@29d90bd}
+      ConnectionRecord{26fdbc5 u0 com.android.bluetooth/.pan.PanService:@8b4323c}
+
+  Connection bindings to services:
+  * ConnectionRecord{57f1c34 u0 CR com.iflytek.inputmethod/.remote.MainProcessService:@158307}
+    binding=AppBindRecord{88b9843 com.iflytek.inputmethod/.remote.MainProcessService:com.iflytek.inputmethod.assist}
+    conn=android.os.BinderProxy@158307 flags=0x1
+  * ConnectionRecord{9aee7ac u0 CR com.iflytek.inputmethod/.remote.ThirdSdkProcessService:@6ff15f}
+    binding=AppBindRecord{98cf453 com.iflytek.inputmethod/.remote.ThirdSdkProcessService:com.iflytek.inputmethod}
+    conn=android.os.BinderProxy@6ff15f flags=0x1
+  * ConnectionRecord{e564bed u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@7b2a04}
+    binding=AppBindRecord{5d1ad66 com.iflytek.inputmethod/.remote.assist.AssistAppService:com.iflytek.inputmethod.assist}
+    conn=android.os.BinderProxy@7b2a04 flags=0x1
+  * ConnectionRecord{a1df04f u0 CR com.iflytek.inputmethod/.remote.MainProcessService:@f6faae}
+    binding=AppBindRecord{2a66ec0 com.iflytek.inputmethod/.remote.MainProcessService:com.iflytek.inputmethod.thridsdk}
+    conn=android.os.BinderProxy@f6faae flags=0x1
+  * ConnectionRecord{c296f9c u0 CR android/.hardware.location.GeofenceHardwareService:@200e30f}
+    binding=AppBindRecord{9c49acb android/.hardware.location.GeofenceHardwareService:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@200e30f flags=0x1
+  * ConnectionRecord{e5e66b2 u0 com.android.bluetooth/.pan.PanService:@29d90bd}
+    binding=AppBindRecord{f1464fa com.android.bluetooth/.pan.PanService:com.android.systemui}
+    conn=android.os.BinderProxy@29d90bd flags=0x0
+  * ConnectionRecord{21bbf2f u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@4e1390e}
+    binding=AppBindRecord{18a7 com.iflytek.inputmethod/.remote.assist.AssistAppService:com.iflytek.inputmethod}
+    conn=android.os.BinderProxy@4e1390e flags=0x1
+  * ConnectionRecord{ef97256 u0 CR com.android.smspush/.WapPushManager:@4fcb471}
+    binding=AppBindRecord{2a4154a com.android.smspush/.WapPushManager:com.android.phone}
+    conn=android.os.BinderProxy@4fcb471 flags=0x1
+  * ConnectionRecord{8245739 u0 CR com.android.smspush/.WapPushManager:@5106300}
+    binding=AppBindRecord{2a4154a com.android.smspush/.WapPushManager:com.android.phone}
+    conn=android.os.BinderProxy@5106300 flags=0x1
+  * ConnectionRecord{1c44729 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@6db5cb0}
+    binding=AppBindRecord{fb79154 com.iflytek.inputmethod/.remote.assist.AssistAppService:com.iflytek.inputmethod.thridsdk}
+    conn=android.os.BinderProxy@6db5cb0 flags=0x1
+  * ConnectionRecord{bfdc6c5 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@76ae93c}
+    binding=AppBindRecord{18a7 com.iflytek.inputmethod/.remote.assist.AssistAppService:com.iflytek.inputmethod}
+    conn=android.os.BinderProxy@76ae93c flags=0x1
+  * ConnectionRecord{91f1954 u0 CR IMP FGS com.android.server.telecom/.components.TelecomService:@7b0c0a7}
+    binding=AppBindRecord{3c5759f com.android.server.telecom/.components.TelecomService:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@7b0c0a7 flags=0x4000041
+  * ConnectionRecord{f7d1a0e u0 com.android.bluetooth/.hid.HidService:@7dbc809}
+    binding=AppBindRecord{3bb3dde com.android.bluetooth/.hid.HidService:com.android.settings}
+    conn=android.os.BinderProxy@7dbc809 flags=0x0
+  * ConnectionRecord{3602dc2 u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@89cca0d}
+    binding=AppBindRecord{5963c16 com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:com.iflytek.inputmethod}
+    conn=android.os.BinderProxy@89cca0d flags=0x1
+  * ConnectionRecord{26fdbc5 u0 com.android.bluetooth/.pan.PanService:@8b4323c}
+    binding=AppBindRecord{cdefb25 com.android.bluetooth/.pan.PanService:com.android.settings}
+    conn=android.os.BinderProxy@8b4323c flags=0x0
+  * ConnectionRecord{233c43 u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@91aedf2}
+    binding=AppBindRecord{9cb8d31 com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:com.iflytek.inputmethod.assist}
+    conn=android.os.BinderProxy@91aedf2 flags=0x1
+  * ConnectionRecord{90536d6 u0 com.android.bluetooth/.a2dp.A2dpService:@982baf1}
+    binding=AppBindRecord{22b26bc com.android.bluetooth/.a2dp.A2dpService:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@982baf1 flags=0x0
+  * ConnectionRecord{cb12ce5 u0 CR com.iflytek.inputmethod/.remote.assist.AssistAppService:@a1193dc}
+    binding=AppBindRecord{fb79154 com.iflytek.inputmethod/.remote.assist.AssistAppService:com.iflytek.inputmethod.thridsdk}
+    conn=android.os.BinderProxy@a1193dc flags=0x1
+  * ConnectionRecord{dea80e3 u0 CR !FG UI !VIS com.iflytek.inputmethod/.FlyIME:@c57e112}
+    binding=AppBindRecord{49307f0 com.iflytek.inputmethod/.FlyIME:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@c57e112 flags=0x60000005
+  * ConnectionRecord{ce5f73e u0 CR com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:@cf61bf9}
+    binding=AppBindRecord{5963c16 com.iflytek.inputmethod/androidx.room.MultiInstanceInvalidationService:com.iflytek.inputmethod}
+    conn=android.os.BinderProxy@cf61bf9 flags=0x1
+  * ConnectionRecord{15a39de u0 CR com.duzkj.facecash/.serialport.ShellService:@d9d4519}
+    binding=AppBindRecord{70e1724 com.duzkj.facecash/.serialport.ShellService:com.duzkj.facecash}
+    activity=ActivityRecord{624692 u0 com.duzkj.facecash/.module.orderMeal.MainActivity t1379}
+    conn=android.os.BinderProxy@d9d4519 flags=0x1
+  * ConnectionRecord{5945ca u0 CR !FG !VIS com.android.location.fused/.FusedLocationService:@dba9d35}
+    binding=AppBindRecord{51acb6d com.android.location.fused/.FusedLocationService:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@dba9d35 flags=0x40000005
+  * ConnectionRecord{4bb4a67 u0 com.android.bluetooth/.hid.HidService:@e178e26}
+    binding=AppBindRecord{b472bbf com.android.bluetooth/.hid.HidService:com.android.systemui}
+    conn=android.os.BinderProxy@e178e26 flags=0x0
+  * ConnectionRecord{d9ca2e u0 CR FGS android.ext.services/.notification.Ranker:@e3aa4a9}
+    binding=AppBindRecord{cfd048f android.ext.services/.notification.Ranker:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@e3aa4a9 flags=0x5000001
+  * ConnectionRecord{5120c86 u0 CR FGSA UI com.android.systemui/.ImageWallpaper:@eeb9961}
+    binding=AppBindRecord{f5a9251 com.android.systemui/.ImageWallpaper:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@eeb9961 flags=0x22000001
+  * ConnectionRecord{153d778 u0 CR com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService:@f0ed0db}
+    binding=AppBindRecord{7a0da8e com.duzkj.facecash/com.ep.offline.sync.CashRegisterOfflineDataService:com.duzkj.facecash}
+    activity=ActivityRecord{624692 u0 com.duzkj.facecash/.module.orderMeal.MainActivity t1379}
+    conn=android.os.BinderProxy@f0ed0db flags=0x1
+  * ConnectionRecord{8841206 u0 CR com.android.systemui/.keyguard.KeyguardService:@f7444e1}
+    binding=AppBindRecord{b959ea com.android.systemui/.keyguard.KeyguardService:system}
+    conn=android.app.LoadedApk$ServiceDispatcher$InnerConnection@f7444e1 flags=0x1
+# --- dumpsys activity providers ---
+ACTIVITY MANAGER CONTENT PROVIDERS (dumpsys activity providers)
+  Published single-user content providers (by class):
+  * ContentProviderRecord{7150dbe u0 com.android.providers.settings/.SettingsProvider}
+    package=com.android.providers.settings process=system
+    proc=ProcessRecord{ae2c030 484:system/1000}
+    uid=1000 provider=android.content.ContentProvider$Transport@8174c17
+    singleton=true
+    authority=settings
+    isSyncable=false multiprocess=false initOrder=100
+    Connections:
+      -> 689:com.android.systemui/u0a19 s1/1 u0/0 +4d3h29m35s390ms
+      -> 680:com.android.phone/1001 s1/1 u0/0 +4d3h29m35s246ms
+      -> 1161:com.softwinner.launcher/1000 s1/1 u0/0 +4d3h29m33s164ms
+      -> 1210:android.process.media/u0a7 s1/1 u0/0 +4d3h29m32s694ms
+      -> 1366:android.process.acore/u0a1 s1/1 u0/0 +4d3h29m31s894ms
+      -> 1535:com.iflytek.inputmethod/u0a55 s1/1 u0/0 +4d3h29m29s106ms
+      -> 1564:com.iflytek.inputmethod.assist/u0a55 s1/1 u0/0 +4d3h29m25s317ms
+      -> 15942:com.duzkj.facecash/u0a80 s1/1 u0/0 +2d1h49m16s809ms
+      -> 16518:com.android.defcontainer/u0a4 s1/1 u0/0 +2d1h38m1s336ms
+      -> 9004:com.android.settings/1000 s1/1 u0/0 +1h13m18s494ms
+  * ContentProviderRecord{d1aee1f u0 com.android.providers.telephony/.HbpcdLookupProvider}
+    package=com.android.providers.telephony process=com.android.phone
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    uid=1001 provider=android.content.ContentProviderProxy@5cf5aab
+    singleton=true
+    authority=hbpcd_lookup
+  * ContentProviderRecord{3ff056c u0 com.android.providers.telephony/.TelephonyProvider}
+    package=com.android.providers.telephony process=com.android.phone
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    uid=1001 provider=android.content.ContentProviderProxy@22be508
+    singleton=true
+    authority=telephony
+  * ContentProviderRecord{4c46735 u0 com.android.providers.telephony/.SmsProvider}
+    package=com.android.providers.telephony process=com.android.phone
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    uid=1001 provider=android.content.ContentProviderProxy@8a924a1
+    singleton=true
+    authority=sms
+  * ContentProviderRecord{71047ca u0 android/com.android.server.am.DumpHeapProvider}
+    package=android process=system
+    proc=ProcessRecord{ae2c030 484:system/1000}
+    uid=1000 provider=android.content.ContentProvider$Transport@be49804
+    singleton=true
+    authority=com.android.server.heapdump
+  * ContentProviderRecord{80a4d3b u0 com.android.providers.telephony/.MmsSmsProvider}
+    package=com.android.providers.telephony process=com.android.phone
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    uid=1001 provider=android.content.ContentProviderProxy@eb3d6c6
+    singleton=true
+    authority=mms-sms
+  * ContentProviderRecord{68d0c58 u0 com.android.providers.telephony/.MmsProvider}
+    package=com.android.providers.telephony process=com.android.phone
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    uid=1001 provider=android.content.ContentProviderProxy@126f687
+    singleton=true
+    authority=mms
+
+  Published user 0 content providers (by class):
+  * ContentProviderRecord{7e141b1 u0 com.android.inputmethod.latin/com.android.inputmethod.dictionarypack.DictionaryProvider}
+    package=com.android.inputmethod.latin process=com.android.inputmethod.latin
+    proc=ProcessRecord{8b58b6f 1384:com.android.inputmethod.latin/u0a34}
+    uid=10034 provider=android.content.ContentProviderProxy@1e49b4
+    authority=com.android.inputmethod.dictionarypack.aosp
+  * ContentProviderRecord{cd31696 u0 com.android.phone/.IccProvider}
+    package=com.android.phone process=com.android.phone
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    uid=1001 provider=android.content.ContentProviderProxy@c9269dd
+    authority=icc
+    isSyncable=false multiprocess=true initOrder=0
+  * ContentProviderRecord{4c68217 u0 com.android.settings/android.support.v4.content.FileProvider}
+    package=com.android.settings process=com.android.settings
+    proc=ProcessRecord{34ed510 9004:com.android.settings/1000}
+    uid=1000 provider=android.content.ContentProviderProxy@4869952
+    authority=com.android.settings.files
+  * ContentProviderRecord{8f29604 u0 com.duzkj.facecash/androidx.core.content.FileProvider}
+    package=com.duzkj.facecash process=com.duzkj.facecash
+    proc=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    uid=10080 provider=android.content.ContentProviderProxy@7727423
+    authority=com.duzkj.facecash.fileProvider
+  * ContentProviderRecord{41747ed u0 com.android.providers.media/.MediaProvider}
+    package=com.android.providers.media process=android.process.media
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    uid=10007 provider=android.content.ContentProviderProxy@1304d20
+    authority=media
+  * ContentProviderRecord{a728b3 u0 com.iflytek.inputmethod/.remote.config.AssistConfigProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod.assist
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@fd0c6d9
+    authority=com.iflytek.inputmethod.assist
+  * ContentProviderRecord{3050e70 u0 com.android.providers.contacts/.VoicemailContentProvider}
+    package=com.android.providers.contacts process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@d50f89e
+    authority=com.android.voicemail
+  * ContentProviderRecord{e7e626e u0 com.svox.pico/.providers.SettingsProvider}
+    package=com.svox.pico process=com.svox.pico
+    proc=ProcessRecord{ce19d0f 16584:com.svox.pico/u0a39}
+    uid=10039 provider=android.content.ContentProviderProxy@f6e2f7f
+    authority=com.svox.pico.providers.SettingsProvider
+  * ContentProviderRecord{284a19c u0 com.android.gallery3d/.filtershow.provider.SharedImageProvider}
+    package=com.android.gallery3d process=com.android.gallery3d
+    proc=ProcessRecord{65e87a5 16542:com.android.gallery3d/1000}
+    uid=1000 provider=android.content.ContentProviderProxy@f9d1b4c
+    authority=com.android.gallery3d.filtershow.provider.SharedImageProvider
+  * ContentProviderRecord{232377a u0 com.android.gallery3d/com.android.photos.data.PhotoProvider}
+    package=com.android.gallery3d process=com.android.gallery3d
+    proc=ProcessRecord{65e87a5 16542:com.android.gallery3d/1000}
+    uid=1000 provider=android.content.ContentProviderProxy@cfdf795
+    authority=com.android.gallery3d.photoprovider
+  * ContentProviderRecord{ea4fb2b u0 com.iflytek.inputmethod/.thirdpart.bytedance.sdk.opensdk.multipro.TTMultiProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@bd000aa
+    authority=com.iflytek.inputmethod.TTMultiProvider
+  * ContentProviderRecord{f083b88 u0 com.android.providers.blockednumber/.BlockedNumberProvider}
+    package=com.android.providers.blockednumber process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@540449b
+    authority=com.android.blockednumber
+  * ContentProviderRecord{bd4f921 u0 com.iflytek.inputmethod/.remote.config.MainConfigProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@c26a038
+    authority=com.iflytek.inputmethod
+  * ContentProviderRecord{e1c5146 u0 com.android.providers.media/.MediaDocumentsProvider}
+    package=com.android.providers.media process=android.process.media
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    uid=10007 provider=android.content.ContentProviderProxy@4937811
+    authority=com.android.providers.media.documents
+  * ContentProviderRecord{4f61f07 u0 com.iflytek.inputmethod/.thirdpart.UsFileProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@f857d76
+    authority=com.iflytek.inputmethod.usfileprovider
+  * ContentProviderRecord{a98834 u0 com.android.providers.downloads/.DownloadProvider}
+    package=com.android.providers.downloads process=android.process.media
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    uid=10007 provider=android.content.ContentProviderProxy@7548f77
+    authority=downloads
+  * ContentProviderRecord{be7065d u0 com.android.providers.contacts/.CallLogProvider}
+    package=com.android.providers.contacts process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    launchingApp=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@fc187e4
+    authority=call_log
+  * ContentProviderRecord{e3c3bd2 u0 com.android.rockchip/android.support.v4.content.FileProvider}
+    package=com.android.rockchip process=com.android.rockchip
+    proc=ProcessRecord{4ba4a3 1510:com.android.rockchip/1000}
+    uid=1000 provider=android.content.ContentProviderProxy@b26844d
+    authority=com.android.rockchip.fileprovider
+  * ContentProviderRecord{570f3a0 u0 com.iflytek.inputmethod/.thirdpart.TTFileProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod
+    proc=ProcessRecord{7d10309 1535:com.iflytek.inputmethod/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@c43fb02
+    authority=com.iflytek.inputmethod.TTFileProvider
+  * ContentProviderRecord{912ab59 u0 com.duzkj.facecash/me.jessyan.autosize.InitProvider}
+    package=com.duzkj.facecash process=com.duzkj.facecash
+    proc=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    uid=10080 provider=android.content.ContentProviderProxy@4f8ac13
+    authority=com.duzkj.facecash.autosize-init-provider
+    isSyncable=false multiprocess=true initOrder=0
+  * ContentProviderRecord{cfe431e u0 com.duzkj.facecash/androidx.startup.InitializationProvider}
+    package=com.duzkj.facecash process=com.duzkj.facecash
+    proc=ProcessRecord{c078829 15942:com.duzkj.facecash/u0a80}
+    uid=10080 provider=android.content.ContentProviderProxy@c013e50
+    authority=com.duzkj.facecash.androidx-startup
+  * ContentProviderRecord{7e9e7ff u0 com.iflytek.inputmethod/.recovery.internal.RecoveryProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod.assist
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@f641849
+    authority=com.iflytek.inputmethod.depend.recovery.new
+  * ContentProviderRecord{181a9cc u0 com.android.settings/.search.SettingsSearchIndexablesProvider}
+    package=com.android.settings process=com.android.settings
+    proc=ProcessRecord{34ed510 9004:com.android.settings/1000}
+    uid=1000 provider=android.content.ContentProviderProxy@e7ac54e
+    authority=com.android.settings
+  * ContentProviderRecord{5b9a415 u0 com.iflytek.inputmethod/androidx.core.content.FileProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod.assist
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@ab7f66f
+    authority=com.iflytek.inputmethod.fileProvider
+  * ContentProviderRecord{d47732a u0 com.android.providers.contacts/.debug.DumpFileProvider}
+    package=com.android.providers.contacts process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@643ef7c
+    authority=com.android.contacts.dumpfile
+  * ContentProviderRecord{8ff051b u0 com.android.gallery3d/.provider.GalleryProvider}
+    package=com.android.gallery3d process=com.android.gallery3d
+    proc=ProcessRecord{65e87a5 16542:com.android.gallery3d/1000}
+    uid=1000 provider=android.content.ContentProviderProxy@3ccf005
+    authority=com.android.gallery3d.provider
+  * ContentProviderRecord{60596b8 u0 com.android.providers.contacts/.ContactMetadataProvider}
+    package=com.android.providers.contacts process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@841e85a
+    authority=com.android.contacts.metadata
+  * ContentProviderRecord{e9d6c91 u0 com.android.providers.userdictionary/.UserDictionaryProvider}
+    package=com.android.providers.userdictionary process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@8778a8b
+    authority=user_dictionary
+  * ContentProviderRecord{94197f6 u0 com.iflytek.inputmethod/.thirdpart.VistaFileProvider}
+    package=com.iflytek.inputmethod process=com.iflytek.inputmethod.assist
+    proc=ProcessRecord{184e617 1564:com.iflytek.inputmethod.assist/u0a55}
+    uid=10055 provider=android.content.ContentProviderProxy@99e8768
+    authority=com.iflytek.inputmethod.fileprovider
+  * ContentProviderRecord{b7ed7f7 u0 com.android.phone/.PhoneSearchIndexablesProvider}
+    package=com.android.phone process=com.android.phone
+    proc=ProcessRecord{1cfb583 680:com.android.phone/1001}
+    uid=1001 provider=android.content.ContentProviderProxy@8318781
+    authority=com.android.phone
+  * ContentProviderRecord{ad96664 u0 com.android.providers.contacts/.ShadowCallLogProvider}
+    package=com.android.providers.contacts process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@3263026
+    authority=call_log_shadow
+  * ContentProviderRecord{11b40cd u0 com.android.providers.contacts/.ContactsProvider2}
+    package=com.android.providers.contacts process=android.process.acore
+    proc=ProcessRecord{e2d75e9 1366:android.process.acore/u0a1}
+    uid=10001 provider=android.content.ContentProviderProxy@d524467
+    authority=contacts;com.android.contacts
+  * ContentProviderRecord{1e73d82 u0 com.android.providers.downloads/.DownloadStorageProvider}
+    package=com.android.providers.downloads process=android.process.media
+    proc=ProcessRecord{4220622 1210:android.process.media/u0a7}
+    uid=10007 provider=android.content.ContentProviderProxy@b88b214
+    authority=com.android.providers.downloads.documents
+
+  Single-user authority to provider mappings:
+  mms: 68d0c58/com.android.providers.telephony/.MmsProvider
+  com.android.server.heapdump: 71047ca/android/com.android.server.am.DumpHeapProvider
+  mms-sms: 80a4d3b/com.android.providers.telephony/.MmsSmsProvider
+  telephony: 3ff056c/com.android.providers.telephony/.TelephonyProvider
+  sms: 4c46735/com.android.providers.telephony/.SmsProvider
+  hbpcd_lookup: d1aee1f/com.android.providers.telephony/.HbpcdLookupProvider
+  settings: 7150dbe/com.android.providers.settings/.SettingsProvider
+
+  User 0 authority to provider mappings:
+  com.duzkj.facecash.androidx-startup: cfe431e/com.duzkj.facecash/androidx.startup.InitializationProvider
+  com.iflytek.inputmethod.fileProvider: 5b9a415/com.iflytek.inputmethod/androidx.core.content.FileProvider
+  com.iflytek.inputmethod: bd4f921/com.iflytek.inputmethod/.remote.config.MainConfigProvider
+  com.android.providers.media.documents: e1c5146/com.android.providers.media/.MediaDocumentsProvider
+  com.android.contacts.dumpfile: d47732a/com.android.providers.contacts/.debug.DumpFileProvider
+  com.android.rockchip.fileprovider: e3c3bd2/com.android.rockchip/android.support.v4.content.FileProvider
+  call_log_shadow: ad96664/com.android.providers.contacts/.ShadowCallLogProvider
+  com.iflytek.inputmethod.TTMultiProvider: ea4fb2b/com.iflytek.inputmethod/.thirdpart.bytedance.sdk.opensdk.multipro.TTMultiProvider
+  contacts: 11b40cd/com.android.providers.contacts/.ContactsProvider2
+  com.android.providers.downloads.documents: 1e73d82/com.android.providers.downloads/.DownloadStorageProvider
+  com.svox.pico.providers.SettingsProvider: e7e626e/com.svox.pico/.providers.SettingsProvider
+  com.android.gallery3d.photoprovider: 232377a/com.android.gallery3d/com.android.photos.data.PhotoProvider
+  com.iflytek.inputmethod.TTFileProvider: 570f3a0/com.iflytek.inputmethod/.thirdpart.TTFileProvider
+  com.android.contacts: 11b40cd/com.android.providers.contacts/.ContactsProvider2
+  com.android.contacts.metadata: 60596b8/com.android.providers.contacts/.ContactMetadataProvider
+  com.android.blockednumber: f083b88/com.android.providers.blockednumber/.BlockedNumberProvider
+  com.duzkj.facecash.fileProvider: 8f29604/com.duzkj.facecash/androidx.core.content.FileProvider
+  com.iflytek.inputmethod.fileprovider: 94197f6/com.iflytek.inputmethod/.thirdpart.VistaFileProvider
+  com.iflytek.inputmethod.assist: a728b3/com.iflytek.inputmethod/.remote.config.AssistConfigProvider
+  icc: cd31696/com.android.phone/.IccProvider
+  com.android.inputmethod.dictionarypack.aosp: 7e141b1/com.android.inputmethod.latin/com.android.inputmethod.dictionarypack.DictionaryProvider
+  com.iflytek.inputmethod.depend.recovery.new: 7e9e7ff/com.iflytek.inputmethod/.recovery.internal.RecoveryProvider
+  call_log: be7065d/com.android.providers.contacts/.CallLogProvider
+  com.android.gallery3d.provider: 8ff051b/com.android.gallery3d/.provider.GalleryProvider
+  com.android.voicemail: 3050e70/com.android.providers.contacts/.VoicemailContentProvider
+  com.android.settings: 181a9cc/com.android.settings/.search.SettingsSearchIndexablesProvider
+  com.android.gallery3d.filtershow.provider.SharedImageProvider: 284a19c/com.android.gallery3d/.filtershow.provider.SharedImageProvider
+  downloads: a98834/com.android.providers.downloads/.DownloadProvider
+  user_dictionary: e9d6c91/com.android.providers.userdictionary/.UserDictionaryProvider
+  com.android.settings.files: 4c68217/com.android.settings/android.support.v4.content.FileProvider
+  com.iflytek.inputmethod.usfileprovider: 4f61f07/com.iflytek.inputmethod/.thirdpart.UsFileProvider
+  com.android.phone: b7ed7f7/com.android.phone/.PhoneSearchIndexablesProvider
+  com.duzkj.facecash.autosize-init-provider: 912ab59/com.duzkj.facecash/me.jessyan.autosize.InitProvider
+  media: 41747ed/com.android.providers.media/.MediaProvider
