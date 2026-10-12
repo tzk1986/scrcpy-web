@@ -40,8 +40,12 @@ from pathlib import Path
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    # 判据 detail 可含 U+FFFD 等非 GBK 字符（S39-9 坏名呈现），防 print 崩
+    sys.stdout.reconfigure(errors="replace")
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT))  # config 包在仓库根（与 run_server.py 同口径）
 
 from app.application.file_service import FileService  # noqa: E402
 from app.core.exceptions import (  # noqa: E402
@@ -56,14 +60,6 @@ SPIKE_DIR = "/sdcard/Download/s39_spike"
 
 def _q(s: str) -> str:
     return shlex.quote(s)
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def chunk_reader(local: Path):
@@ -93,10 +89,24 @@ class Verdicts:
         return sum(1 for i in self.items if i["status"] == "FAIL")
 
 
-async def device_sha(adb: AdbCliDriver, dev: str, remote: str) -> str:
-    out = await adb.shell(dev, f"sha256sum {_q(remote)}")
+def local_digest(path: Path, algo: str) -> str:
+    h = hashlib.new(algo)
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+async def device_digest(adb: AdbCliDriver, dev: str, remote: str) -> tuple[str, str]:
+    """设备端文件摘要（sha256sum 优先；部分机型 toybox 未编入，回退 md5sum）。"""
+    try:
+        out = await adb.shell(dev, f"sha256sum {_q(remote)}")
+        algo = "sha256"
+    except Exception:
+        out = await adb.shell(dev, f"md5sum {_q(remote)}")
+        algo = "md5"
     parts = out.split()
-    return parts[0] if parts else ""
+    return algo, (parts[0] if parts else "")
 
 
 async def main() -> int:
@@ -120,34 +130,46 @@ async def main() -> int:
         await adb.shell(dev, f"rm -rf {_q(SPIKE_DIR)}; mkdir -p {_q(SPIKE_DIR)}")
 
         # ---- S39-1 ls 三态解析 ----
+        # ln -sf 分文件系统：ext4 挂载允许（.18），fuse/sdcardfs 拒绝（.25/.33）
+        # ——软链判据自适应，不因环境不支持而失败（S39-6 软链分支同步跟随）
         await adb.shell(
             dev,
             f"touch {_q(SPIKE_DIR + '/plain.txt')}; "
             f"echo hi > {_q(SPIKE_DIR + '/spike file 1.txt')}; "
-            f"mkdir {_q(SPIKE_DIR + '/sub')}; "
-            f"ln -sf {_q(SPIKE_DIR)} {_q(SPIKE_DIR + '/link')}",
+            f"mkdir -p {_q(SPIKE_DIR + '/sub')}",
         )
+        link_ok = True
+        try:
+            await adb.shell(dev, f"ln -sf {_q(SPIKE_DIR)} {_q(SPIKE_DIR + '/link')}")
+        except Exception:
+            link_ok = False
         entries = await svc.list_dir(dev, SPIKE_DIR)
         by_name = {e.name: e for e in entries}
         ok1 = (
             "plain.txt" in by_name
             and "spike file 1.txt" in by_name
             and "sub" in by_name and by_name["sub"].is_dir
-            and "link" in by_name and by_name["link"].is_symlink
-            and by_name["link"].link_target == SPIKE_DIR
+            and not any(e.name in (".", "..") for e in entries)
+            and (
+                not link_ok
+                or (
+                    "link" in by_name and by_name["link"].is_symlink
+                    and by_name["link"].link_target == SPIKE_DIR
+                )
+            )
         )
-        v.add("S39-1 ls 三态解析", ok1, f"entries={sorted(by_name)}")
+        v.add("S39-1 ls 三态解析", ok1, f"entries={sorted(by_name)} symlink_env_ok={link_ok}")
 
         # ---- S39-2 上传字节一致（2MB 随机） ----
         local_big = tmp_root / "big.bin"
         local_big.write_bytes(os.urandom(2 * 1024 * 1024))
-        expected_hash = sha256_file(local_big)
         t0 = time.monotonic()
         job = await svc.upload(dev, SPIKE_DIR, "big.bin", chunk_reader(local_big))
         up_s = time.monotonic() - t0
-        remote_hash = await device_sha(adb, dev, f"{SPIKE_DIR}/big.bin")
+        algo, remote_hash = await device_digest(adb, dev, f"{SPIKE_DIR}/big.bin")
+        expected_hash = local_digest(local_big, algo)
         hash_ok = job.status == "done" and remote_hash == expected_hash
-        v.add("S39-2 上传字节一致", hash_ok, f"status={job.status} {up_s:.2f}s sha256={'ok' if hash_ok else remote_hash[:16] + '≠' + expected_hash[:16]}")
+        v.add("S39-2 上传字节一致", hash_ok, f"status={job.status} {up_s:.2f}s {algo}={'ok' if hash_ok else remote_hash[:16] + '≠' + expected_hash[:16]}")
 
         # ---- S39-3 下载单文件字节一致 + 暂存即清 ----
         job_d, artifact, filename = await svc.prepare_download(dev, [f"{SPIKE_DIR}/big.bin"])
@@ -174,22 +196,23 @@ async def main() -> int:
 
         # ---- S39-5 重命名 ----
         await svc.rename(dev, f"{SPIKE_DIR}/plain.txt", "renamed.txt")
-        renamed_entries = await svc.list_dir(dev, f"{SPIKE_DIR}/renamed.txt")
+        after_rename = await svc.list_dir(dev, SPIKE_DIR)
+        renamed_ok = any(e.name == "renamed.txt" for e in after_rename)
         conflict_ok = False
         try:
             await svc.rename(dev, f"{SPIKE_DIR}/renamed.txt", "spike file 1.txt")
         except TargetExistsError:
             conflict_ok = True
         v.add(
-            "S39-5 重命名+冲突拒绝",
-            any(e.name == "renamed.txt" for e in renamed_entries) and conflict_ok,
-            f"renamed_ok={len(renamed_entries) > 0} conflict={conflict_ok}",
+            "S39-5 重命名+冲突拒绝", renamed_ok and conflict_ok,
+            f"renamed_ok={renamed_ok} conflict={conflict_ok}",
         )
 
         # ---- S39-6 删除三态（文件/目录/软链，链接目标目录完好） ----
-        results = await svc.delete(
-            dev, [f"{SPIKE_DIR}/renamed.txt", f"{SPIKE_DIR}/sub", f"{SPIKE_DIR}/link"]
-        )
+        del_paths = [f"{SPIKE_DIR}/renamed.txt", f"{SPIKE_DIR}/sub"]
+        if link_ok:
+            del_paths.append(f"{SPIKE_DIR}/link")
+        results = await svc.delete(dev, del_paths)
         all_ok = all(r["ok"] for r in results)
         try:
             await svc.list_dir(dev, f"{SPIKE_DIR}/sub")
@@ -234,7 +257,7 @@ async def main() -> int:
         meta_ok = any(e.name == meta_name for e in meta_entries) and job_m.status == "done"
         pwned_exists = False
         try:
-            await svc.list_dir(dev, "/sdcard/pwned")
+            await adb.shell(dev, f"ls -ld {_q('/sdcard/pwned')}")
             pwned_exists = True
         except Exception:
             pwned_exists = False
