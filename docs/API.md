@@ -80,6 +80,7 @@
 | GET | `/api/apps/{device_id}` | 应用列表 | `api.listApps` |
 | GET | `/api/apps/{device_id}/{package}` | 应用详情 | `api.getAppInfo` |
 | GET | `/api/apps/{device_id}/{package}/memory` | 应用内存占用 | `api.getAppMemory` |
+| GET | `/api/apps/{device_id}/{package}/runtime` | 应用运行时状态（栈/Service/Provider，方案 37 C） | `api.getAppRuntime` |
 | POST | `/api/apps/{device_id}/{package}/launch` | 启动应用 | `api.launchApp` |
 | POST | `/api/apps/{device_id}/{package}/stop` | 强制停止 | `api.stopApp` |
 | POST | `/api/apps/{device_id}/{package}/uninstall` | 卸载 | `api.uninstallApp` |
@@ -298,6 +299,38 @@ data: {"type": "disconnected", "device_id": "..."}
 
 - 响应 200：`{"package": "<package>", "memory_kb": 12345}`
 - 错误：404（内存信息不可用）
+
+#### GET /api/apps/{device_id}/{package}/runtime
+
+方案 37 子项 C：设备级运行时状态（当前栈 / Service 清单 / Provider 清单），
+由 `dumpsys activity` 三命令输出正则锚定解析（ROM 漂移容错）。
+
+- 响应 200：
+
+```json
+{
+  "pkg": "com.android.settings",
+  "top_activity": "com.android.settings/.SubSettings",
+  "resumed": "com.android.settings/.SubSettings",
+  "services": [ { "name": "com.android.settings/.SettingsService", "state": "running" } ],
+  "providers": [ "com.android.settings/.SettingsProvider" ],
+  "parse_warning": ""
+}
+```
+
+- 字段语义：`pkg` 为请求路径包名（非解析值，设备级运行时与包名无关）；
+  `top_activity` / `resumed` 为当前栈组件（"pkg/class" 形态，解析缺失为空串）；
+  `services` 每条含 `name` / `state`（`running` = 进程承载 / `stopped` =
+  app=null / `unknown` = app= 行缺失），空清单属合法空（无服务/不支持解析）；
+  `providers` 为组件串清单，设备不支持（Android 10 以下无 providers 段）
+  或命令失败时为空清单。
+- `parse_warning` 语义：空串 = 全字段解析完整；非空 = 降级提示，逐项短语
+  分号连接（`resumed 缺失` / `top_activity 缺失`；ADB 整体失败收敛为
+  `ADB 查询失败: ...` 并截断 200 字符）——任何单项失败均不回传错误码、
+  不整体失败，前端据该字段提示「部分运行时字段解析缺失」（并可按需刷新）。
+- 错误：400 `INVALID_IDENTIFIER`（包名格式非法，消息不回显原值）。
+  无 404 语义：端点反映设备级运行时状态，不校验应用存在性；
+  ADB 层失败收敛为 200 + 非空 `parse_warning`。
 
 #### POST /api/apps/{device_id}/{package}/launch | /stop | /uninstall | /clear-data
 

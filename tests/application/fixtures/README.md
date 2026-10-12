@@ -27,6 +27,9 @@
 - 结构：主输出 1-10784（内嵌服务块 34 条 ServiceRecord）；services 段
   10785-11521（追加 34 条 ServiceRecord，双来源并存共 68 条）；
   providers 段 11522-11924（真实 provider 记录）
+- 注记（C6 评审补正）：上述「68 条」含 8 条 `* Destroy ServiceRecord{...}` 行
+  （parse_services 只锚定 `* ServiceRecord{` 行首轮廓，Destroy 前缀行正确跳过），
+  实际产出 60 条活动服务记录。
 - 锚定行形态：仅 1 条 `mResumedActivity`；无 `topResumedActivity`/`mFocusedActivity`；
   另有 Android 11 形态的 `mFocusedApp=` 行（C2 需注意版本差异）
 
