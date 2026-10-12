@@ -27,6 +27,7 @@ ADB CLI 驱动 — 基于子进程的 ADB 实现
 import asyncio
 import os
 import re
+import shlex
 from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
@@ -34,6 +35,7 @@ from app.core.exceptions import AdbError, DeviceUnreachableError
 from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.domain.device import DeviceInfo
+from app.domain.files import FileEntry
 from app.domain.ports import ShellSession
 from app.domain.runtime import (
     BatteryInfo,
@@ -305,6 +307,46 @@ def parse_battery(text: str) -> BatteryInfo:
     )
 
 
+def _parse_ls_line(line: str) -> FileEntry | None:
+    """解析一行 toybox `ls -la/-ld` 输出为 FileEntry（total 行/空行返回 None）。
+
+    格式（2026-10-10 预研 + 2026-10-12 三机复测）：7 前缀 token
+    （权限/links/owner/group/大小/日期/时间）+ 第 8 token 起为名称
+    （保留内部空格）；时间列恒 HH:MM（toybox 无年份变体，容忍 HH:MM:SS）。
+    软链名称形如 `name -> target`。
+    """
+    line = line.rstrip("\r\n")
+    if not line or line.startswith("total "):
+        return None
+    parts = line.split(maxsplit=7)
+    if len(parts) < 8:
+        return None
+    permissions, _links, _owner, _group, size, date, time_, rest = parts
+    if not permissions or permissions[0] not in "-dl":
+        return None
+    is_dir = permissions[0] == "d"
+    is_symlink = permissions[0] == "l"
+    name, link_target = rest, None
+    if is_symlink:
+        head, sep, tail = rest.rpartition(" -> ")
+        if sep:
+            name, link_target = head, tail
+    mtime = f"{date} {time_}"
+    try:
+        size_int = int(size)
+    except ValueError:
+        size_int = 0
+    return FileEntry(
+        name=name,
+        is_dir=is_dir,
+        is_symlink=is_symlink,
+        size=size_int,
+        mtime=mtime,
+        permissions=permissions,
+        link_target=link_target,
+    )
+
+
 class AdbCliDriver:
     """
     基于子进程 CLI 调用的 ADB 驱动。
@@ -343,13 +385,17 @@ class AdbCliDriver:
         """ADB 可执行文件路径（运行时读取配置，热重载即时生效）。"""
         return settings().adb.path
 
-    async def _run(self, *args: str, timeout: int | None = None) -> str:
+    async def _run(
+        self, *args: str, timeout: int | None = None, decode_errors: str = "strict"
+    ) -> str:
         """
         执行 ADB 命令并返回 stdout。
 
         参数：
             *args: 命令参数（如 "devices"、"-s"、"serial"、"shell"、"ls"）。
             timeout: 覆盖配置中的默认超时（秒）。
+            decode_errors: stdout 解码错误策略（"strict" 默认；非 UTF-8
+                输出场景如设备文件名可传 "replace" 容错，方案 39）。
 
         返回：
             去除首尾空白的 stdout 字符串。
@@ -389,10 +435,14 @@ class AdbCliDriver:
             logger.error("adb_command_failed", cmd=cmd, returncode=proc.returncode, error=error_msg)
             raise AdbError(f"{_ADB_FAILED_PREFIX}{error_msg}")
 
-        return stdout.decode().strip()
+        return stdout.decode(errors=decode_errors).strip()
 
     async def _run_serial(
-        self, device_id: str, *args: str, timeout: int | None = None
+        self,
+        device_id: str,
+        *args: str,
+        timeout: int | None = None,
+        decode_errors: str = "strict",
     ) -> str:
         """
         执行针对特定设备的 ADB 命令。
@@ -403,11 +453,18 @@ class AdbCliDriver:
             device_id: ADB 序列号。
             *args: 设备选择器之后的命令参数。
             timeout: 覆盖配置中的默认超时（秒）。
+            decode_errors: stdout 解码错误策略（透传 _run，方案 39）。
 
         返回：
             去除首尾空白的 stdout 字符串。
         """
-        return await self._run("-s", device_id, *args, timeout=timeout)
+        # timeout 为 None 时不转发：由 _run 统一解析配置默认值，替身/间谍
+        # 因此不会收到冗余 timeout=None kwarg（方案 39 T1 契约测试口径）。
+        if timeout is None:
+            return await self._run("-s", device_id, *args, decode_errors=decode_errors)
+        return await self._run(
+            "-s", device_id, *args, timeout=timeout, decode_errors=decode_errors
+        )
 
     async def list_devices(self) -> list[str]:
         """
@@ -746,7 +803,9 @@ class AdbCliDriver:
             stderr_task.cancel()
             proc.kill()
 
-    async def push(self, device_id: str, local: str, remote: str) -> None:
+    async def push(
+        self, device_id: str, local: str, remote: str, timeout: int | None = None
+    ) -> None:
         """
         将文件从主机推送到设备。
 
@@ -754,10 +813,14 @@ class AdbCliDriver:
             device_id: ADB 序列号。
             local: 主机文件路径。
             remote: 设备文件路径。
+            timeout: 覆盖配置中的默认超时（秒）；大文件传输须显式传长
+                超时，否则默认 30s 会中断超过 30s 的推送（方案 39）。
         """
-        await self._run_serial(device_id, "push", local, remote)
+        await self._run_serial(device_id, "push", local, remote, timeout=timeout)
 
-    async def pull(self, device_id: str, remote: str, local: str) -> None:
+    async def pull(
+        self, device_id: str, remote: str, local: str, timeout: int | None = None
+    ) -> None:
         """
         将文件从设备拉到主机。
 
@@ -765,8 +828,87 @@ class AdbCliDriver:
             device_id: ADB 序列号。
             remote: 设备文件路径。
             local: 主机文件路径。
+            timeout: 覆盖配置中的默认超时（秒）；大文件传输须显式传长
+                超时，否则默认 30s 会中断超过 30s 的拉取（方案 39）。
         """
-        await self._run_serial(device_id, "pull", remote, local)
+        await self._run_serial(device_id, "pull", remote, local, timeout=timeout)
+
+    async def list_dir(self, device_id: str, path: str) -> list[FileEntry]:
+        """列目录（toybox ls -la）。
+
+        尾斜杠必需：无尾斜杠时 `/sdcard` 这类符号链接只回显链接行本身
+        （2026-10-12 实测），补 `/` 才列内容。非 UTF-8 文件名字节以
+        errors="replace" 容错（方案 39 §七已知限制）。
+
+        参数：
+            device_id: ADB 序列号。
+            path: 设备端目录路径（用户输入，经 shlex.quote 防注入）。
+
+        返回：
+            FileEntry 列表（total 行与不可解析行跳过）。
+
+        异常：
+            AdbError: 路径不存在/无权限（stderr 文本由调用方映射）。
+        """
+        target = path if path.endswith("/") else path + "/"
+        quoted = shlex.quote(target)
+        output = await self._run_serial(
+            device_id, "shell", f"ls -la {quoted}", decode_errors="replace"
+        )
+        entries = [_parse_ls_line(line) for line in output.split("\n")]
+        return [e for e in entries if e is not None]
+
+    async def stat_size(self, device_id: str, path: str) -> FileEntry:
+        """查询单条目（toybox ls -ld，不补尾斜杠——取条目本身）。
+
+        参数：
+            device_id: ADB 序列号。
+            path: 设备端路径（经 shlex.quote 防注入）。
+
+        返回：
+            首个可解析行的 FileEntry。
+
+        异常：
+            AdbError: 命令失败，或输出无一可解析行（视为条目不可读）。
+        """
+        quoted = shlex.quote(path)
+        output = await self._run_serial(
+            device_id, "shell", f"ls -ld {quoted}", decode_errors="replace"
+        )
+        for line in output.split("\n"):
+            entry = _parse_ls_line(line)
+            if entry is not None:
+                return entry
+        raise AdbError(f"stat unparsable for path: {path}")
+
+    async def rename_path(self, device_id: str, old: str, new: str) -> None:
+        """同目录重命名（shell mv，参数 shlex.quote）。
+
+        参数：
+            device_id: ADB 序列号。
+            old: 原路径。
+            new: 新路径。
+
+        异常：
+            AdbError: mv 失败（源不存在/目标已存在/权限，stderr 文本携带）。
+        """
+        await self._run_serial(
+            device_id, "shell", f"mv {shlex.quote(old)} {shlex.quote(new)}"
+        )
+
+    async def delete_path(self, device_id: str, path: str, is_dir: bool) -> None:
+        """删除（目录 rm -r / 文件与软链 rm -f——软链必须 rm -f 不递归目标）。
+
+        参数：
+            device_id: ADB 序列号。
+            path: 设备端路径（经 shlex.quote 防注入）。
+            is_dir: 是否目录（调用方以 list/stat 的 is_dir 且非软链判定）。
+
+        异常：
+            AdbError: rm 失败（不存在/权限，stderr 文本携带）。
+        """
+        cmd = "rm -r" if is_dir else "rm -f"
+        await self._run_serial(device_id, "shell", f"{cmd} {shlex.quote(path)}")
 
     async def install(self, device_id: str, apk_path: str) -> None:
         """
