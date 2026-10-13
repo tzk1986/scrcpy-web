@@ -13,6 +13,7 @@
 """
 
 import pytest
+import re
 
 from app.scrcpy.constants import (
     # Keycode
@@ -179,8 +180,19 @@ class TestScrcpyServerConfig:
     """scrcpy-server 配置测试"""
 
     def test_server_version(self):
-        """测试 server 版本号"""
-        assert SCRCPY_SERVER_VERSION == "4.1"
+        """版本号格式合法（升级不改本测试，方案 44 T1）。"""
+        assert re.fullmatch(r"\d+\.\d+(\.\d+)?", SCRCPY_SERVER_VERSION)
+
+    def test_server_version_single_source(self):
+        """constants 的版本与唯一分发点一致（方案 44 T1）。"""
+        import runpy
+        from pathlib import Path
+
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "backend" / "app" / "scrcpy" / "scrcpy_version.py"
+        )
+        assert runpy.run_path(str(path))["SCRCPY_SERVER_VERSION"] == SCRCPY_SERVER_VERSION
 
     def test_server_jar_name(self):
         """测试 server JAR 文件名"""

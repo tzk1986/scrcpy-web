@@ -7,6 +7,7 @@ Scrcpy 常量定义
 
 # EncoderOpts 以领域层定义为准（避免双份类型导致签名不兼容），此处仅重导出
 from app.domain.ports import EncoderOpts as EncoderOpts
+from .scrcpy_version import SCRCPY_SERVER_VERSION as SCRCPY_SERVER_VERSION
 
 # ---------------------------------------------------------------------------
 # Android Keycode（常用）
@@ -124,7 +125,7 @@ HIGH_QUALITY_ENCODER_OPTS = EncoderOpts(
 # scrcpy-server 配置
 # ---------------------------------------------------------------------------
 
-SCRCPY_SERVER_VERSION = "4.1"                           # scrcpy-server 版本（使用 v4.1 协议）
+# SCRCPY_SERVER_VERSION 见本文件顶部重导出（唯一分发点：scrcpy_version.py，方案 44 §1）
 SCRCPY_SERVER_JAR_NAME = "scrcpy-server.jar"            # server JAR 文件名
 SCRCPY_SERVER_REMOTE_PATH = "/data/local/tmp/scrcpy-server.jar"  # 设备上的路径
 

@@ -10,8 +10,8 @@ gitignore，无本脚本则换机/CI 无法构建）：
       来源：Google Android SDK Platform-Tools（r36.0.0，与本机真机验证
       环境 adb 1.0.41 / 36.0.0 一致），从 zip 内 platform-tools/ 提取
     - scrcpy-server.jar
-      来源：Genymobile/scrcpy GitHub Release v4.1（对齐
-      app/scrcpy/constants.py 的 SCRCPY_SERVER_VERSION = "4.1"）
+      来源：Genymobile/scrcpy GitHub Release（版本对齐
+      backend/app/scrcpy/scrcpy_version.py 唯一分发点）
 
 SHA256 锁定：清单内 sha256 非空时下载后强制比对，不匹配立即失败；
 升级版本时先运行 ``python scripts/fetch_tools.py --print-hash`` 拿到
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import runpy
 import sys
 import tempfile
 import urllib.request
@@ -35,10 +36,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+VERSION_FILE = REPO_ROOT / "backend" / "app" / "scrcpy" / "scrcpy_version.py"
+
+
+def _server_version() -> str:
+    """从版本唯一分发点读取（runpy：绕开 app 包导入链，见 scrcpy_version.py 注释）。"""
+    return str(runpy.run_path(str(VERSION_FILE))["SCRCPY_SERVER_VERSION"])
+
+
+SCRCPY_SERVER_VERSION = _server_version()
 TOOLS_DIR = REPO_ROOT / "tools"
 JAR_DIR = REPO_ROOT / "backend" / "app" / "scrcpy"
 PLATFORM_TOOLS_URL = "https://dl.google.com/android/repository/platform-tools_r36.0.0-win.zip"
-JAR_URL = "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-server-v4.1"
+JAR_URL = (
+    f"https://github.com/Genymobile/scrcpy/releases/download/"
+    f"v{SCRCPY_SERVER_VERSION}/scrcpy-server-v{SCRCPY_SERVER_VERSION}"
+)
 
 
 @dataclass(frozen=True)

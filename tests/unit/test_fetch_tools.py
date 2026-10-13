@@ -41,10 +41,19 @@ def test_manifest_hashes_are_locked():
         assert all(c in "0123456789abcdef" for c in e.sha256)
 
 
+def _single_source_version() -> str:
+    """版本唯一分发点读取（runpy 同机制，方案 44 T1）。"""
+    import runpy
+
+    path = Path(__file__).resolve().parents[2] / "backend" / "app" / "scrcpy" / "scrcpy_version.py"
+    return runpy.run_path(str(path))["SCRCPY_SERVER_VERSION"]
+
+
 def test_jar_url_aligns_server_version():
-    # 必须与 app/scrcpy/constants.py 的 SCRCPY_SERVER_VERSION = "4.1" 对齐
+    # URL 由 scrcpy_version.py 推导——升级只改一处分发点（方案 44 T1）
+    version = _single_source_version()
     jar = next(e for e in fetch_tools.TOOLS if e.name == "scrcpy-server.jar")
-    assert jar.url.endswith("/v4.1/scrcpy-server-v4.1")
+    assert jar.url.endswith(f"/v{version}/scrcpy-server-v{version}")
 
 
 def test_zip_entries_point_into_platform_tools_archive():
