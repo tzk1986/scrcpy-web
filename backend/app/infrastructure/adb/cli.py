@@ -376,6 +376,8 @@ class AdbCliDriver:
         # 防 "Task exception was never retrieved" 与自然结束后的孤儿表项。
         self._recording_tasks: dict[str, asyncio.Task[str]] = {}
         self._recording_paths: dict[str, str] = {}
+        # 录屏自然结束监听器（方案 42 §1，经 AdbDriver 协议由服务侧注册）
+        self._recording_natural_end_listener: Callable[[str], None] | None = None
         # 降档重入抑制（方案 37 B-Fix-2）：同 device 同一次 start 只降档一次。
         # start 入口 discard 重置，新一次启动重获降档资格。
         self._degraded_once: set[str] = set()
@@ -1176,6 +1178,12 @@ class AdbCliDriver:
         # 宽限内未结束：正常启动，后台继续录
         self._store_recording_task(device_id, remote_path, bit_rate, time_limit, task)
 
+    def set_recording_natural_end_listener(
+        self, listener: Callable[[str], None] | None
+    ) -> None:
+        """注册录屏自然结束监听器（见 AdbDriver 协议 docstring，方案 42 §1）。"""
+        self._recording_natural_end_listener = listener
+
     def _recording_done_callback(
         self, device_id: str, remote_path: str, bit_rate: str, time_limit: int
     ) -> Callable[[asyncio.Task[str]], None]:
@@ -1209,6 +1217,12 @@ class AdbCliDriver:
             # 「自然结束 → 用户/服务端再来取产物」不再白录。
             if self._recording_tasks.get(device_id) is t:
                 self._recording_tasks.pop(device_id, None)
+            # 方案 42 §1 + Ruling：正常终结（exc=None，含降档链路录满）且 paths
+            # 表项仍指向本 remote_path（未被新 start 覆盖、未被 stop 消费）→
+            # 通知服务侧自动收尾。异常终结（含引发降档的晚失败）一律不触发。
+            if exc is None and self._recording_paths.get(device_id) == remote_path:
+                if self._recording_natural_end_listener is not None:
+                    self._recording_natural_end_listener(device_id)
 
         return _cb
 

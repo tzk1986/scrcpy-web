@@ -12,6 +12,7 @@
     3. 设备端产物拉取与即清（收尾末端对会话自身 remote_path 兜底 rm）
     4. 主机落盘目录时间/容量双限（mtime 超 retention_days / 总字节超 max_total_mb）
     5. 超期会话自愈收尾（周期 cleanup task 全表巡检）
+    6. 自然结束自动收尾（方案 42 §1：cli 监听器 → 复用 stop 路径拉回产物）
 
 依赖（通过 Protocol 注入）：
     - AdbDriver：start_recording / stop_recording / pull_recording / rm_remote
@@ -67,6 +68,10 @@ class RecordingService:
         self.sessions: dict[str, RecordingSession] = {}
         # 周期清理任务（lifespan 启动/停止）
         self.cleanup_task: asyncio.Task[None] | None = None
+        # 自动收尾协程引用集：防事件循环 GC 中途回收 pending 任务（asyncio 官方告诫）
+        self._finalize_tasks: set[asyncio.Task[None]] = set()
+        # 自然结束 → 自动收尾监听器（方案 42 §1，依赖倒置注册，协议见 AdbDriver）
+        adb.set_recording_natural_end_listener(self._on_recording_natural_end)
 
     # -------------------------------------------------------------------
     # 会话生命周期
@@ -188,6 +193,43 @@ class RecordingService:
         session.local_path = local_path
         session.state = RecordingState.DONE.value
         return session
+
+    # -------------------------------------------------------------------
+    # 自然结束自动收尾（方案 42 §1）
+    # -------------------------------------------------------------------
+
+    def _on_recording_natural_end(self, device_id: str) -> None:
+        """
+        cli 自然结束监听器（事件循环线程内同步回调）：会话仍 recording 才调度
+        收尾协程；非 recording（用户已手动 stop / 无会话）no-op。
+        """
+        session = self.sessions.get(device_id)
+        if session is None or session.state != RecordingState.RECORDING.value:
+            return
+        task = asyncio.create_task(self._auto_finalize(device_id, session.id))
+        self._finalize_tasks.add(task)
+        task.add_done_callback(self._finalize_tasks.discard)
+
+    async def _auto_finalize(self, device_id: str, session_id: str) -> None:
+        """
+        自然结束自动收尾：等效系统代为执行一次 stop（复用五态机 pull→done）。
+
+        执行时二次守卫（会话 id 匹配且仍 recording）——防协程排队期间会话
+        被手动 stop 收尾并被新 start 覆盖后误停新段（Review Focus ②）。
+        收尾自身异常不冒泡（stopping/pulling 悬挂由方案 42 §2 自愈兜底）。
+        """
+        session = self.sessions.get(device_id)
+        if (
+            session is None
+            or session.id != session_id
+            or session.state != RecordingState.RECORDING.value
+        ):
+            return
+        logger.info("recording_natural_end_finalize", session=session_id, device=device_id)
+        try:
+            await self.stop(device_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("recording_auto_finalize_failed", device=device_id)
 
     def get(self, device_id: str) -> RecordingSession | None:
         """

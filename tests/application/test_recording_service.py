@@ -11,8 +11,10 @@
     - 设备端产物兜底清理（会话自身 remote_path 的 pull 与 rm）
     - 主机落盘目录时间/容量双限（_enforce_limits）
     - 超期会话自愈收尾（_self_heal）
+    - 自然结束监听器自动收尾（方案 42 §1）
 """
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -43,6 +45,7 @@ def mock_adb():
     adb.stop_recording = AsyncMock(return_value="/sdcard/openscrcpy_rec_x.mp4")
     adb.pull_recording = AsyncMock(return_value="data/recordings/x.mp4")
     adb.rm_remote = AsyncMock()
+    adb.set_recording_natural_end_listener = MagicMock()  # 同步注册点（方案 42 §1）
     return adb
 
 
@@ -213,3 +216,71 @@ async def test_self_heal_stops_stale_recording(service, mock_adb):
     assert stale.state in (RecordingState.DONE.value, RecordingState.FAILED.value)
     assert fresh.state == RecordingState.RECORDING.value
     mock_adb.stop_recording.assert_called_once_with("d1")
+
+
+# ---------------------------------------------------------------------------
+# 自然结束自动收尾（方案 42 §1）
+# ---------------------------------------------------------------------------
+
+def _registered_listener(mock_adb):
+    """取 RecordingService 构造时经依赖倒置通道注册的自然结束监听器。"""
+    mock_adb.set_recording_natural_end_listener.assert_called_once()
+    return mock_adb.set_recording_natural_end_listener.call_args[0][0]
+
+
+async def test_init_registers_natural_end_listener(service, mock_adb):
+    listener = _registered_listener(mock_adb)
+    assert listener == service._on_recording_natural_end
+
+
+async def test_natural_end_auto_finalizes(service, mock_adb, tmp_path):
+    """监听器 → 自动 stop 收尾（pull→done）——等效系统代为执行了一次停止。"""
+    s = await service.start("d1")
+    listener = _registered_listener(mock_adb)
+    mock_adb.stop_recording.return_value = s.remote_path
+    mock_adb.pull_recording.return_value = str(tmp_path / "rec.mp4")
+    listener("d1")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert s.state == RecordingState.DONE.value
+    assert s.local_path == str(tmp_path / "rec.mp4")
+    mock_adb.stop_recording.assert_called_once_with("d1")
+    mock_adb.pull_recording.assert_called_once_with("d1", s.remote_path, str(tmp_path))
+    mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
+
+
+async def test_natural_end_pull_failure_converges_failed(service, mock_adb):
+    """Review Focus ①：自然结束时设备离线（pull None）→ 收敛 failed，不悬挂不冒泡。"""
+    s = await service.start("d1")
+    listener = _registered_listener(mock_adb)
+    mock_adb.pull_recording.return_value = None
+    listener("d1")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert s.state == RecordingState.FAILED.value
+    mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
+
+
+async def test_natural_end_guard_noop_when_not_recording(service, mock_adb):
+    """守卫一：无会话 / 会话已非 recording（用户已手动停止推进）→ no-op。"""
+    listener = _registered_listener(mock_adb)
+    listener("ghost")
+    s = await service.start("d1")
+    s.state = RecordingState.STOPPING.value
+    listener("d1")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    mock_adb.stop_recording.assert_not_called()
+
+
+async def test_auto_finalize_guard_noop_on_replaced_session(service, mock_adb):
+    """Review Focus ②：收尾协程 id 失配（会话被新 start 覆盖）→ no-op，不误停新段。"""
+    s_a = await service.start("d1")
+    await service.stop("d1")
+    mock_adb.stop_recording.reset_mock()
+    s_b = await service.start("d1")
+    await service._auto_finalize("d1", s_a.id)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert s_b.state == RecordingState.RECORDING.value
+    mock_adb.stop_recording.assert_not_called()

@@ -557,6 +557,18 @@ class AdbDriver(Protocol):
         """
         ...
 
+    def set_recording_natural_end_listener(
+        self, listener: Callable[[str], None] | None
+    ) -> None:
+        """
+        注册录屏自然结束监听器（方案 42 §1，依赖倒置：cli 不 import application）。
+
+        设备端 screenrecord 后台任务正常终结（--time-limit 录满，降档链路的
+        终结同样计入；异常终结不触发）时，以 device_id 为参在事件循环线程内
+        同步调用监听器；监听器自行调度收尾。传 None 注销。
+        """
+        ...
+
     async def get_runtime_info(self, device_id: str) -> RuntimeInfo:
         """
         查询设备应用运行时状态（方案 37 C2）。

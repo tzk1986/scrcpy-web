@@ -296,3 +296,68 @@ async def test_stop_after_natural_end_file_missing_returns_empty(monkeypatch):
     await asyncio.sleep(0.05)
     assert await d.stop_recording("d") == ""
     assert ("d", "shell", "ls", "-ld", "/sdcard/r.mp4") in calls
+
+
+# ---------------------------------------------------------------------------
+# 方案 42 §1：自然结束监听器触发（cli 侧）
+# ---------------------------------------------------------------------------
+
+async def test_natural_end_fires_registered_listener(monkeypatch):
+    """任务正常终结且 paths 表项仍指向本 remote_path → 监听器收到 device_id 恰一次。"""
+    monkeypatch.setattr(cli_module, "_START_GRACE_ITERATIONS", 5)
+    monkeypatch.setattr(cli_module, "_START_GRACE_INTERVAL", 0.01)
+
+    async def fake_run(adr, *args, timeout=None):
+        return ""
+
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    fired: list[str] = []
+    d.set_recording_natural_end_listener(fired.append)
+    await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    await asyncio.sleep(0.05)
+    assert fired == ["d"]
+
+
+async def test_error_exit_does_not_fire_listener_degrade_then_end_fires(monkeypatch):
+    """Ruling 钉桩：异常终结（降档引发）不触发；降档任务链录满后恰好触发一次。"""
+    monkeypatch.setattr(cli_module, "_START_GRACE_ITERATIONS", 5)
+    monkeypatch.setattr(cli_module, "_START_GRACE_INTERVAL", 0.01)
+    calls = []
+
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        if "--size" not in args:
+            await asyncio.sleep(0.3)  # 晚失败：宽限窗外 start 已存表
+            raise AdbError("ADB command failed: Unable to get output buffers (err=-38)")
+        return ""  # 降档任务正常终结（录满）
+
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    fired: list[str] = []
+    d.set_recording_natural_end_listener(fired.append)
+    await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    for _ in range(300):
+        if fired:
+            break
+        await asyncio.sleep(0.01)
+    assert fired == ["d"], "降档链自然结束应触发监听器（.25 常态路径不白录）"
+    await asyncio.sleep(0.05)
+    assert fired == ["d"]  # 首任务异常终结与后续回调均不再二次触发
+
+
+async def test_listener_suppressed_when_path_overwritten():
+    """守卫：任务正常终结但 paths 已被新 start 覆盖（表项指向他路径）→ 不触发。"""
+    async def _done() -> str:
+        return ""
+
+    d = AdbCliDriver()
+    fired: list[str] = []
+    d.set_recording_natural_end_listener(fired.append)
+    t: asyncio.Task[str] = asyncio.create_task(_done())
+    await t
+    d._recording_tasks["d"] = t
+    d._recording_paths["d"] = "/sdcard/other.mp4"  # 模拟新 start 已覆盖
+    cb = d._recording_done_callback("d", "/sdcard/a.mp4", "4M", 60)
+    cb(t)
+    assert fired == []
