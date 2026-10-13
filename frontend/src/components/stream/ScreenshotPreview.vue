@@ -2,8 +2,9 @@
   截图标注面板（方案 37 B7）
   ==========================
 
-  截图预览弹窗：显示截图（视频流抓帧或设备端截图），支持画笔/箭头/矩形/文字
-  叠加标注，可导出标注后的 PNG 或直接保存原图。
+  截图预览弹窗：显示截图（视频流抓帧或设备端截图），支持画笔/箭头/矩形/椭圆/
+  荧光笔/文字/序号/马赛克 8 种叠加标注（渲染由 annotationModel.drawCmd 承载），
+  可导出标注后的 PNG 或直接保存原图。
 
   入参（props）：
     - visible: 弹窗可见性（父组件控制，关闭经 close 事件回传）
@@ -17,6 +18,9 @@
     - 文字工具：工具栏展开行内输入框 + 「确认」，确认后点击画布放置文字
       （方案裁决 4：不用 window.prompt，避免组件测试非确定性）；
       待放置时悬停画布显示半透明 ghost 预览，点击才落字
+    - 序号工具：点击画布立即落编号气泡（编号 = 现有最大序号 +1，删除中间不重号）
+    - 马赛克：拖拽出区域（两轴各 ≥2px 才提交），拖拽中显示虚线矩形轮廓，
+      提交后以块状马赛克覆盖（底图未就绪时静默不画）；无颜色参数（参数行隐藏色板）
     - 命中编辑：点击已放置标注 → 选中（虚线框）并进入移动（拖动实时平移）；
       Delete/Backspace 删除选中；双击文字 → 原地二次编辑（确认不发新命令）；
       Escape 退出编辑/取消选中；命中检测走 toCanvasPoint 比例换算坐标
@@ -42,7 +46,7 @@
   >
     <div class="screenshot-preview">
       <div class="toolbar">
-        <!-- 工具组 -->
+        <!-- 工具组（顺序与 TOOL_KEYS 表一致：数字键 1-8 对应） -->
         <el-button class="tool tool-pen" :class="{ 'tool-active': tool === 'pen' }" @click="tool = 'pen'">
           画笔
         </el-button>
@@ -52,8 +56,24 @@
         <el-button class="tool tool-rect" :class="{ 'tool-active': tool === 'rect' }" @click="tool = 'rect'">
           矩形
         </el-button>
+        <el-button class="tool tool-ellipse" :class="{ 'tool-active': tool === 'ellipse' }" @click="tool = 'ellipse'">
+          椭圆
+        </el-button>
+        <el-button
+          class="tool tool-highlight"
+          :class="{ 'tool-active': tool === 'highlight' }"
+          @click="tool = 'highlight'"
+        >
+          荧光笔
+        </el-button>
         <el-button class="tool tool-text" :class="{ 'tool-active': tool === 'text' }" @click="tool = 'text'">
           文字
+        </el-button>
+        <el-button class="tool tool-number" :class="{ 'tool-active': tool === 'number' }" @click="tool = 'number'">
+          序号
+        </el-button>
+        <el-button class="tool tool-mosaic" :class="{ 'tool-active': tool === 'mosaic' }" @click="tool = 'mosaic'">
+          马赛克
         </el-button>
         <span class="toolbar-sep" aria-hidden="true" />
         <!-- 操作组（T5 在此组内加「复制」按钮） -->
@@ -66,21 +86,23 @@
         <el-button class="btn-export" type="primary" @click="exportPng">导出 PNG</el-button>
       </div>
 
-      <!-- 参数行：预设色板 + 自定义色 + 线宽/字号滑块（按当前工具显隐） -->
+      <!-- 参数行：预设色板 + 自定义色 + 线宽/字号滑块（按当前工具显隐；马赛克无颜色参数） -->
       <div class="param-row">
-        <button
-          v-for="preset in PRESET_COLORS"
-          :key="preset"
-          type="button"
-          class="color-swatch"
-          :class="{ 'swatch-active': strokeColor === preset }"
-          :style="{ background: preset }"
-          :title="`标注颜色 ${preset}`"
-          @click="strokeColor = preset"
-        />
-        <label class="color-picker" title="自定义标注颜色">
-          <input v-model="strokeColor" type="color" class="color-input" />
-        </label>
+        <template v-if="showColorPicker">
+          <button
+            v-for="preset in PRESET_COLORS"
+            :key="preset"
+            type="button"
+            class="color-swatch"
+            :class="{ 'swatch-active': strokeColor === preset }"
+            :style="{ background: preset }"
+            :title="`标注颜色 ${preset}`"
+            @click="strokeColor = preset"
+          />
+          <label class="color-picker" title="自定义标注颜色">
+            <input v-model="strokeColor" type="color" class="color-input" />
+          </label>
+        </template>
         <template v-if="showLineSlider">
           <input
             type="range"
@@ -146,9 +168,9 @@ import {
   LINE_RATIO_MIN,
   TOOL_KEYS,
   cmdBBox,
-  fontPx,
+  drawCmd,
   hitTest,
-  linePx,
+  nextNumberIndex,
   translateCmd,
   type AnnotationCmd,
   type Point,
@@ -166,19 +188,19 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-/** 拖拽中的未提交形状（本轮仅画笔/箭头/矩形走拖拽路径）。 */
+/** 拖拽中的未提交形状（画笔/箭头/矩形/椭圆/荧光笔/马赛克走拖拽路径）。 */
 interface DragState {
-  tool: 'pen' | 'arrow' | 'rect'
+  tool: 'pen' | 'arrow' | 'rect' | 'ellipse' | 'highlight' | 'mosaic'
   start: Point
   current: Point
-  /** 画笔轨迹点（含起点）。 */
+  /** 画笔/荧光笔轨迹点（含起点）。 */
   points: Point[]
 }
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
 const tool = ref<Tool>('pen')
-/** 标注颜色（画笔/箭头/矩形边框/文字共用）。 */
+/** 标注颜色（画笔/箭头/矩形/椭圆/荧光笔/文字/序号共用；马赛克无颜色参数）。 */
 const strokeColor = ref('#ff3b30')
 /** 已提交命令栈。 */
 const commands = ref<AnnotationCmd[]>([])
@@ -207,11 +229,13 @@ const canvasWidth = ref(0)
 /** 预设色板（红/橙/黄/绿/蓝/黑）。 */
 const PRESET_COLORS = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#000000'] as const
 
-/** 参数行滑块显隐分组（T4 引入新工具时把对应工具补进相应表）。 */
-const FONT_TOOLS: readonly Tool[] = ['text']
-const LINE_TOOLS: readonly Tool[] = ['pen', 'arrow', 'rect']
+/** 参数行滑块显隐分组（全 stroke 拖动类工具共用线宽；文字/序号共用字号）。 */
+const FONT_TOOLS: readonly Tool[] = ['text', 'number']
+const LINE_TOOLS: readonly Tool[] = ['pen', 'arrow', 'rect', 'ellipse', 'highlight', 'mosaic']
 const showFontSlider = computed(() => FONT_TOOLS.includes(tool.value))
 const showLineSlider = computed(() => LINE_TOOLS.includes(tool.value))
+/** 马赛克无颜色参数：色板与自定义色隐藏。 */
+const showColorPicker = computed(() => tool.value !== 'mosaic')
 
 /** 基础截图（object URL 加载得到的图片元素）。 */
 const baseImage = ref<HTMLImageElement | null>(null)
@@ -337,67 +361,7 @@ function measureText(text: string, px: number): number {
   return ctx.measureText(text).width
 }
 
-/** 箭头头部两翼（头长 = 线宽像素 ×3.5、±30° 张角；默认 4px 线宽 → 14px，与原固定值一致）。 */
-function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point, headLength: number) {
-  const angle = Math.atan2(to.y - from.y, to.x - from.x)
-  ctx.beginPath()
-  ctx.moveTo(to.x, to.y)
-  ctx.lineTo(
-    to.x - headLength * Math.cos(angle - Math.PI / 6),
-    to.y - headLength * Math.sin(angle - Math.PI / 6),
-  )
-  ctx.moveTo(to.x, to.y)
-  ctx.lineTo(
-    to.x - headLength * Math.cos(angle + Math.PI / 6),
-    to.y - headLength * Math.sin(angle + Math.PI / 6),
-  )
-  ctx.stroke()
-}
-
-/** 单条标注命令渲染（线宽/字号为比例值，按 canvasWidth 换算像素——显示与导出同源）。 */
-function drawCmd(ctx: CanvasRenderingContext2D, cmd: AnnotationCmd, canvasWidth: number) {
-  switch (cmd.kind) {
-    case 'pen': {
-      ctx.strokeStyle = cmd.color
-      ctx.lineWidth = linePx(cmd.lineWidth, canvasWidth)
-      ctx.lineCap = 'round'
-      ctx.beginPath()
-      ctx.moveTo(cmd.points[0].x, cmd.points[0].y)
-      for (const point of cmd.points.slice(1)) ctx.lineTo(point.x, point.y)
-      ctx.stroke()
-      break
-    }
-    case 'arrow': {
-      const strokePx = linePx(cmd.lineWidth, canvasWidth)
-      ctx.strokeStyle = cmd.color
-      ctx.lineWidth = strokePx
-      ctx.lineCap = 'round'
-      ctx.beginPath()
-      ctx.moveTo(cmd.from.x, cmd.from.y)
-      ctx.lineTo(cmd.to.x, cmd.to.y)
-      ctx.stroke()
-      drawArrowHead(ctx, cmd.from, cmd.to, strokePx * 3.5)
-      break
-    }
-    case 'rect': {
-      ctx.strokeStyle = cmd.color
-      ctx.lineWidth = linePx(cmd.lineWidth, canvasWidth)
-      ctx.strokeRect(
-        Math.min(cmd.from.x, cmd.to.x),
-        Math.min(cmd.from.y, cmd.to.y),
-        Math.abs(cmd.to.x - cmd.from.x),
-        Math.abs(cmd.to.y - cmd.from.y),
-      )
-      break
-    }
-    case 'text': {
-      ctx.fillStyle = cmd.color
-      ctx.font = `${fontPx(cmd.fontSize, canvasWidth)}px sans-serif`
-      ctx.fillText(cmd.text, cmd.at.x, cmd.at.y)
-      break
-    }
-  }
-}
+/** 单条标注命令渲染由 annotationModel.drawCmd 承载（T4 迁出，含 mosaic 底图参数）。 */
 
 /** 全量重绘：清屏 → 底图 → 命令栈回放 → 拖拽预览 → ghost 预览 → 选中虚线框。 */
 function redraw() {
@@ -408,7 +372,7 @@ function redraw() {
   const canvasWidth = canvas.width
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   if (baseImage.value) ctx.drawImage(baseImage.value, 0, 0, canvas.width, canvas.height)
-  for (const cmd of commands.value) drawCmd(ctx, cmd, canvasWidth)
+  for (const cmd of commands.value) drawCmd(ctx, cmd, canvasWidth, baseImage.value)
   const d = drag.value
   if (d) {
     if (d.tool === 'pen') {
@@ -421,18 +385,53 @@ function redraw() {
           lineWidth: lineRatio.value,
         },
         canvasWidth,
+        baseImage.value,
+      )
+    } else if (d.tool === 'highlight') {
+      drawCmd(
+        ctx,
+        {
+          kind: 'highlight',
+          points: d.points.length ? d.points : [d.current],
+          color: strokeColor.value,
+          lineWidth: lineRatio.value,
+        },
+        canvasWidth,
+        baseImage.value,
       )
     } else if (d.tool === 'arrow') {
       drawCmd(
         ctx,
         { kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
         canvasWidth,
+        baseImage.value,
       )
+    } else if (d.tool === 'ellipse') {
+      drawCmd(
+        ctx,
+        { kind: 'ellipse', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
+        canvasWidth,
+        baseImage.value,
+      )
+    } else if (d.tool === 'mosaic') {
+      // 马赛克拖拽预览：虚线矩形轮廓（松手提交后重绘才显示真实马赛克）
+      ctx.save()
+      ctx.setLineDash([4, 4])
+      ctx.strokeStyle = '#606266'
+      ctx.lineWidth = 1
+      ctx.strokeRect(
+        Math.min(d.start.x, d.current.x),
+        Math.min(d.start.y, d.current.y),
+        Math.abs(d.current.x - d.start.x),
+        Math.abs(d.current.y - d.start.y),
+      )
+      ctx.restore()
     } else {
       drawCmd(
         ctx,
         { kind: 'rect', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
         canvasWidth,
+        baseImage.value,
       )
     }
   }
@@ -445,6 +444,7 @@ function redraw() {
       ctx,
       { kind: 'text', at: hover, text: confirmedText.value, color: strokeColor.value, fontSize: fontRatio.value },
       canvasWidth,
+      baseImage.value,
     )
     ctx.restore()
   }
@@ -503,8 +503,29 @@ function onPointerDown(e: PointerEvent) {
     redraw()
     return
   }
-  // 本轮仅画笔/箭头/矩形走拖拽路径（椭圆等新工具后续任务引入后再扩）
-  if (active !== 'pen' && active !== 'arrow' && active !== 'rect') return
+  if (active === 'number') {
+    // 序号工具：点击立即落字（编号 = 现有最大序号 +1，删除中间不重号）
+    pushCmd({
+      kind: 'number',
+      at: point,
+      index: nextNumberIndex(commands.value),
+      color: strokeColor.value,
+      fontSize: fontRatio.value,
+    })
+    redraw()
+    return
+  }
+  // 全 stroke 拖动类工具走拖拽路径（pen/arrow/rect/ellipse/highlight/mosaic）
+  if (
+    active !== 'pen' &&
+    active !== 'arrow' &&
+    active !== 'rect' &&
+    active !== 'ellipse' &&
+    active !== 'highlight' &&
+    active !== 'mosaic'
+  ) {
+    return
+  }
   drag.value = { tool: active, start: point, current: point, points: [point] }
   redraw()
 }
@@ -525,7 +546,7 @@ function onPointerMove(e: PointerEvent) {
   const d = drag.value
   if (d) {
     d.current = point
-    if (d.tool === 'pen') d.points.push(point)
+    if (d.tool === 'pen' || d.tool === 'highlight') d.points.push(point)
     redraw()
     return
   }
@@ -539,15 +560,33 @@ function onPointerUp() {
   const d = drag.value
   drag.value = null
   if (!d) return
-  // 位移过小的拖拽视为误触不提交（避免噪点/零宽矩形）
+  // 位移过小的拖拽视为误触不提交（避免噪点/零宽图形；马赛克要求两轴各 ≥2px）
   if (d.tool === 'pen') {
     if (d.points.length >= 2 && dist(d.points[0], d.current) >= 2) {
       pushCmd({ kind: 'pen', points: [...d.points], color: strokeColor.value, lineWidth: lineRatio.value })
+    }
+  } else if (d.tool === 'highlight') {
+    if (d.points.length >= 2 && dist(d.points[0], d.current) >= 2) {
+      pushCmd({ kind: 'highlight', points: [...d.points], color: strokeColor.value, lineWidth: lineRatio.value })
     }
   } else if (d.tool === 'arrow') {
     if (dist(d.start, d.current) >= 2) {
       pushCmd({
         kind: 'arrow',
+        from: d.start,
+        to: d.current,
+        color: strokeColor.value,
+        lineWidth: lineRatio.value,
+      })
+    }
+  } else if (d.tool === 'mosaic') {
+    if (Math.abs(d.current.x - d.start.x) >= 2 && Math.abs(d.current.y - d.start.y) >= 2) {
+      pushCmd({ kind: 'mosaic', from: d.start, to: d.current, lineWidth: lineRatio.value })
+    }
+  } else if (d.tool === 'ellipse') {
+    if (Math.abs(d.current.x - d.start.x) >= 2 || Math.abs(d.current.y - d.start.y) >= 2) {
+      pushCmd({
+        kind: 'ellipse',
         from: d.start,
         to: d.current,
         color: strokeColor.value,

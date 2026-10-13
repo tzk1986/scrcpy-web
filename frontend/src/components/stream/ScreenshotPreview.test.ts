@@ -11,6 +11,8 @@
  *   - 参数化与双栈：命令存字号/线宽比例参数（渲染 ×图宽换算）；undo→redo 恢复、落新命令清 redo
  *   - 参数组与快捷键：滑块/滚轮调字号线宽（钳制）、滑块显隐、数字键切工具、Ctrl+Z/Ctrl+Shift+Z
  *     （window 监听；输入框聚焦时数字键不劫持）
+ *   - 新工具（T4）：椭圆（ctx.ellipse）/ 荧光笔（alpha 0.35）/ 序号（点击落字递增编号）/
+ *     马赛克（拖拽提交无 color、重绘离屏缩-放 drawImage≥2、预览虚线框、两轴 ≥2px 守卫）
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
  *
@@ -31,6 +33,8 @@ function createRecordingCtx() {
   const fillTextLog: unknown[][] = []
   const fontLog: string[] = []
   const alphaLog: number[] = []
+  const dashLog: unknown[][] = []
+  const smoothLog: boolean[] = []
   const record = (name: string) => () => {
     calls.push(name)
   }
@@ -39,6 +43,8 @@ function createRecordingCtx() {
     fillTextLog,
     fontLog,
     alphaLog,
+    dashLog,
+    smoothLog,
     clearRect: record('clearRect'),
     drawImage: record('drawImage'),
     beginPath: record('beginPath'),
@@ -49,7 +55,10 @@ function createRecordingCtx() {
     ellipse: record('ellipse'),
     arc: record('arc'),
     fill: record('fill'),
-    setLineDash: record('setLineDash'),
+    setLineDash: (dash: unknown[]) => {
+      calls.push('setLineDash')
+      dashLog.push(dash)
+    },
     save: record('save'),
     restore: record('restore'),
     measureText: (t: unknown) => ({ width: String(t).length * 12 }),
@@ -67,7 +76,9 @@ function createRecordingCtx() {
     set globalAlpha(v: number) {
       alphaLog.push(v)
     },
-    set imageSmoothingEnabled(_v: boolean) {},
+    set imageSmoothingEnabled(v: boolean) {
+      smoothLog.push(v)
+    },
     set textAlign(_v: CanvasTextAlign) {},
     set textBaseline(_v: CanvasTextBaseline) {},
   }
@@ -209,6 +220,8 @@ beforeEach(() => {
   fakeCtx.fillTextLog.length = 0
   fakeCtx.fontLog.length = 0
   fakeCtx.alphaLog.length = 0
+  fakeCtx.dashLog.length = 0
+  fakeCtx.smoothLog.length = 0
   vi.stubGlobal('Image', FakeImage)
   getContextMock
     .mockReset()
@@ -250,7 +263,10 @@ describe('ScreenshotPreview 渲染', () => {
 
     const labels = wrapper.findAll('button').map((b) => b.text())
     expect(labels).toEqual(
-      expect.arrayContaining(['画笔', '箭头', '矩形', '文字', '撤销', '清空', '直接保存', '导出 PNG'])
+      expect.arrayContaining([
+        '画笔', '箭头', '矩形', '椭圆', '荧光笔', '文字', '序号', '马赛克',
+        '撤销', '清空', '直接保存', '导出 PNG',
+      ])
     )
     // 文字工具行内输入区仅在选中文字工具时展开
     expect(wrapper.find('.text-tool-row').exists()).toBe(false)
@@ -674,14 +690,15 @@ describe('ScreenshotPreview 参数组与快捷键', () => {
     expect(wrapper.find('.tool-pen').classes()).toContain('tool-active')
     expect(wrapper.find('.tool-rect').classes()).not.toContain('tool-active')
 
-    // 4 → TOOL_KEYS[3]（椭圆，按钮 T4 才加入工具栏）：本轮切换后无可见按钮高亮
+    // 4 → TOOL_KEYS[3]（椭圆）：T4 后椭圆按钮已入工具栏并高亮
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '4' }))
     await nextTick()
+    expect(wrapper.find('.tool-ellipse').classes()).toContain('tool-active')
     expect(wrapper.find('.tool-pen').classes()).not.toContain('tool-active')
     expect(wrapper.find('.tool-arrow').classes()).not.toContain('tool-active')
     expect(wrapper.find('.tool-rect').classes()).not.toContain('tool-active')
 
-    // 6 → TOOL_KEYS[5]（文字）：表序驱动，T4 补钮后 1-8 与工具栏全对齐
+    // 6 → TOOL_KEYS[5]（文字）：表序驱动，1-8 与工具栏全对齐
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '6' }))
     await nextTick()
     expect(wrapper.find('.tool-text').classes()).toContain('tool-active')
@@ -875,5 +892,178 @@ describe('ScreenshotPreview 选中与编辑', () => {
     expect(selectedIdx(wrapper)).toBeNull()
     await canvas.trigger('pointerup')
     expect(commandCount(wrapper)).toBe(1)
+  })
+})
+
+describe('ScreenshotPreview 新工具（T4）', () => {
+  it('工具栏含椭圆/荧光笔/序号/马赛克按钮（表序位置），点击后选中高亮', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    const cases = [
+      ['.tool-ellipse', '椭圆'],
+      ['.tool-highlight', '荧光笔'],
+      ['.tool-number', '序号'],
+      ['.tool-mosaic', '马赛克'],
+    ] as const
+    for (const [cls, label] of cases) {
+      const btn = wrapper.find(cls)
+      expect(btn.exists()).toBe(true)
+      expect(btn.text()).toBe(label)
+      await btn.trigger('click')
+      expect(wrapper.find(cls).classes()).toContain('tool-active')
+    }
+    // 最后点击马赛克：其余工具失活
+    expect(wrapper.find('.tool-pen').classes()).not.toContain('tool-active')
+    expect(wrapper.find('.tool-text').classes()).not.toContain('tool-active')
+  })
+
+  it('数字键 4/5/7/8 切新工具（椭圆/荧光笔/序号/马赛克，按 TOOL_KEYS 表序）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    const cases = [
+      ['4', '.tool-ellipse'],
+      ['5', '.tool-highlight'],
+      ['7', '.tool-number'],
+      ['8', '.tool-mosaic'],
+    ] as const
+    for (const [key, cls] of cases) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key }))
+      await nextTick()
+      expect(wrapper.find(cls).classes()).toContain('tool-active')
+    }
+  })
+
+  it('椭圆拖拽提交：ctx.ellipse 绘制轮廓 + 命令入栈（携带线宽比例）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-ellipse')
+
+    expect(fakeCtx.calls).toContain('ellipse') // pointerup 重绘（提交回放）已记 ellipse
+    expect(commandCount(wrapper)).toBe(1)
+    expect(commandList(wrapper)[0].kind).toBe('ellipse')
+    expect(commandList(wrapper)[0].lineWidth).toBe(0.0035)
+  })
+
+  it('荧光笔提交：重绘含 save/restore 与 globalAlpha 0.35（半透明语义）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-highlight')
+    expect(commandCount(wrapper)).toBe(1)
+    expect(commandList(wrapper)[0].kind).toBe('highlight')
+
+    // 清记录后触发一次回放重绘（无拖拽的 hover move），验证提交命令的渲染语义
+    fakeCtx.calls.length = 0
+    fakeCtx.alphaLog.length = 0
+    await wrapper.find('canvas').trigger('pointermove', { clientX: 30, clientY: 30 })
+    await nextTick()
+
+    expect(fakeCtx.calls).toContain('save')
+    expect(fakeCtx.calls).toContain('restore')
+    expect(fakeCtx.calls).toContain('stroke')
+    expect(fakeCtx.alphaLog).toContain(0.35)
+  })
+
+  it('序号工具：点击立即落字，两次点击序号依次 1/2（携带字号比例与当前色）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-number').trigger('click')
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 50, clientY: 30 }) // 画布 (100,60)
+    await nextTick()
+    await canvas.trigger('pointerdown', { clientX: 100, clientY: 100 }) // 画布 (200,200)
+    await nextTick()
+
+    const cmds = commandList(wrapper)
+    expect(cmds).toHaveLength(2)
+    expect((cmds[0] as unknown as { index: number }).index).toBe(1)
+    expect((cmds[1] as unknown as { index: number }).index).toBe(2)
+    expect(cmds[0].fontSize).toBe(0.045)
+    expect((cmds[0] as unknown as { color: string }).color).toBe('#ff3b30')
+    // 实心圆 + 序号填充字
+    expect(fakeCtx.calls).toContain('arc')
+    expect(fakeCtx.calls).toContain('fill')
+    expect(fakeCtx.fillTextLog.some((a) => a[0] === '1')).toBe(true)
+    expect(fakeCtx.fillTextLog.some((a) => a[0] === '2')).toBe(true)
+  })
+
+  it('马赛克拖拽提交：命令无 color；提交后重绘离屏缩-放（drawImage ≥ 2、关闭平滑）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-mosaic')
+
+    expect(commandCount(wrapper)).toBe(1)
+    const cmd = commandList(wrapper)[0] as unknown as { kind: string; lineWidth: number; color?: string }
+    expect(cmd.kind).toBe('mosaic')
+    expect(cmd.lineWidth).toBe(0.0035)
+    expect(cmd.color).toBeUndefined()
+    // pointerup 重绘：底图 1 次 + 离屏缩小 1 次 + 贴回 1 次
+    expect(fakeCtx.calls.filter((c) => c === 'drawImage').length).toBeGreaterThanOrEqual(2)
+    expect(fakeCtx.smoothLog).toContain(false)
+  })
+
+  it('马赛克拖拽预览：虚线矩形轮廓（setLineDash[4,4]），未松手不画真马赛克', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-mosaic').trigger('click')
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 10, clientY: 10 })
+    fakeCtx.calls.length = 0
+    fakeCtx.dashLog.length = 0
+    await canvas.trigger('pointermove', { clientX: 60, clientY: 40 })
+    await nextTick()
+
+    expect(fakeCtx.calls).toContain('strokeRect')
+    expect(fakeCtx.dashLog.some((d) => String(d) === '4,4')).toBe(true)
+    // 预览期间只有底图 1 次 drawImage（拖拽未提交 → 无离屏缩-放）
+    expect(fakeCtx.calls.filter((c) => c === 'drawImage').length).toBe(1)
+    await canvas.trigger('pointerup', { clientX: 60, clientY: 40 })
+  })
+
+  it('提交守卫：椭圆微小拖拽（任一轴均 <2px）不提交；马赛克单轴 <2px 不提交', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = wrapper.find('canvas')
+
+    await wrapper.find('.tool-ellipse').trigger('click')
+    await canvas.trigger('pointerdown', { clientX: 10, clientY: 10 })
+    await canvas.trigger('pointermove', { clientX: 10.5, clientY: 10 }) // 画布 Δ(1,0)
+    await canvas.trigger('pointerup', { clientX: 10.5, clientY: 10 })
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(0)
+
+    await wrapper.find('.tool-mosaic').trigger('click')
+    await canvas.trigger('pointerdown', { clientX: 10, clientY: 10 })
+    await canvas.trigger('pointermove', { clientX: 70, clientY: 10.5 }) // 画布 Δ(120,1)
+    await canvas.trigger('pointerup', { clientX: 70, clientY: 10.5 })
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(0)
+  })
+
+  it('参数行显隐：新工具显示线宽滑块；序号显示字号滑块；马赛克隐藏色板与自定义色', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-ellipse').trigger('click')
+    expect(wrapper.find('.line-width-slider').exists()).toBe(true)
+    expect(wrapper.find('.font-size-slider').exists()).toBe(false)
+
+    await wrapper.find('.tool-highlight').trigger('click')
+    expect(wrapper.find('.line-width-slider').exists()).toBe(true)
+
+    await wrapper.find('.tool-number').trigger('click')
+    expect(wrapper.find('.font-size-slider').exists()).toBe(true)
+    expect(wrapper.find('.line-width-slider').exists()).toBe(false)
+
+    await wrapper.find('.tool-mosaic').trigger('click')
+    expect(wrapper.find('.line-width-slider').exists()).toBe(true)
+    expect(wrapper.find('.color-swatch').exists()).toBe(false)
+    expect(wrapper.find('.color-input').exists()).toBe(false)
   })
 })
