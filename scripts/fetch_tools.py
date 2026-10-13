@@ -151,6 +151,19 @@ def ensure_all(print_hash: bool = False) -> None:
     print("OK: all tools fetched")
 
 
+def verify_local() -> None:
+    """离线校验：本地已存在文件与清单 SHA256 一致（不下载，方案 44 T2）。"""
+    for entry in TOOLS:
+        target = entry.target_dir / entry.name
+        if not target.exists():
+            raise SystemExit(f"missing file: {target}")
+        actual = sha256_of(target)
+        if actual != entry.sha256:
+            raise SystemExit(f"SHA256 mismatch for {target}: expected {entry.sha256}, got {actual}")
+        print(f"{entry.name}: OK ({actual})")
+    print("OK: local tools verified")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="下载并校验外置工具（方案 15 任务 0.5）")
     parser.add_argument(
@@ -158,7 +171,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="下载后打印实际 SHA256 而不校验（首次锁定/升级版本用，回填进 TOOLS 清单）",
     )
-    ensure_all(print_hash=parser.parse_args(argv).print_hash)
+    parser.add_argument(
+        "--verify-local",
+        action="store_true",
+        help="不下载：校验本地已存在文件与清单 SHA256 一致（方案 44 T2）",
+    )
+    args = parser.parse_args(argv)
+    if args.verify_local:
+        verify_local()
+        return 0
+    ensure_all(print_hash=args.print_hash)
     return 0
 
 

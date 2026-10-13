@@ -29,7 +29,7 @@ from structlog.testing import capture_logs
 from app.core.config import settings
 from app.domain.ports import EncoderOpts
 from app.infrastructure.stream.scrcpy import ScrcpyEncoder
-from app.scrcpy.constants import SCRCPY_SERVER_CLASS
+from app.scrcpy.constants import SCRCPY_SERVER_CLASS, SCRCPY_SERVER_VERSION
 from app.scrcpy.control_sender import ACTION_DOWN, ACTION_MOVE, ACTION_UP, ControlSender
 from app.scrcpy.stream_protocol import (
     SC_CODEC_ID_DISABLED,
@@ -449,6 +449,16 @@ async def test_server_command_normalizes_opts(bit_rate, expected):
     assert "max_fps=30" in cmd
     assert "control=true" in cmd
     assert "raw_stream=true" not in cmd  # 默认走 12B 包头协议
+
+
+async def test_server_command_uses_version_constant():
+    """启动命令的版本参数取自 SCRCPY_SERVER_VERSION（防消费点漂移，方案 44 T2）。"""
+    encoder = ScrcpyEncoder()
+    harness = SubprocessHarness(server_stderr=FakeStderr([b"Device: test-device\n"], block=True))
+    await drive_start(encoder, harness=harness)
+
+    cmd = harness.server_cmd()
+    assert cmd[cmd.index(SCRCPY_SERVER_CLASS) + 1] == SCRCPY_SERVER_VERSION
 
 
 # ---------------------------------------------------------------------------

@@ -135,3 +135,44 @@ def test_ensure_all_hash_mismatch_fails(tmp_path, monkeypatch):
     )
     with pytest.raises(SystemExit):
         fetch_tools.ensure_all(print_hash=False)
+
+
+PAYLOADS = {
+    "adb.exe": b"adb-binary",
+    "AdbWinApi.dll": b"api-dll",
+    "AdbWinUsbApi.dll": b"usb-dll",
+    "scrcpy-server.jar": b"jar-binary",
+}
+
+
+def _locked_local_tools(tmp_path):
+    """四条目指向 tmp 下真实文件、哈希按实际内容锁定。"""
+    locked = []
+    for e in fetch_tools.TOOLS:
+        d = tmp_path / e.name
+        d.mkdir(exist_ok=True)
+        (d / e.name).write_bytes(PAYLOADS[e.name])
+        locked.append(
+            _replace_entry(e, sha256=hashlib.sha256(PAYLOADS[e.name]).hexdigest(), target_dir=d)
+        )
+    return locked
+
+
+def test_verify_local_ok(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_tools, "TOOLS", _locked_local_tools(tmp_path))
+    fetch_tools.verify_local()  # 不抛即通过
+
+
+def test_verify_local_missing_file(tmp_path, monkeypatch):
+    locked = [_replace_entry(e, target_dir=tmp_path / "empty") for e in fetch_tools.TOOLS]
+    monkeypatch.setattr(fetch_tools, "TOOLS", locked)
+    with pytest.raises(SystemExit):
+        fetch_tools.verify_local()
+
+
+def test_verify_local_hash_mismatch(tmp_path, monkeypatch):
+    locked_ok = _locked_local_tools(tmp_path)  # 先造好 tmp 下真实文件
+    locked = [_replace_entry(e, sha256="0" * 64) for e in locked_ok]
+    monkeypatch.setattr(fetch_tools, "TOOLS", locked)
+    with pytest.raises(SystemExit):
+        fetch_tools.verify_local()
