@@ -12,14 +12,17 @@
     2. init_db()        — 如果不存在则创建 SQLite 表
     3. restore_sessions() — 恢复 TTL 内的活跃调试会话（续跑 logcat 采集）
     4. start_cleanup_task() — 启动定期清理后台任务（debug 日志 +
-       recording 目录双限/自愈，方案 37 B3）
+       recording 目录双限/自愈，方案 37 B3；recording 清理循环首轮
+       即含强杀残留扫盘清，方案 42 §3）
     5. ConfigWatcher.start() — 启动配置文件热重载监听（可配置关闭）
 
 关闭顺序：
     1. config_watcher.stop() — 停止配置热重载监听
     2. performance_service.cleanup() / network_service.cleanup() — 停止采样并
        释放内存暂存（含录制 final flush，方案 18 §3.7）
-    3. stop_cleanup_task() — 停止后台清理任务（recording + debug 日志）
+    3. stop_cleanup_task() — 停止后台清理任务（recording + debug 日志）；
+       随后 RecordingService.cleanup_all_recordings() 清空录像暂存目录
+       （方案 42 §3）
     4. writer.flush()      — 冲刷批量日志缓冲
 
 添加新的启动工作时（如连接池、后台任务），放在 `yield` 之前。
@@ -91,7 +94,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await get_network_service().cleanup()
 
     # 停止录屏周期清理任务（方案 37 B3）
-    await get_recording_service().stop_cleanup_task()
+    recording_service = get_recording_service()
+    await recording_service.stop_cleanup_task()
+
+    # 退出清盘：录像属暂存——退出后会话内存态随进程消失，残留文件已无
+    # 下载入口（纯垃圾），清空符合磁盘数据保留策略（方案 42 §3）
+    recording_service.cleanup_all_recordings()
 
     # 停止日志清理任务
     await debug_service.stop_cleanup_task()

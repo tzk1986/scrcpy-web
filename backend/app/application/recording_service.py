@@ -57,6 +57,11 @@ class RecordingService:
     CLEANUP_INTERVAL_SECONDS = 3600.0
     # 自愈宽限（秒）：started_at 超 time_limit + 宽限仍未收尾 → 自动 stop
     SELF_HEAL_GRACE_SECONDS = 30
+    # 滞留态自愈阈值（秒）：stopping/pulling 超过 time_limit + 该值仍无推进
+    # → 判悬挂收敛 failed（方案 42 §2；正常 60s 录制 + 收尾远不到此阈值）
+    STUCK_STATE_TIMEOUT_SECONDS = 120.0
+    # 主机落盘产物文件名模式（与 REMOTE_PREFIX basename 同源，方案 42 §3 清盘依据）
+    LOCAL_FILE_GLOB = "openscrcpy_rec_*.mp4"
 
     def __init__(self, adb: AdbDriver) -> None:
         """
@@ -304,21 +309,56 @@ class RecordingService:
         self._enforce_limits(self.resolve_dir())
         await self._self_heal()
 
+    def cleanup_all_recordings(self) -> None:
+        """
+        删除主机落盘目录全部录屏产物（方案 42 §3）。
+
+        依据：会话表纯内存——进程退出后 done 会话即无下载入口，残留文件属
+        纯垃圾；录像按磁盘保留策略定位为暂存（关服清空合规而非例外）。
+        调用点：lifecycle 优雅退出挂钩 + 清理循环首轮（强杀/崩溃兜底）。
+        best-effort：单文件失败（Windows 下载器持有等）仅告警，不阻塞退出。
+        """
+        directory = self.resolve_dir()
+        if not directory.is_dir():
+            return
+        for path in directory.glob(self.LOCAL_FILE_GLOB):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("recording_cleanup_all_failed", path=str(path))
+
     async def _self_heal(self) -> None:
         """
-        会话自愈：started_at 超 time_limit + 宽限仍 recording 的会话自动走
-        stop 收尾（每次周期 tick 全表巡检）。
+        会话自愈（方案 37 B3 + 方案 42 §2）：
+
+        - recording：started_at 超 time_limit + 宽限仍未收尾 → 自动走 stop；
+        - stopping/pulling：超 time_limit + STUCK 仍无推进（stop 中途被非
+          AdbError 异常打断的罕见路径）→ 设备端兜底 rm 后收敛 failed，
+          消除持续 409 的滞留。rm 等待期间复核状态，防与真实 stop 并发误杀
+          已 done 会话（Review Focus ③）。
         """
         cfg = settings().recording
-        cutoff = time.time() - (cfg.time_limit + self.SELF_HEAL_GRACE_SECONDS)
+        now = time.time()
         stale_ids = [
             s.device_id
             for s in self.sessions.values()
-            if s.state == RecordingState.RECORDING.value and s.started_at < cutoff
+            if s.state == RecordingState.RECORDING.value
+            and s.started_at < now - (cfg.time_limit + self.SELF_HEAL_GRACE_SECONDS)
         ]
         for device_id in stale_ids:
             logger.warning("recording_self_heal", device=device_id)
             await self.stop(device_id)
+        stuck_cutoff = now - (cfg.time_limit + self.STUCK_STATE_TIMEOUT_SECONDS)
+        for s in list(self.sessions.values()):
+            if s.state not in (RecordingState.STOPPING.value, RecordingState.PULLING.value):
+                continue
+            if s.started_at >= stuck_cutoff:
+                continue
+            logger.warning("recording_stuck_self_heal", device=s.device_id, state=s.state)
+            await self.adb.rm_remote(s.device_id, s.remote_path)
+            # rm 等待期间真实 stop 可能已完成收尾：复核后才落 failed
+            if s.state in (RecordingState.STOPPING.value, RecordingState.PULLING.value):
+                s.state = RecordingState.FAILED.value
 
     # -------------------------------------------------------------------
     # 周期清理任务（lifespan 启动/停止）
@@ -346,13 +386,22 @@ class RecordingService:
         logger.info("recording_cleanup_task_stopped")
 
     async def _cleanup_loop(self) -> None:
-        """后台清理循环：每 3600s 一轮 cleanup()；单轮异常记警告续跑。"""
+        """
+        后台清理循环（方案 37 B3 + 42 §3）：首轮**立即**执行——扫盘清上个
+        进程遗留（强杀/崩溃无退出钩子，下次启动兜底）+ 常规 cleanup；此后
+        每 3600s 一轮 cleanup()；单轮异常记警告续跑。
+        """
+        first = True
         try:
             while True:
-                await asyncio.sleep(self.CLEANUP_INTERVAL_SECONDS)
                 try:
+                    if first:
+                        self.cleanup_all_recordings()
+                    else:
+                        await asyncio.sleep(self.CLEANUP_INTERVAL_SECONDS)
                     await self.cleanup()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("recording_cleanup_iteration_failed", error=str(exc))
+                first = False
         except asyncio.CancelledError:
             logger.info("recording_cleanup_loop_cancelled")

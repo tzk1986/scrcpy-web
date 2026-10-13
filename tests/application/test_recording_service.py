@@ -284,3 +284,92 @@ async def test_auto_finalize_guard_noop_on_replaced_session(service, mock_adb):
         await asyncio.sleep(0)
     assert s_b.state == RecordingState.RECORDING.value
     mock_adb.stop_recording.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# stopping/pulling 自愈 + 关服/启动清盘（方案 42 §2 §3）
+# ---------------------------------------------------------------------------
+
+async def test_self_heal_converges_stuck_pulling(service, mock_adb):
+    """§2：stopping/pulling 超 time_limit+120s 无推进 → 收敛 failed + 设备端兜底 rm。"""
+    stuck = RecordingSession(
+        id="stuck0000000",
+        device_id="d1",
+        started_at=time.time()
+        - (settings().recording.time_limit + RecordingService.STUCK_STATE_TIMEOUT_SECONDS + 1),
+        state=RecordingState.PULLING.value,
+        remote_path="/sdcard/openscrcpy_rec_stuck0.mp4",
+    )
+    service.sessions["d1"] = stuck
+    await service._self_heal()
+    assert stuck.state == RecordingState.FAILED.value
+    mock_adb.rm_remote.assert_called_once_with("d1", stuck.remote_path)
+
+
+async def test_self_heal_ignores_fresh_stopping(service, mock_adb):
+    """Review Focus ③：正在收尾（started_at 未超阈）的 stopping 不得被误杀。"""
+    fresh = RecordingSession(
+        id="fresh0000000",
+        device_id="d9",
+        state=RecordingState.STOPPING.value,
+        remote_path="/sdcard/openscrcpy_rec_fresh0.mp4",
+    )
+    service.sessions["d9"] = fresh
+    await service._self_heal()
+    assert fresh.state == RecordingState.STOPPING.value
+    mock_adb.rm_remote.assert_not_called()
+
+
+def test_cleanup_all_recordings_clears_pattern_only(service, tmp_path):
+    """§3：仅删 openscrcpy_rec_*.mp4；他名文件与旁路文件不动。"""
+    hits = [tmp_path / "openscrcpy_rec_aaa111222333.mp4", tmp_path / "openscrcpy_rec_bbb111222333.mp4"]
+    keeps = [tmp_path / "other.mp4", tmp_path / "openscrcpy_rec_c.txt"]
+    for p in hits + keeps:
+        p.write_bytes(b"x")
+    service.cleanup_all_recordings()
+    assert not any(p.exists() for p in hits)
+    assert all(p.exists() for p in keeps)
+
+
+def test_cleanup_all_recordings_missing_dir_silent(tmp_path, monkeypatch):
+    """Review Focus ④a：目录不存在（首次启动）→ 静默返回不抛。"""
+    monkeypatch.setattr(settings().recording, "dir", str(tmp_path / "not_created"))
+    RecordingService(MagicMock()).cleanup_all_recordings()  # 不抛即通过
+
+
+def test_cleanup_all_recordings_locked_file_best_effort(service, tmp_path, monkeypatch):
+    """Review Focus ④b：单文件删除失败（Windows 下载器持有）→ 仅告警不抛，其余照删。"""
+    (tmp_path / "openscrcpy_rec_aaa111222333.mp4").write_bytes(b"x")
+    (tmp_path / "openscrcpy_rec_bbb111222333.mp4").write_bytes(b"x")
+
+    def _boom(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.endswith("aaa111222333.mp4"):
+            raise OSError("文件被占用")
+
+    original = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        _boom(self, *args, **kwargs)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+    service.cleanup_all_recordings()  # 不抛即通过
+    assert (tmp_path / "openscrcpy_rec_aaa111222333.mp4").exists()  # 被占文件保留
+    assert not (tmp_path / "openscrcpy_rec_bbb111222333.mp4").exists()  # 其余已删
+
+
+async def test_cleanup_loop_sweeps_immediately_at_startup(service, monkeypatch):
+    """§3：tick 改「首轮即时」——启动即扫盘 + cleanup，不再先睡 3600s（白盘一小时）。"""
+    swept: list[bool] = []
+    cleaned: list[bool] = []
+    monkeypatch.setattr(RecordingService, "cleanup_all_recordings", lambda self: swept.append(True))
+
+    async def fake_cleanup(self: RecordingService) -> None:
+        cleaned.append(True)
+
+    monkeypatch.setattr(RecordingService, "cleanup", fake_cleanup)
+    await service.start_cleanup_task()
+    await asyncio.sleep(0.05)
+    assert swept == [True]
+    assert cleaned == [True]
+    await service.stop_cleanup_task()
