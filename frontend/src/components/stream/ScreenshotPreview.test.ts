@@ -8,13 +8,15 @@
  *   - 画笔/箭头/矩形：pointer 拖拽提交命令（fake ctx 记录 beginPath/lineTo/stroke/strokeRect）
  *   - 文字：行内输入 + 「确认」后点击画布放置（fillText 携带文案）；未确认不落字
  *   - 撤销/清空：命令栈出栈/归零 + 画布重绘（clearRect）；无标注时按钮置灰
+ *   - 参数化与双栈：命令存字号/线宽比例参数（渲染 ×图宽换算）；undo→redo 恢复、落新命令清 redo
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
  *
  * 说明：happy-dom 的 canvas.getContext('2d') 返回 null、无真实绘制——按语义层断言：
  * 把 2d context mock 成记录调用（clearRect/drawImage/beginPath/moveTo/lineTo/stroke/
- * strokeRect/fillText），toBlob 同步回调产出 Blob；全局 Image 用 FakeImage（自然尺寸
- * 800x600，src 赋值异步触发 onload）。仿 AppsView.test.ts 模式（el-* 轻量 stub）。
+ * strokeRect/fillText 等；其余绘制方法与属性 setter 一并预埋供后续任务），toBlob 同步
+ * 回调产出 Blob；全局 Image 用 FakeImage（自然尺寸 800x600，src 赋值异步触发 onload）。
+ * 仿 AppsView.test.ts 模式（el-* 轻量 stub）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
@@ -25,12 +27,14 @@ import ScreenshotPreview from './ScreenshotPreview.vue'
 function createRecordingCtx() {
   const calls: string[] = []
   const fillTextLog: unknown[][] = []
+  const fontLog: string[] = []
   const record = (name: string) => () => {
     calls.push(name)
   }
   return {
     calls,
     fillTextLog,
+    fontLog,
     clearRect: record('clearRect'),
     drawImage: record('drawImage'),
     beginPath: record('beginPath'),
@@ -38,6 +42,13 @@ function createRecordingCtx() {
     lineTo: record('lineTo'),
     stroke: record('stroke'),
     strokeRect: record('strokeRect'),
+    ellipse: record('ellipse'),
+    arc: record('arc'),
+    fill: record('fill'),
+    setLineDash: record('setLineDash'),
+    save: record('save'),
+    restore: record('restore'),
+    measureText: (t: unknown) => ({ width: String(t).length * 12 }),
     fillText: (...args: unknown[]) => {
       calls.push('fillText')
       fillTextLog.push(args)
@@ -46,7 +57,13 @@ function createRecordingCtx() {
     set fillStyle(_v: string | CanvasGradient | CanvasPattern) {},
     set lineWidth(_v: number) {},
     set lineCap(_v: CanvasLineCap) {},
-    set font(_v: string) {},
+    set font(v: string) {
+      fontLog.push(v)
+    },
+    set globalAlpha(_v: number) {},
+    set imageSmoothingEnabled(_v: boolean) {},
+    set textAlign(_v: CanvasTextAlign) {},
+    set textBaseline(_v: CanvasTextBaseline) {},
   }
 }
 
@@ -138,6 +155,22 @@ function commandCount(wrapper: VueWrapper): number {
   return (wrapper.vm as unknown as { getAnnotationCount: () => number }).getAnnotationCount()
 }
 
+/** 读取组件暴露的命令栈快照（参数化断言用）。 */
+function commandList(
+  wrapper: VueWrapper,
+): Array<{ kind: string; lineWidth?: number; fontSize?: number }> {
+  return (
+    wrapper.vm as unknown as {
+      getCommands: () => Array<{ kind: string; lineWidth?: number; fontSize?: number }>
+    }
+  ).getCommands()
+}
+
+/** 读取组件暴露的 redo 栈长度（双栈语义断言用）。 */
+function redoCount(wrapper: VueWrapper): number {
+  return (wrapper.vm as unknown as { getRedoCount: () => number }).getRedoCount()
+}
+
 /** 选工具 → pointer 拖拽 → 松手提交；返回前清空 ctx 记录只留提交时刻的重放。 */
 async function drawShape(wrapper: VueWrapper, toolClass: string, to = { x: 60, y: 40 }) {
   await wrapper.find(toolClass).trigger('click')
@@ -153,6 +186,7 @@ beforeEach(() => {
   anchors = []
   fakeCtx.calls.length = 0
   fakeCtx.fillTextLog.length = 0
+  fakeCtx.fontLog.length = 0
   vi.stubGlobal('Image', FakeImage)
   getContextMock
     .mockReset()
@@ -439,5 +473,75 @@ describe('ScreenshotPreview 下载', () => {
     expect(anchors[0].download).toBe('dev_1_5555_screenshot.png')
     expect(anchors[0].getAttribute('href')).toBe('blob:test-1')
     expect(revokeUrl).not.toHaveBeenCalled()
+  })
+})
+
+describe('ScreenshotPreview 参数化与双栈', () => {
+  it('文字命令按比例存字号（默认 0.045），渲染换算为像素', async () => {
+    const wrapper = await mountAndSettle() // 画布 800x600
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('设备异常')
+    await wrapper.find('.text-confirm').trigger('click')
+
+    fakeCtx.calls.length = 0
+    await wrapper.find('canvas').trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+
+    const cmds = commandList(wrapper)
+    expect(cmds[0].fontSize).toBe(0.045)
+    // 800×0.045 = 36px → font 设置过 '36px sans-serif'（比例 ×图宽换算落地）
+    const fontArg = fakeCtx.fontLog.find((v) => v.endsWith('px sans-serif'))
+    expect(fontArg).toBeDefined()
+    expect(Number.parseFloat(fontArg as string)).toBeCloseTo(36, 1)
+    expect(fakeCtx.calls).toContain('fillText')
+  })
+
+  it('画笔命令携带 lineWidth 比例（默认 0.0035）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-pen')
+
+    expect(commandCount(wrapper)).toBe(1)
+    expect(commandList(wrapper)[0].lineWidth).toBe(0.0035)
+  })
+
+  it('undo 后 redo 恢复命令并重绘', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-pen')
+    expect(commandCount(wrapper)).toBe(1)
+
+    await wrapper.find('.btn-undo').trigger('click')
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(0)
+    expect(redoCount(wrapper)).toBe(1)
+
+    fakeCtx.calls.length = 0
+    await wrapper.find('.btn-redo').trigger('click')
+    await nextTick()
+
+    expect(commandCount(wrapper)).toBe(1)
+    expect(redoCount(wrapper)).toBe(0)
+    expect(fakeCtx.calls).toContain('stroke')
+  })
+
+  it('落新命令清空 redo 栈（redo 不可用）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-pen')
+    await wrapper.find('.btn-undo').trigger('click')
+    await nextTick()
+    expect(redoCount(wrapper)).toBe(1)
+
+    await drawShape(wrapper, '.tool-rect')
+
+    expect(commandCount(wrapper)).toBe(1)
+    expect(redoCount(wrapper)).toBe(0)
+    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
   })
 })

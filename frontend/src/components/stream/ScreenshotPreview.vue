@@ -16,7 +16,9 @@
     - pointer 事件在画布上拖拽绘制；坐标按画布显示尺寸与像素尺寸比例换算
     - 文字工具：工具栏展开行内输入框 + 「确认」，确认后点击画布放置文字
       （方案裁决 4：不用 window.prompt，避免组件测试非确定性）
-    - 撤销：命令栈出栈重绘；清空：命令栈归零重绘（重绘 = 底图 + 回放命令栈）
+    - 字号/线宽按「相对图宽比例」存储（annotationModel），渲染时 ×canvas.width 换算
+    - 撤销/重做双栈：undo 出栈入 redo，redo 回放，落新命令清 redo 栈；
+      清空：双栈归零重绘（重绘 = 底图 + 回放命令栈）
     - 导出 PNG：canvas.toBlob('image/png') → 下载 <中性名>_screenshot_annotated.png
     - 直接保存：下载原始截图 <中性名>_screenshot.png（无标注），弹窗打开期不回收 URL
 
@@ -49,6 +51,7 @@
         </label>
         <span class="toolbar-sep" aria-hidden="true" />
         <el-button class="btn-undo" :disabled="commands.length === 0" @click="undo">撤销</el-button>
+        <el-button class="btn-redo" :disabled="redoStack.length === 0" @click="redo">重做</el-button>
         <el-button class="btn-clear" :disabled="commands.length === 0" @click="clearAll">清空</el-button>
         <span class="toolbar-spacer" />
         <el-button class="btn-save" @click="saveOriginal">直接保存</el-button>
@@ -83,6 +86,15 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
+import {
+  FONT_RATIO_DEFAULT,
+  LINE_RATIO_DEFAULT,
+  fontPx,
+  linePx,
+  type AnnotationCmd,
+  type Point,
+  type Tool,
+} from './annotationModel'
 
 const props = defineProps<{
   /** 弹窗可见性（父组件控制，关闭经 close 事件回传） */
@@ -95,45 +107,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-/** 工具态枚举：画笔 / 箭头 / 矩形 / 文字。 */
-type Tool = 'pen' | 'arrow' | 'rect' | 'text'
-
-interface Point {
-  x: number
-  y: number
-}
-
-interface PenCmd {
-  kind: 'pen'
-  points: Point[]
-  color: string
-}
-
-interface ArrowCmd {
-  kind: 'arrow'
-  from: Point
-  to: Point
-  color: string
-}
-
-interface RectCmd {
-  kind: 'rect'
-  from: Point
-  to: Point
-  color: string
-}
-
-interface TextCmd {
-  kind: 'text'
-  at: Point
-  text: string
-  color: string
-}
-
-/** 已提交标注命令（重绘回放与撤销/清空的单位）。 */
-type AnnotationCmd = PenCmd | ArrowCmd | RectCmd | TextCmd
-
-/** 拖拽中的未提交形状。 */
+/** 拖拽中的未提交形状（本轮仅画笔/箭头/矩形走拖拽路径）。 */
 interface DragState {
   tool: 'pen' | 'arrow' | 'rect'
   start: Point
@@ -149,6 +123,8 @@ const tool = ref<Tool>('pen')
 const strokeColor = ref('#ff3b30')
 /** 已提交命令栈。 */
 const commands = ref<AnnotationCmd[]>([])
+/** 撤销出栈的命令（重做栈；落新命令即清空，redo 出栈回放）。 */
+const redoStack = ref<AnnotationCmd[]>([])
 /** 文字工具：输入框草稿与「确认」后的待放置文字。 */
 const textDraft = ref('')
 const confirmedText = ref('')
@@ -218,12 +194,13 @@ watch(
   { immediate: true },
 )
 
-// 每次打开弹窗都是全新标注会话（commands/drag/文字态/工具一并归零）。
+// 每次打开弹窗都是全新标注会话（commands/redo/drag/文字态/工具一并归零）。
 watch(
   () => props.visible,
   (visible) => {
     if (visible) {
       commands.value = []
+      redoStack.value = []
       drag.value = null
       textDraft.value = ''
       confirmedText.value = ''
@@ -258,10 +235,9 @@ function toCanvasPoint(e: { clientX: number; clientY: number }): Point | null {
   }
 }
 
-/** 箭头头部两翼（固定 14px 长、±30° 张角）。 */
-function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point) {
+/** 箭头头部两翼（头长 = 线宽像素 ×3.5、±30° 张角；默认 4px 线宽 → 14px，与原固定值一致）。 */
+function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point, headLength: number) {
   const angle = Math.atan2(to.y - from.y, to.x - from.x)
-  const headLength = 14
   ctx.beginPath()
   ctx.moveTo(to.x, to.y)
   ctx.lineTo(
@@ -276,13 +252,13 @@ function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point) {
   ctx.stroke()
 }
 
-/** 单条标注命令渲染。 */
-function drawCmd(ctx: CanvasRenderingContext2D, cmd: AnnotationCmd) {
-  ctx.strokeStyle = cmd.color
-  ctx.lineWidth = 4
-  ctx.lineCap = 'round'
+/** 单条标注命令渲染（线宽/字号为比例值，按 canvasWidth 换算像素——显示与导出同源）。 */
+function drawCmd(ctx: CanvasRenderingContext2D, cmd: AnnotationCmd, canvasWidth: number) {
   switch (cmd.kind) {
     case 'pen': {
+      ctx.strokeStyle = cmd.color
+      ctx.lineWidth = linePx(cmd.lineWidth, canvasWidth)
+      ctx.lineCap = 'round'
       ctx.beginPath()
       ctx.moveTo(cmd.points[0].x, cmd.points[0].y)
       for (const point of cmd.points.slice(1)) ctx.lineTo(point.x, point.y)
@@ -290,14 +266,20 @@ function drawCmd(ctx: CanvasRenderingContext2D, cmd: AnnotationCmd) {
       break
     }
     case 'arrow': {
+      const strokePx = linePx(cmd.lineWidth, canvasWidth)
+      ctx.strokeStyle = cmd.color
+      ctx.lineWidth = strokePx
+      ctx.lineCap = 'round'
       ctx.beginPath()
       ctx.moveTo(cmd.from.x, cmd.from.y)
       ctx.lineTo(cmd.to.x, cmd.to.y)
       ctx.stroke()
-      drawArrowHead(ctx, cmd.from, cmd.to)
+      drawArrowHead(ctx, cmd.from, cmd.to, strokePx * 3.5)
       break
     }
     case 'rect': {
+      ctx.strokeStyle = cmd.color
+      ctx.lineWidth = linePx(cmd.lineWidth, canvasWidth)
       ctx.strokeRect(
         Math.min(cmd.from.x, cmd.to.x),
         Math.min(cmd.from.y, cmd.to.y),
@@ -308,7 +290,7 @@ function drawCmd(ctx: CanvasRenderingContext2D, cmd: AnnotationCmd) {
     }
     case 'text': {
       ctx.fillStyle = cmd.color
-      ctx.font = '20px sans-serif'
+      ctx.font = `${fontPx(cmd.fontSize, canvasWidth)}px sans-serif`
       ctx.fillText(cmd.text, cmd.at.x, cmd.at.y)
       break
     }
@@ -321,17 +303,35 @@ function redraw() {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   if (!ctx) return
+  const canvasWidth = canvas.width
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   if (baseImage.value) ctx.drawImage(baseImage.value, 0, 0, canvas.width, canvas.height)
-  for (const cmd of commands.value) drawCmd(ctx, cmd)
+  for (const cmd of commands.value) drawCmd(ctx, cmd, canvasWidth)
   const d = drag.value
   if (!d) return
   if (d.tool === 'pen') {
-    drawCmd(ctx, { kind: 'pen', points: d.points.length ? d.points : [d.current], color: strokeColor.value })
+    drawCmd(
+      ctx,
+      {
+        kind: 'pen',
+        points: d.points.length ? d.points : [d.current],
+        color: strokeColor.value,
+        lineWidth: LINE_RATIO_DEFAULT,
+      },
+      canvasWidth,
+    )
   } else if (d.tool === 'arrow') {
-    drawCmd(ctx, { kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value })
+    drawCmd(
+      ctx,
+      { kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value, lineWidth: LINE_RATIO_DEFAULT },
+      canvasWidth,
+    )
   } else {
-    drawCmd(ctx, { kind: 'rect', from: d.start, to: d.current, color: strokeColor.value })
+    drawCmd(
+      ctx,
+      { kind: 'rect', from: d.start, to: d.current, color: strokeColor.value, lineWidth: LINE_RATIO_DEFAULT },
+      canvasWidth,
+    )
   }
 }
 
@@ -356,10 +356,18 @@ function onPointerDown(e: PointerEvent) {
   if (active === 'text') {
     // 文字工具：未确认文案时不落字
     if (!confirmedText.value) return
-    commands.value.push({ kind: 'text', at: point, text: confirmedText.value, color: strokeColor.value })
+    pushCmd({
+      kind: 'text',
+      at: point,
+      text: confirmedText.value,
+      color: strokeColor.value,
+      fontSize: FONT_RATIO_DEFAULT,
+    })
     redraw()
     return
   }
+  // 本轮仅画笔/箭头/矩形走拖拽路径（椭圆等新工具后续任务引入后再扩）
+  if (active !== 'pen' && active !== 'arrow' && active !== 'rect') return
   drag.value = { tool: active, start: point, current: point, points: [point] }
   redraw()
 }
@@ -381,29 +389,58 @@ function onPointerUp() {
   // 位移过小的拖拽视为误触不提交（避免噪点/零宽矩形）
   if (d.tool === 'pen') {
     if (d.points.length >= 2 && dist(d.points[0], d.current) >= 2) {
-      commands.value.push({ kind: 'pen', points: [...d.points], color: strokeColor.value })
+      pushCmd({ kind: 'pen', points: [...d.points], color: strokeColor.value, lineWidth: LINE_RATIO_DEFAULT })
     }
   } else if (d.tool === 'arrow') {
     if (dist(d.start, d.current) >= 2) {
-      commands.value.push({ kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value })
+      pushCmd({
+        kind: 'arrow',
+        from: d.start,
+        to: d.current,
+        color: strokeColor.value,
+        lineWidth: LINE_RATIO_DEFAULT,
+      })
     }
   } else if (Math.abs(d.current.x - d.start.x) >= 2 || Math.abs(d.current.y - d.start.y) >= 2) {
-    commands.value.push({ kind: 'rect', from: d.start, to: d.current, color: strokeColor.value })
+    pushCmd({
+      kind: 'rect',
+      from: d.start,
+      to: d.current,
+      color: strokeColor.value,
+      lineWidth: LINE_RATIO_DEFAULT,
+    })
   }
   redraw()
 }
 
-/** 撤销：命令栈出栈并重绘。 */
+/** 落新命令：入栈并清空 redo 栈（新分支从当前状态出发，旧 redo 不可达）。 */
+function pushCmd(cmd: AnnotationCmd) {
+  commands.value.push(cmd)
+  redoStack.value = []
+}
+
+/** 撤销：命令栈出栈入 redo 栈并重绘。 */
 function undo() {
-  if (commands.value.length === 0) return
-  commands.value.pop()
+  const cmd = commands.value.pop()
+  if (!cmd) return
+  redoStack.value.push(cmd)
   drag.value = null
   redraw()
 }
 
-/** 清空：命令栈归零并重绘（回到纯底图）。 */
+/** 重做：redo 栈出栈回放并重绘。 */
+function redo() {
+  const cmd = redoStack.value.pop()
+  if (!cmd) return
+  commands.value.push(cmd)
+  drag.value = null
+  redraw()
+}
+
+/** 清空：命令栈与 redo 栈双双归零并重绘（回到纯底图）。 */
 function clearAll() {
   commands.value = []
+  redoStack.value = []
   drag.value = null
   redraw()
 }
@@ -459,8 +496,15 @@ function exportPng() {
 /**
  * 当前已提交标注数（供父组件判断是否存在未导出的标注；
  * 测试亦用它断言撤销/清空的命令栈重置语义）。
+ *
+ * getCommands / getRedoCount：命令栈快照与 redo 栈长度（测试断言参数化与双栈语义，
+ * 沿用 getAnnotationCount 测试暴露先例）。
  */
-defineExpose({ getAnnotationCount: () => commands.value.length })
+defineExpose({
+  getAnnotationCount: () => commands.value.length,
+  getCommands: () => commands.value,
+  getRedoCount: () => redoStack.value.length,
+})
 </script>
 
 <style scoped>
