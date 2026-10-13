@@ -1183,7 +1183,7 @@ class AdbCliDriver:
         录屏后台任务完成回调（方案 37 B2 + B-Fix-2）。
 
         task.exception() 先取走未取异常（防 "Task exception was never retrieved"），
-        再自清 _recording_tasks/_recording_paths 表项（防自然结束后的孤儿表项）。
+        再仅弹 _recording_tasks（路径表留待 stop 消费或下次 start 覆盖，方案 42 §1）。
 
         B-Fix-2 晚失败降档：异常含 err=-38 → 走 _degrade_once 公共方法，重试
         任务替换表条目（_degraded_once 防重入，同启动已降过档则不二次降档）；
@@ -1204,8 +1204,11 @@ class AdbCliDriver:
                     )
                     return
                 logger.debug("recording_task_exited_with_error", device=device_id, error=str(exc))
-            self._recording_tasks.pop(device_id, None)
-            self._recording_paths.pop(device_id, None)
+            # 方案 42 §1：仅弹任务表（带身份守卫——stop 已先行弹出或表项被新任务
+            # 替换时不越权）；路径表项保留到 stop 消费或下次 start 覆盖——
+            # 「自然结束 → 用户/服务端再来取产物」不再白录。
+            if self._recording_tasks.get(device_id) is t:
+                self._recording_tasks.pop(device_id, None)
 
         return _cb
 
@@ -1224,12 +1227,22 @@ class AdbCliDriver:
             device_id: ADB 序列号。
 
         返回：
-            设备端录屏文件路径；无活跃录制或无产物时返回空串。
+            设备端录屏文件路径；task 缺失但设备端产物在位（自然结束）时也返回
+            remote_path；无活跃录制或无产物时返回空串。
         """
-        task = self._recording_tasks.get(device_id)
-        remote_path = self._recording_paths.get(device_id, "")
+        task = self._recording_tasks.pop(device_id, None)
+        remote_path = self._recording_paths.pop(device_id, "")
         if task is None:
-            return ""
+            if not remote_path:
+                return ""
+            # 方案 42 §1：任务已自然终结（回调已弹任务表）。设备端产物仍在则
+            # 返回路径供服务端 pull 收尾；探测失败/不存在 → 无产物。
+            try:
+                await self._run_serial(device_id, "shell", "ls", "-ld", remote_path)
+            except AdbError:
+                logger.debug("recording_product_missing", device=device_id, remote=remote_path)
+                return ""
+            return remote_path
 
         try:
             await self._run_serial(device_id, "shell", "pkill", "-INT", "screenrecord")

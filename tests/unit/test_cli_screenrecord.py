@@ -238,3 +238,61 @@ async def test_rm_remote_failure_only_warns(monkeypatch):
         raise AdbError("boom")
     monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
     await AdbCliDriver().rm_remote("d", "/sdcard/r.mp4")  # 不抛即通过
+
+
+# ---------------------------------------------------------------------------
+# 方案 42 §1：自然结束 stop 兜底 pull（表项保留 + ls 探测）
+# ---------------------------------------------------------------------------
+
+async def test_done_callback_keeps_path_pops_task(monkeypatch):
+    """终结回调仅弹 tasks 表（身份守卫），保留 paths 表项供 stop 消费——白录闭合的前提。"""
+    monkeypatch.setattr(cli_module, "_START_GRACE_ITERATIONS", 5)
+    monkeypatch.setattr(cli_module, "_START_GRACE_INTERVAL", 0.01)
+
+    async def fake_run(adr, *args, timeout=None):
+        return ""  # 秒回 = screenrecord 录满自然正常退出
+
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    await asyncio.sleep(0.05)  # 冲刷 add_done_callback（对已完成任务经 call_soon 调度）
+    assert "d" not in d._recording_tasks
+    assert d._recording_paths.get("d") == "/sdcard/r.mp4"
+
+
+async def test_stop_after_natural_end_probes_and_returns_path(monkeypatch):
+    """task 已被回调弹出：stop 经 ls -ld 探测确认产物在位 → 返回 remote_path 供服务端 pull。"""
+    monkeypatch.setattr(cli_module, "_START_GRACE_ITERATIONS", 5)
+    monkeypatch.setattr(cli_module, "_START_GRACE_INTERVAL", 0.01)
+    calls = []
+
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    await asyncio.sleep(0.05)
+    assert await d.stop_recording("d") == "/sdcard/r.mp4"
+    assert ("d", "shell", "ls", "-ld", "/sdcard/r.mp4") in calls
+
+
+async def test_stop_after_natural_end_file_missing_returns_empty(monkeypatch):
+    """task 已弹出但设备端产物已不在（探测 rc≠0）→ 空串（服务端按无产物收敛 failed）。"""
+    monkeypatch.setattr(cli_module, "_START_GRACE_ITERATIONS", 5)
+    monkeypatch.setattr(cli_module, "_START_GRACE_INTERVAL", 0.01)
+    calls = []
+
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        if "ls" in args:
+            raise AdbError("ADB command failed: ls: /sdcard/r.mp4: No such file or directory")
+        return ""
+
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    await asyncio.sleep(0.05)
+    assert await d.stop_recording("d") == ""
+    assert ("d", "shell", "ls", "-ld", "/sdcard/r.mp4") in calls
