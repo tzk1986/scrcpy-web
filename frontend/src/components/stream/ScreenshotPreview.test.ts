@@ -9,6 +9,8 @@
  *   - 文字：行内输入 + 「确认」后点击画布放置（fillText 携带文案）；未确认不落字
  *   - 撤销/清空：命令栈出栈/归零 + 画布重绘（clearRect）；无标注时按钮置灰
  *   - 参数化与双栈：命令存字号/线宽比例参数（渲染 ×图宽换算）；undo→redo 恢复、落新命令清 redo
+ *   - 参数组与快捷键：滑块/滚轮调字号线宽（钳制）、滑块显隐、数字键切工具、Ctrl+Z/Ctrl+Shift+Z
+ *     （window 监听；输入框聚焦时数字键不劫持）
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
  *
@@ -169,6 +171,16 @@ function commandList(
 /** 读取组件暴露的 redo 栈长度（双栈语义断言用）。 */
 function redoCount(wrapper: VueWrapper): number {
   return (wrapper.vm as unknown as { getRedoCount: () => number }).getRedoCount()
+}
+
+/** 读取组件暴露的默认字号比例（滚轮/滑块调参断言用）。 */
+function defaultFontRatio(wrapper: VueWrapper): number {
+  return (wrapper.vm as unknown as { getDefaultFontRatio: () => number }).getDefaultFontRatio()
+}
+
+/** 读取组件暴露的默认线宽比例（滚轮/滑块调参断言用）。 */
+function defaultLineRatio(wrapper: VueWrapper): number {
+  return (wrapper.vm as unknown as { getDefaultLineRatio: () => number }).getDefaultLineRatio()
 }
 
 /** 选工具 → pointer 拖拽 → 松手提交；返回前清空 ctx 记录只留提交时刻的重放。 */
@@ -543,5 +555,142 @@ describe('ScreenshotPreview 参数化与双栈', () => {
     expect(commandCount(wrapper)).toBe(1)
     expect(redoCount(wrapper)).toBe(0)
     expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
+  })
+})
+
+describe('ScreenshotPreview 参数组与快捷键', () => {
+  it('重做按钮：无 redo 时置灰，撤销后可点且恢复命令', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
+
+    await drawShape(wrapper, '.tool-pen')
+    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('.btn-undo').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeUndefined()
+
+    await wrapper.find('.btn-redo').trigger('click')
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1)
+  })
+
+  it('滚轮调字号：文字工具下 wheel up 增大 fontSize 比例（钳制上限）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('canvas').trigger('wheel', { deltaY: -100 })
+    expect(defaultFontRatio(wrapper)).toBeGreaterThan(0.045)
+
+    // 连续上滚：比例单调增大但被上限钳制
+    for (let i = 0; i < 50; i += 1) {
+      await wrapper.find('canvas').trigger('wheel', { deltaY: -100 })
+    }
+    expect(defaultFontRatio(wrapper)).toBeLessThanOrEqual(0.15)
+  })
+
+  it('滚轮调线宽：画笔工具下 wheel down 减小 lineWidth 比例（钳制下限 0.001）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    // 默认画笔工具：下滚缩小线宽
+    await wrapper.find('canvas').trigger('wheel', { deltaY: 100 })
+    expect(defaultLineRatio(wrapper)).toBeLessThan(0.0035)
+
+    for (let i = 0; i < 100; i += 1) {
+      await wrapper.find('canvas').trigger('wheel', { deltaY: 100 })
+    }
+    expect(defaultLineRatio(wrapper)).toBeCloseTo(0.001, 6)
+  })
+
+  it('滑块输入更新默认参数并用于新命令', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    // 字号滑块（文字工具下显示）→ 落字携带
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('.font-size-slider').setValue('0.1')
+    await wrapper.find('input.text-draft').setValue('参数缩放')
+    await wrapper.find('.text-confirm').trigger('click')
+    await wrapper.find('canvas').trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+    expect(commandList(wrapper)[0].fontSize).toBe(0.1)
+
+    // 线宽滑块（画笔工具下显示）→ 笔划携带
+    await wrapper.find('.tool-pen').trigger('click')
+    await wrapper.find('.line-width-slider').setValue('0.01')
+    await drawShape(wrapper, '.tool-pen')
+    expect(commandList(wrapper)[1].lineWidth).toBe(0.01)
+  })
+
+  it('字号滑块仅文字/序号工具显示，线宽滑块仅画笔/箭头/矩形（含后续新工具）显示', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    // 默认画笔：线宽滑块在、字号滑块不在
+    expect(wrapper.find('.line-width-slider').exists()).toBe(true)
+    expect(wrapper.find('.font-size-slider').exists()).toBe(false)
+
+    // 文字：字号滑块在、线宽滑块不在
+    await wrapper.find('.tool-text').trigger('click')
+    expect(wrapper.find('.line-width-slider').exists()).toBe(false)
+    expect(wrapper.find('.font-size-slider').exists()).toBe(true)
+  })
+
+  it('数字键 1-4 切工具（按 TOOL_KEYS 表序），输入框聚焦时不劫持', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2' }))
+    await nextTick()
+    expect(wrapper.find('.tool-arrow').classes()).toContain('tool-active')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '3' }))
+    await nextTick()
+    expect(wrapper.find('.tool-rect').classes()).toContain('tool-active')
+    expect(wrapper.find('.tool-arrow').classes()).not.toContain('tool-active')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '1' }))
+    await nextTick()
+    expect(wrapper.find('.tool-pen').classes()).toContain('tool-active')
+    expect(wrapper.find('.tool-rect').classes()).not.toContain('tool-active')
+
+    // 4 → TOOL_KEYS[3]（椭圆，按钮 T4 才加入工具栏）：本轮切换后无可见按钮高亮
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '4' }))
+    await nextTick()
+    expect(wrapper.find('.tool-pen').classes()).not.toContain('tool-active')
+    expect(wrapper.find('.tool-arrow').classes()).not.toContain('tool-active')
+    expect(wrapper.find('.tool-rect').classes()).not.toContain('tool-active')
+
+    // 6 → TOOL_KEYS[5]（文字）：表序驱动，T4 补钮后 1-8 与工具栏全对齐
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '6' }))
+    await nextTick()
+    expect(wrapper.find('.tool-text').classes()).toContain('tool-active')
+
+    // 文字输入框聚焦打字时数字键不劫持工具切换
+    await wrapper.find('input.text-draft').trigger('keydown', { key: '1' })
+    await nextTick()
+    expect(wrapper.find('.tool-text').classes()).toContain('tool-active')
+  })
+
+  it('Ctrl+Z 撤销 / Ctrl+Shift+Z 重做（window keydown）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-pen')
+    expect(commandCount(wrapper)).toBe(1)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }))
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(0)
+    expect(redoCount(wrapper)).toBe(1)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true }))
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1)
+    expect(redoCount(wrapper)).toBe(0)
   })
 })

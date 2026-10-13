@@ -17,6 +17,10 @@
     - 文字工具：工具栏展开行内输入框 + 「确认」，确认后点击画布放置文字
       （方案裁决 4：不用 window.prompt，避免组件测试非确定性）
     - 字号/线宽按「相对图宽比例」存储（annotationModel），渲染时 ×canvas.width 换算
+    - 参数行：6 预设色板 + 自定义色 + 线宽/字号滑块（原生 range，按当前工具显隐），
+      右侧标签显示换算后像素值；画布滚轮也可调参（×1.1/÷1.1）
+    - 快捷键（window 监听，弹窗可见期间生效）：数字键 1-N 切工具（按 TOOL_KEYS 表）、
+      Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 重做、Ctrl/Cmd+S 导出；输入框聚焦时仅放行 Escape
     - 撤销/重做双栈：undo 出栈入 redo，redo 回放，落新命令清 redo 栈；
       清空：双栈归零重绘（重绘 = 底图 + 回放命令栈）
     - 导出 PNG：canvas.toBlob('image/png') → 下载 <中性名>_screenshot_annotated.png
@@ -34,6 +38,7 @@
   >
     <div class="screenshot-preview">
       <div class="toolbar">
+        <!-- 工具组 -->
         <el-button class="tool tool-pen" :class="{ 'tool-active': tool === 'pen' }" @click="tool = 'pen'">
           画笔
         </el-button>
@@ -46,16 +51,56 @@
         <el-button class="tool tool-text" :class="{ 'tool-active': tool === 'text' }" @click="tool = 'text'">
           文字
         </el-button>
-        <label class="color-picker" title="标注颜色">
-          <input v-model="strokeColor" type="color" class="color-input" />
-        </label>
         <span class="toolbar-sep" aria-hidden="true" />
+        <!-- 操作组（T5 在此组内加「复制」按钮） -->
         <el-button class="btn-undo" :disabled="commands.length === 0" @click="undo">撤销</el-button>
         <el-button class="btn-redo" :disabled="redoStack.length === 0" @click="redo">重做</el-button>
         <el-button class="btn-clear" :disabled="commands.length === 0" @click="clearAll">清空</el-button>
         <span class="toolbar-spacer" />
+        <!-- 保存/导出组 -->
         <el-button class="btn-save" @click="saveOriginal">直接保存</el-button>
         <el-button class="btn-export" type="primary" @click="exportPng">导出 PNG</el-button>
+      </div>
+
+      <!-- 参数行：预设色板 + 自定义色 + 线宽/字号滑块（按当前工具显隐） -->
+      <div class="param-row">
+        <button
+          v-for="preset in PRESET_COLORS"
+          :key="preset"
+          type="button"
+          class="color-swatch"
+          :class="{ 'swatch-active': strokeColor === preset }"
+          :style="{ background: preset }"
+          :title="`标注颜色 ${preset}`"
+          @click="strokeColor = preset"
+        />
+        <label class="color-picker" title="自定义标注颜色">
+          <input v-model="strokeColor" type="color" class="color-input" />
+        </label>
+        <template v-if="showLineSlider">
+          <input
+            type="range"
+            class="line-width-slider"
+            :min="LINE_RATIO_MIN"
+            :max="LINE_RATIO_MAX"
+            :step="0.0005"
+            :value="lineRatio"
+            @input="onLineSlider"
+          />
+          <span class="param-value">{{ Math.round(lineRatio * canvasWidth) }}px</span>
+        </template>
+        <template v-if="showFontSlider">
+          <input
+            type="range"
+            class="font-size-slider"
+            :min="FONT_RATIO_MIN"
+            :max="FONT_RATIO_MAX"
+            :step="0.001"
+            :value="fontRatio"
+            @input="onFontSlider"
+          />
+          <span class="param-value">{{ Math.round(fontRatio * canvasWidth) }}px</span>
+        </template>
       </div>
 
       <!-- 文字工具行内输入区：确认后点击画布放置 -->
@@ -78,6 +123,7 @@
           @pointermove="onPointerMove"
           @pointerup="onPointerUp"
           @pointerleave="onPointerUp"
+          @wheel.prevent="onWheel"
         />
       </div>
     </div>
@@ -88,7 +134,12 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import {
   FONT_RATIO_DEFAULT,
+  FONT_RATIO_MAX,
+  FONT_RATIO_MIN,
   LINE_RATIO_DEFAULT,
+  LINE_RATIO_MAX,
+  LINE_RATIO_MIN,
+  TOOL_KEYS,
   fontPx,
   linePx,
   type AnnotationCmd,
@@ -129,6 +180,22 @@ const redoStack = ref<AnnotationCmd[]>([])
 const textDraft = ref('')
 const confirmedText = ref('')
 const drag = ref<DragState | null>(null)
+
+/** 新标注默认字号比例（字号滑块/滚轮调整；文字命令携带入栈）。 */
+const fontRatio = ref(FONT_RATIO_DEFAULT)
+/** 新标注默认线宽比例（线宽滑块/滚轮调整；笔划命令携带入栈）。 */
+const lineRatio = ref(LINE_RATIO_DEFAULT)
+/** 底图像素宽度（参数行 px 标签换算用；底图就绪时赋值）。 */
+const canvasWidth = ref(0)
+
+/** 预设色板（红/橙/黄/绿/蓝/黑）。 */
+const PRESET_COLORS = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#000000'] as const
+
+/** 参数行滑块显隐分组（T4 引入新工具时把对应工具补进相应表）。 */
+const FONT_TOOLS: readonly Tool[] = ['text']
+const LINE_TOOLS: readonly Tool[] = ['pen', 'arrow', 'rect']
+const showFontSlider = computed(() => FONT_TOOLS.includes(tool.value))
+const showLineSlider = computed(() => LINE_TOOLS.includes(tool.value))
 
 /** 基础截图（object URL 加载得到的图片元素）。 */
 const baseImage = ref<HTMLImageElement | null>(null)
@@ -221,6 +288,11 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y)
+}
+
+/** 数值钳制到 [min, max]（滑块与滚轮调参共用）。 */
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }
 
 /** client 坐标 → 画布像素坐标（显示尺寸与像素尺寸按比例换算）。 */
@@ -316,20 +388,20 @@ function redraw() {
         kind: 'pen',
         points: d.points.length ? d.points : [d.current],
         color: strokeColor.value,
-        lineWidth: LINE_RATIO_DEFAULT,
+        lineWidth: lineRatio.value,
       },
       canvasWidth,
     )
   } else if (d.tool === 'arrow') {
     drawCmd(
       ctx,
-      { kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value, lineWidth: LINE_RATIO_DEFAULT },
+      { kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
       canvasWidth,
     )
   } else {
     drawCmd(
       ctx,
-      { kind: 'rect', from: d.start, to: d.current, color: strokeColor.value, lineWidth: LINE_RATIO_DEFAULT },
+      { kind: 'rect', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
       canvasWidth,
     )
   }
@@ -344,6 +416,7 @@ watch(
     if (!canvas || !image) return
     canvas.width = image.naturalWidth
     canvas.height = image.naturalHeight
+    canvasWidth.value = canvas.width
     redraw()
   },
   { immediate: true },
@@ -361,7 +434,7 @@ function onPointerDown(e: PointerEvent) {
       at: point,
       text: confirmedText.value,
       color: strokeColor.value,
-      fontSize: FONT_RATIO_DEFAULT,
+      fontSize: fontRatio.value,
     })
     redraw()
     return
@@ -389,7 +462,7 @@ function onPointerUp() {
   // 位移过小的拖拽视为误触不提交（避免噪点/零宽矩形）
   if (d.tool === 'pen') {
     if (d.points.length >= 2 && dist(d.points[0], d.current) >= 2) {
-      pushCmd({ kind: 'pen', points: [...d.points], color: strokeColor.value, lineWidth: LINE_RATIO_DEFAULT })
+      pushCmd({ kind: 'pen', points: [...d.points], color: strokeColor.value, lineWidth: lineRatio.value })
     }
   } else if (d.tool === 'arrow') {
     if (dist(d.start, d.current) >= 2) {
@@ -398,7 +471,7 @@ function onPointerUp() {
         from: d.start,
         to: d.current,
         color: strokeColor.value,
-        lineWidth: LINE_RATIO_DEFAULT,
+        lineWidth: lineRatio.value,
       })
     }
   } else if (Math.abs(d.current.x - d.start.x) >= 2 || Math.abs(d.current.y - d.start.y) >= 2) {
@@ -407,7 +480,7 @@ function onPointerUp() {
       from: d.start,
       to: d.current,
       color: strokeColor.value,
-      lineWidth: LINE_RATIO_DEFAULT,
+      lineWidth: lineRatio.value,
     })
   }
   redraw()
@@ -455,8 +528,72 @@ function onTextEnter(e: KeyboardEvent) {
   if (!e.isComposing) confirmText()
 }
 
+/** 线宽滑块输入：取值钳制到上下限后作为新笔划默认线宽。 */
+function onLineSlider(e: Event) {
+  lineRatio.value = clamp(Number((e.target as HTMLInputElement).value), LINE_RATIO_MIN, LINE_RATIO_MAX)
+}
+
+/** 字号滑块输入：取值钳制到上下限后作为新文字默认字号。 */
+function onFontSlider(e: Event) {
+  fontRatio.value = clamp(Number((e.target as HTMLInputElement).value), FONT_RATIO_MIN, FONT_RATIO_MAX)
+}
+
+/** 画布滚轮调参：上滚放大 ×1.1、下滚缩小 ÷1.1（clamp 后重绘，拖拽预览随动）。 */
+function onWheel(e: WheelEvent) {
+  e.preventDefault()
+  const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1
+  if (showFontSlider.value) {
+    fontRatio.value = clamp(fontRatio.value * factor, FONT_RATIO_MIN, FONT_RATIO_MAX)
+  } else if (showLineSlider.value) {
+    lineRatio.value = clamp(lineRatio.value * factor, LINE_RATIO_MIN, LINE_RATIO_MAX)
+  }
+  redraw()
+}
+
+/**
+ * 弹窗快捷键（window 级监听）：
+ *   - Ctrl/Cmd+Z 撤销；Ctrl/Cmd+Shift+Z 重做；Ctrl/Cmd+S 导出 PNG
+ *   - 数字键 1-N（按 TOOL_KEYS 表序）切工具
+ * 输入框/文本域聚焦时仅放行 Escape（T3 编辑态退出用），其余按键不劫持打字。
+ */
+function onKeydown(e: KeyboardEvent) {
+  if (!props.visible) return
+  const target = e.target as HTMLElement | null
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') && e.key !== 'Escape') {
+    return
+  }
+  const ctrl = e.ctrlKey || e.metaKey
+  if (ctrl && e.key.toLowerCase() === 'z') {
+    e.preventDefault()
+    if (e.shiftKey) redo()
+    else undo()
+    return
+  }
+  if (ctrl && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    exportPng()
+    return
+  }
+  // Ctrl/Cmd+C → 复制到剪贴板：T5 接线（本轮占位，不拦截浏览器默认行为）。
+  // Delete/Backspace → 删除选中命令：T3 接线。
+  if (!ctrl && e.key >= '1' && e.key <= String(TOOL_KEYS.length)) {
+    tool.value = TOOL_KEYS[Number(e.key) - 1]
+  }
+}
+
+// 弹窗可见期间挂 window 快捷键监听，关闭时移除（onUnmounted 兜底）。
+watch(
+  () => props.visible,
+  (visible) => {
+    if (visible) window.addEventListener('keydown', onKeydown)
+    else window.removeEventListener('keydown', onKeydown)
+  },
+  { immediate: true },
+)
+
 onUnmounted(() => {
   releaseObjectUrl()
+  window.removeEventListener('keydown', onKeydown)
 })
 
 /** 设备序列号中性化（沿用 DeviceDetail 既有下载命名规则）。 */
@@ -497,13 +634,16 @@ function exportPng() {
  * 当前已提交标注数（供父组件判断是否存在未导出的标注；
  * 测试亦用它断言撤销/清空的命令栈重置语义）。
  *
- * getCommands / getRedoCount：命令栈快照与 redo 栈长度（测试断言参数化与双栈语义，
- * 沿用 getAnnotationCount 测试暴露先例）。
+ * getCommands / getRedoCount：命令栈快照与 redo 栈长度；
+ * getDefaultFontRatio / getDefaultLineRatio：滑块/滚轮调参后的默认比例
+ * （均为测试断言暴露，沿用 getAnnotationCount 先例）。
  */
 defineExpose({
   getAnnotationCount: () => commands.value.length,
   getCommands: () => commands.value,
   getRedoCount: () => redoStack.value.length,
+  getDefaultFontRatio: () => fontRatio.value,
+  getDefaultLineRatio: () => lineRatio.value,
 })
 </script>
 
@@ -549,6 +689,40 @@ defineExpose({
 
 .toolbar-spacer {
   flex: 1;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.swatch-active {
+  border-color: #409eff;
+  box-shadow: inset 0 0 0 1px #fff;
+}
+
+.line-width-slider,
+.font-size-slider {
+  width: 120px;
+  margin: 0;
+}
+
+.param-value {
+  min-width: 44px;
+  font-size: 12px;
+  color: #909399;
+  white-space: nowrap;
 }
 
 .text-tool-row {
