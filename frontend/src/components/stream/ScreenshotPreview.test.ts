@@ -13,6 +13,8 @@
  *     （window 监听；输入框聚焦时数字键不劫持）
  *   - 新工具（T4）：椭圆（ctx.ellipse）/ 荧光笔（alpha 0.35）/ 序号（点击落字递增编号）/
  *     马赛克（拖拽提交无 color、重绘离屏缩-放 drawImage≥2、预览虚线框、两轴 ≥2px 守卫）
+ *   - 剪贴板（T5）：复制按钮/Ctrl+C → ClipboardItem(image/png) 经 clipboard.write 写出；
+ *     clipboard API 缺失静默不抛（不触 toBlob）
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
  *
@@ -109,6 +111,9 @@ const toBlobMock = vi.fn()
 /** 测试内被点击的 a 元素集合（下载断言用）。 */
 let anchors: HTMLAnchorElement[] = []
 
+/** 已挂载 wrapper 登记：afterEach 统一卸载——弹窗可见期挂 window keydown 监听，不卸载会跨测试外泄（T5）。 */
+const mountedWrappers: VueWrapper[] = []
+
 const ElDialogStub = {
   name: 'ElDialog',
   props: ['modelValue', 'title'],
@@ -129,7 +134,7 @@ interface PreviewOverrides {
 }
 
 function mountPreview(overrides: PreviewOverrides = {}) {
-  return shallowMount(ScreenshotPreview, {
+  const wrapper = shallowMount(ScreenshotPreview, {
     props: {
       visible: true,
       image: new Blob(['png-bytes'], { type: 'image/png' }),
@@ -140,6 +145,8 @@ function mountPreview(overrides: PreviewOverrides = {}) {
       stubs: { 'el-dialog': ElDialogStub, 'el-button': ElButtonStub },
     },
   })
+  mountedWrappers.push(wrapper)
+  return wrapper
 }
 
 /** 挂载并等图片加载完成（FakeImage 异步 onload → 画布按自然尺寸定尺寸）。 */
@@ -247,6 +254,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  while (mountedWrappers.length) mountedWrappers.pop()?.unmount()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -265,7 +273,7 @@ describe('ScreenshotPreview 渲染', () => {
     expect(labels).toEqual(
       expect.arrayContaining([
         '画笔', '箭头', '矩形', '椭圆', '荧光笔', '文字', '序号', '马赛克',
-        '撤销', '清空', '直接保存', '导出 PNG',
+        '撤销', '清空', '复制', '直接保存', '导出 PNG',
       ])
     )
     // 文字工具行内输入区仅在选中文字工具时展开
@@ -1065,5 +1073,51 @@ describe('ScreenshotPreview 新工具（T4）', () => {
     expect(wrapper.find('.line-width-slider').exists()).toBe(true)
     expect(wrapper.find('.color-swatch').exists()).toBe(false)
     expect(wrapper.find('.color-input').exists()).toBe(false)
+  })
+})
+
+describe('ScreenshotPreview 剪贴板（T5）', () => {
+  /** ClipboardItem 替身（记录 image/png 载荷；instanceof 断言用）。 */
+  class FakeClipboardItem {
+    constructor(public items: Record<string, Blob>) {}
+  }
+
+  it('复制按钮：canvas.toBlob 产出经 ClipboardItem(image/png) → clipboard.write 写出', async () => {
+    const write = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { write } })
+    vi.stubGlobal('ClipboardItem', FakeClipboardItem)
+    const wrapper = await mountAndSettle()
+
+    await wrapper.find('.btn-copy').trigger('click')
+
+    expect(toBlobMock).toHaveBeenCalledTimes(1)
+    expect(toBlobMock.mock.calls[0][1]).toBe('image/png')
+    expect(write).toHaveBeenCalledTimes(1)
+    const items = write.mock.calls[0][0] as FakeClipboardItem[]
+    expect(items).toHaveLength(1)
+    expect(items[0]).toBeInstanceOf(FakeClipboardItem)
+    expect(Object.keys(items[0].items)).toEqual(['image/png'])
+    expect(items[0].items['image/png']).toBeInstanceOf(Blob)
+  })
+
+  it('clipboard API 缺失：点击复制静默不抛（不触 toBlob）', async () => {
+    vi.stubGlobal('navigator', { ...navigator, clipboard: undefined })
+    const wrapper = await mountAndSettle()
+
+    // 无 clipboard.write → 特性检测提前返回；无 ClipboardItem 全局也不得抛错
+    await expect(wrapper.find('.btn-copy').trigger('click')).resolves.toBeUndefined()
+    expect(toBlobMock).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+C 触发复制到剪贴板（window keydown）', async () => {
+    const write = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { write } })
+    vi.stubGlobal('ClipboardItem', FakeClipboardItem)
+    await mountAndSettle()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true }))
+    await nextTick()
+
+    expect(write).toHaveBeenCalledTimes(1)
   })
 })

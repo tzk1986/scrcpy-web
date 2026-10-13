@@ -28,9 +28,12 @@
     - 参数行：6 预设色板 + 自定义色 + 线宽/字号滑块（原生 range，按当前工具显隐），
       右侧标签显示换算后像素值；画布滚轮也可调参（×1.1/÷1.1）
     - 快捷键（window 监听，弹窗可见期间生效）：数字键 1-N 切工具（按 TOOL_KEYS 表）、
-      Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 重做、Ctrl/Cmd+S 导出；输入框聚焦时仅放行 Escape
+      Ctrl/Cmd+Z 撤销、Ctrl/Cmd+Shift+Z 重做、Ctrl/Cmd+S 导出、Ctrl/Cmd+C 复制到剪贴板；
+      输入框聚焦时仅放行 Escape
     - 撤销/重做双栈：undo 出栈入 redo，redo 回放，落新命令清 redo 栈；
       清空：双栈归零重绘（重绘 = 底图 + 回放命令栈）
+    - 复制到剪贴板：canvas.toBlob → ClipboardItem('image/png') → clipboard.write
+      （API 缺失特性检测静默返回；权限/焦点等写入失败静默不抛）
     - 导出 PNG：canvas.toBlob('image/png') → 下载 <中性名>_screenshot_annotated.png
     - 直接保存：下载原始截图 <中性名>_screenshot.png（无标注），弹窗打开期不回收 URL
 
@@ -76,12 +79,13 @@
           马赛克
         </el-button>
         <span class="toolbar-sep" aria-hidden="true" />
-        <!-- 操作组（T5 在此组内加「复制」按钮） -->
+        <!-- 编辑组（撤销/重做/清空） -->
         <el-button class="btn-undo" :disabled="commands.length === 0" @click="undo">撤销</el-button>
         <el-button class="btn-redo" :disabled="redoStack.length === 0" @click="redo">重做</el-button>
         <el-button class="btn-clear" :disabled="commands.length === 0" @click="clearAll">清空</el-button>
         <span class="toolbar-spacer" />
-        <!-- 保存/导出组 -->
+        <!-- 输出组（复制/保存/导出） -->
+        <el-button class="btn-copy" @click="copyToClipboard">复制</el-button>
         <el-button class="btn-save" @click="saveOriginal">直接保存</el-button>
         <el-button class="btn-export" type="primary" @click="exportPng">导出 PNG</el-button>
       </div>
@@ -727,7 +731,8 @@ function onWheel(e: WheelEvent) {
 
 /**
  * 弹窗快捷键（window 级监听）：
- *   - Ctrl/Cmd+Z 撤销；Ctrl/Cmd+Shift+Z 重做；Ctrl/Cmd+S 导出 PNG
+ *   - Ctrl/Cmd+Z 撤销；Ctrl/Cmd+Shift+Z 重做；Ctrl/Cmd+S 导出 PNG；
+ *     Ctrl/Cmd+C 复制到剪贴板
  *   - Escape：编辑中 → 退出编辑；否则取消拖拽/移动并清选中
  *   - Delete/Backspace：删除选中命令（无选中不拦截默认）
  *   - 数字键 1-N（按 TOOL_KEYS 表序）切工具
@@ -764,6 +769,11 @@ function onKeydown(e: KeyboardEvent) {
     exportPng()
     return
   }
+  if (ctrl && e.key.toLowerCase() === 'c') {
+    e.preventDefault()
+    copyToClipboard()
+    return
+  }
   if (!ctrl && (e.key === 'Delete' || e.key === 'Backspace')) {
     if (selectedIndex.value !== null) {
       e.preventDefault()
@@ -771,7 +781,6 @@ function onKeydown(e: KeyboardEvent) {
     }
     return
   }
-  // Ctrl/Cmd+C → 复制到剪贴板：T5 接线（本轮占位，不拦截浏览器默认行为）。
   if (!ctrl && e.key >= '1' && e.key <= String(TOOL_KEYS.length)) {
     tool.value = TOOL_KEYS[Number(e.key) - 1]
   }
@@ -823,6 +832,23 @@ function exportPng() {
   canvas.toBlob((blob) => {
     if (!blob) return
     triggerBlobDownload(blob, annotatedFilename.value)
+  }, 'image/png')
+}
+
+/**
+ * 复制到剪贴板：画布 → PNG Blob → ClipboardItem('image/png') → clipboard.write（Chrome-only）。
+ * 特性检测：剪贴板 API 缺失（如非安全上下文）直接静默返回；权限/焦点等写入失败静默不抛。
+ */
+function copyToClipboard() {
+  const canvas = canvasRef.value
+  if (!canvas || !navigator.clipboard?.write) return
+  canvas.toBlob(async (blob) => {
+    if (!blob) return
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    } catch {
+      /* 剪贴板权限/焦点问题静默 */
+    }
   }, 'image/png')
 }
 
