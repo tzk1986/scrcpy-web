@@ -8,6 +8,12 @@
 
 import asyncio
 import struct
+import runpy
+from pathlib import Path
+
+SCRCPY_VERSION = runpy.run_path(
+    str(Path(__file__).resolve().parents[2] / "backend" / "app" / "scrcpy" / "scrcpy_version.py")
+)["SCRCPY_SERVER_VERSION"]
 
 
 async def test_scrcpy_protocol():
@@ -48,7 +54,7 @@ async def test_scrcpy_protocol():
         "CLASSPATH=/data/local/tmp/scrcpy-server.jar",
         "app_process", "/",
         "com.genymobile.scrcpy.Server",
-        "2.4",
+        SCRCPY_VERSION,
         "log_level=debug",
         "max_size=1080",
         "max_fps=30",

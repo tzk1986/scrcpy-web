@@ -1,10 +1,14 @@
 import asyncio
 import struct
 import sys
+import runpy
 from pathlib import Path
 
 # 使用绝对路径
 ADB_PATH = str(Path.cwd() / "tools" / "adb.exe")
+SCRCPY_VERSION = runpy.run_path(
+    str(Path(__file__).resolve().parents[2] / "backend" / "app" / "scrcpy" / "scrcpy_version.py")
+)["SCRCPY_SERVER_VERSION"]
 
 async def debug_scrcpy():
     device_id = "192.168.8.22:5555"
@@ -16,7 +20,7 @@ async def debug_scrcpy():
     proc = await asyncio.create_subprocess_exec(
         ADB_PATH, "-s", device_id, "shell",
         "CLASSPATH=/data/local/tmp/scrcpy-server.jar",
-        "app_process", "/", "com.genymobile.scrcpy.Server", "2.4",
+        "app_process", "/", "com.genymobile.scrcpy.Server", SCRCPY_VERSION,
         "max_size=1080", "max_fps=30", "video_codec=h264",
         "video_bit_rate=4000000", "tunnel_forward=true",
         "send_frame_meta=false",

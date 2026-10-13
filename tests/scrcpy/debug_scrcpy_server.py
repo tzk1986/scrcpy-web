@@ -9,6 +9,12 @@
 
 import asyncio
 import secrets
+import runpy
+from pathlib import Path
+
+SCRCPY_VERSION = runpy.run_path(
+    str(Path(__file__).resolve().parents[2] / "backend" / "app" / "scrcpy" / "scrcpy_version.py")
+)["SCRCPY_SERVER_VERSION"]
 
 
 async def test_scrcpy_server():
@@ -64,7 +70,7 @@ async def test_scrcpy_server():
         "CLASSPATH=/data/local/tmp/scrcpy-server.jar",
         "app_process", "/",
         "com.genymobile.scrcpy.Server",
-        "4.1",
+        SCRCPY_VERSION,
         f"scid={scid_hex}",
         "tunnel_forward=true",
         "log_level=info",

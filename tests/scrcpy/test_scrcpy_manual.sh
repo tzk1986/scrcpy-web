@@ -3,6 +3,10 @@
 DEVICE="192.168.8.22:5555"
 ADB="D:/tangzk/py/scrcpy-web/tools/adb.exe"
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRCPY_VERSION=$(python -c "import runpy,sys; print(runpy.run_path(sys.argv[1])['SCRCPY_SERVER_VERSION'])" \
+  "$REPO_ROOT/backend/app/scrcpy/scrcpy_version.py")
+
 echo "=== 手动测试 scrcpy-server ==="
 
 # 清理之前的进程
@@ -15,7 +19,7 @@ $ADB -s $DEVICE shell "logcat -c"
 
 # 启动 scrcpy-server（后台）
 echo "3. 启动 scrcpy-server..."
-$ADB -s $DEVICE shell 'CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 2.4 max_size=1080 max_fps=30 video_codec=h264 video_bit_rate=4000000 send_frame_meta=false raw_stream=true tunnel_forward=true' &
+$ADB -s $DEVICE shell 'CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server '"$SCRCPY_VERSION"' max_size=1080 max_fps=30 video_codec=h264 video_bit_rate=4000000 send_frame_meta=false raw_stream=true tunnel_forward=true' &
 SERVER_PID=$!
 
 # 等待几秒

@@ -2,7 +2,7 @@
 """真机编码器稳定性探测（Rockchip 卡死复现 / 参数对照，非 pytest）。
 
 直接对设备启动 scrcpy-server（独立 scid，可与既有会话并存；固定 "scrcpy"
-socket 名的现有会话不受影响），按 v4.1 协议读流 N 秒，输出逐秒帧数/字节/
+socket 名的现有会话不受影响），按 12B 包头协议读流 N 秒，输出逐秒帧数/字节/
 关键帧统计与卡死窗口，用于：
 
   1. 复现 Rockchip OMX 编码器「进程活着但不产帧」故障（/proc/io 冻结）
@@ -32,6 +32,7 @@ for _p in (_ROOT / "backend", _ROOT):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from app.scrcpy.constants import SCRCPY_SERVER_VERSION  # noqa: E402
 from app.scrcpy.control_sender import ACTION_DOWN, ACTION_MOVE, ControlSender
 from app.scrcpy.stream_protocol import MediaEvent, SessionEvent, read_packets
 
@@ -119,7 +120,7 @@ async def main() -> int:
         return 1
 
     inner = (
-        f"CLASSPATH={REMOTE_JAR} app_process / com.genymobile.scrcpy.Server 4.1 "
+        f"CLASSPATH={REMOTE_JAR} app_process / com.genymobile.scrcpy.Server {SCRCPY_SERVER_VERSION} "
         f"log_level=info max_size={args.max_size} max_fps={args.fps} "
         f"video_bit_rate={args.bit_rate} video_codec=h264 tunnel_forward=true "
         f"control=true audio=false scid={scid_arg}"

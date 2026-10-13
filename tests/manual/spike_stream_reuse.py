@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import json
 import random
+import runpy
 import subprocess
 import sys
 import time
@@ -34,7 +35,9 @@ LOCAL_JAR = ROOT / "backend" / "app" / "scrcpy" / "scrcpy-server.jar"
 REMOTE_JAR = "/data/local/tmp/scrcpy-server.jar"
 BAK_JAR = REMOTE_JAR + ".bak"
 SCRCPY_CLASS = "com.genymobile.scrcpy.Server"
-SCRCPY_VERSION = "4.1"
+SCRCPY_VERSION = runpy.run_path(
+    str(ROOT / "backend" / "app" / "scrcpy" / "scrcpy_version.py")
+)["SCRCPY_SERVER_VERSION"]
 
 
 def adb(device: str, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
