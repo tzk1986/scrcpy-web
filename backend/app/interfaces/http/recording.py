@@ -9,6 +9,7 @@
     POST /api/recording/{device_id}/start — 启动录屏（单设备互斥，冲突 409）
     POST /api/recording/{device_id}/stop  — 停止并收尾（终态 done/failed）
     GET  /api/recording/{device_id}       — 查询当前会话（无则 404 NO_RECORDING）
+                                            （done 产物已被清理 → 收敛 failed 并 404，方案 42 §4）
     GET  /api/recording                   — 进行态会话列表（供前端刷新恢复状态；不带尾斜杠）
     GET  /api/recording/{device_id}/file  — 下载本地产物 MP4（containment 校验）
 
@@ -40,8 +41,14 @@ _TERMINAL_STATES = (RecordingState.DONE.value, RecordingState.FAILED.value)
 
 
 def _session_body(session: RecordingSession) -> dict[str, Any]:
-    """会话响应体：dataclass → JSON。"""
-    return {"session": asdict(session)}
+    """会话响应体：dataclass → JSON；done 会话附 file_size（方案 42 §4 面板信息行）。"""
+    body: dict[str, Any] = {"session": asdict(session)}
+    if session.state == RecordingState.DONE.value and session.local_path:
+        try:
+            body["file_size"] = Path(session.local_path).stat().st_size
+        except OSError:
+            body["file_size"] = None
+    return body
 
 
 @router.get("")
@@ -112,6 +119,13 @@ async def get_recording(
     """
     session = service.get(device_id)
     if session is None:
+        raise RecordingNotFoundError(device_id)
+    if session.state == RecordingState.DONE.value and (
+        not session.local_path or not Path(session.local_path).is_file()
+    ):
+        # 产物已被清理（双限/关服清盘）而会话滞留 done：收敛 failed 并 404——
+        # 前端据此静默复位 idle，消除「有面板无文件」假象（方案 42 §4）
+        session.state = RecordingState.FAILED.value
         raise RecordingNotFoundError(device_id)
     return _session_body(session)
 

@@ -63,6 +63,7 @@ function mountPanel() {
 async function mountDonePanel() {
   mockApi.getRecording.mockResolvedValue({
     session: sessionWith({ state: 'done', local_path: 'data/recordings/s1.mp4' }),
+    file_size: 1048576,
   })
   const wrapper = mountPanel()
   await flushPromises()
@@ -145,6 +146,7 @@ describe('RecordingPanel', () => {
     mockApi.startRecording.mockResolvedValue({ session: sessionWith() })
     mockApi.stopRecording.mockResolvedValue({
       session: sessionWith({ state: 'done', local_path: 'data/recordings/s1.mp4' }),
+      file_size: 3145728,
     })
     const wrapper = mountPanel()
     await flushPromises()
@@ -163,6 +165,8 @@ describe('RecordingPanel', () => {
     expect(link.attributes('href')).toBe('/api/recording/dev1/file')
     expect(link.attributes('download')).toMatch(/\.mp4$/)
     expect(wrapper.find('.record-start').exists()).toBe(false)
+    expect(wrapper.find('.record-again').exists()).toBe(true)
+    expect(wrapper.find('.record-info').text()).toBe('约 3.0 MB')
   })
 
   it('开始互斥 409 → ElMessage.error 提示且保持录屏入口', async () => {
@@ -292,5 +296,33 @@ describe('RecordingPanel', () => {
 
     expect(h.ElMessage.error).toHaveBeenCalledWith('webm 导出失败')
     expect(wrapper.find('.export-webm').attributes('disabled')).toBeUndefined()
+  })
+
+  it('done 态「重新录制」：点击 → 调 startRecording 进入录制态并清信息行（方案 42 T4）', async () => {
+    const wrapper = await mountDonePanel()
+    mockApi.startRecording.mockResolvedValue({ session: sessionWith() })
+
+    await wrapper.find('.record-again').trigger('click')
+    await flushPromises()
+
+    expect(mockApi.startRecording).toHaveBeenCalledWith('dev1')
+    expect(wrapper.find('.record-timer').exists()).toBe(true)
+    expect(wrapper.find('.record-info').exists()).toBe(false)
+  })
+
+  it('挂载恢复：GET 会话 404（产物已被清理，后端已收敛）→ 静默回 idle 不弹错误（方案 42 T4）', async () => {
+    mockApi.getRecording.mockRejectedValue({ response: { status: 404 } })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(wrapper.find('.record-start').exists()).toBe(true)
+    expect(h.ElMessage.error).not.toHaveBeenCalled()
+  })
+
+  it('挂载恢复：done + file_size → 预览与大小信息行（方案 42 T4）', async () => {
+    const wrapper = await mountDonePanel()
+
+    expect(wrapper.find('video').exists()).toBe(true)
+    expect(wrapper.find('.record-info').text()).toBe('约 1.0 MB')
   })
 })

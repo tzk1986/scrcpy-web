@@ -10,6 +10,8 @@
     done      — <video> 预览 + 下载链接（均指向 GET /api/recording/{id}/file）
               + 「导出 webm」按钮（B6：captureStream + MediaRecorder 抽
               min(时长, 10s) 短片，fps 10 控体积；浏览器不支持时禁用降级）
+              + 「重新录制」按钮（方案 42 §4：直接再 start，终态可被新会话
+              覆盖、互斥语义不变）+ 产物大小信息行（后端 file_size）
 
   关键行为：
     - 挂载恢复：getRecording 返回 recording 会话时按 started_at 续计时；
@@ -42,6 +44,8 @@
       >
         {{ exporting ? '导出中…' : '导出 webm' }}
       </el-button>
+      <el-button class="record-again" @click="start">重新录制</el-button>
+      <div v-if="fileSizeText" class="record-info">{{ fileSizeText }}</div>
     </div>
   </div>
 </template>
@@ -71,6 +75,13 @@ const elapsed = ref(0)
 const sessionId = ref('')
 const videoEl = ref<HTMLVideoElement | null>(null)
 const exporting = ref(false)
+
+const fileSize = ref(0)
+
+/** 产物大小信息行文案（方案 42 §4；未知/为 0 时不显示）。 */
+const fileSizeText = computed(
+  () => (fileSize.value > 0 ? `约 ${(fileSize.value / 1048576).toFixed(1)} MB` : '')
+)
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -132,6 +143,7 @@ async function start() {
   try {
     const res = await api.startRecording(props.deviceId)
     sessionId.value = res.session?.id ?? ''
+    fileSize.value = 0
     state.value = 'recording'
     startTimer()
   } catch (err) {
@@ -155,6 +167,7 @@ async function stop() {
     const session = res?.session
     if (session?.state === 'done' && session.local_path) {
       sessionId.value = session.id ?? ''
+      fileSize.value = res?.file_size ?? 0
       state.value = 'done'
     } else {
       state.value = 'idle'
@@ -184,10 +197,11 @@ onMounted(async () => {
       state.value = 'recording'
     } else if (session?.state === 'done' && session.local_path) {
       sessionId.value = session.id ?? ''
+      fileSize.value = res?.file_size ?? 0
       state.value = 'done'
     }
   } catch {
-    state.value = 'idle' // 无会话/查询失败：保持录屏入口
+    state.value = 'idle' // 无会话 / 产物已被清理（后端收敛 404）：静默复位（方案 42 §4）
   }
 })
 
@@ -247,5 +261,10 @@ onUnmounted(() => {
   height: 112px;
   background: #000;
   border-radius: 4px;
+}
+
+.record-info {
+  font-size: 12px;
+  color: #909399;
 }
 </style>

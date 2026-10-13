@@ -580,7 +580,7 @@ export const api = {
    */
   async stopRecording(deviceId: string) {
     const res = await client.post(`/recording/${encodeURIComponent(deviceId)}/stop`)
-    return res.data as { session: RecordingSession }
+    return res.data as { session: RecordingSession; file_size?: number | null }
   },
 
   /**
@@ -589,7 +589,7 @@ export const api = {
    */
   async getRecording(deviceId: string) {
     const res = await client.get(`/recording/${encodeURIComponent(deviceId)}`)
-    return res.data as { session: RecordingSession }
+    return res.data as { session: RecordingSession; file_size?: number | null }
   },
 
   /**

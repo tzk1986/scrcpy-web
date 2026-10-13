@@ -292,3 +292,59 @@ def test_file_endpoint_missing_file_on_disk_404(client, fake: FakeRecordingServi
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "NO_RECORDING"
+
+
+# ---------------------------------------------------------------------------
+# done 态完备化（方案 42 §4：file_size 信息 + 失效收敛）
+# ---------------------------------------------------------------------------
+
+def test_get_done_returns_file_size(client, fake: FakeRecordingService, tmp_path) -> None:
+    """GET done 会话且产物在位 → 200 + file_size（面板信息行数据源）。"""
+    mp4 = tmp_path / "rec-d1.mp4"
+    mp4.write_bytes(b"12345")
+    fake.dir = tmp_path
+    _done_session_with_file(fake, mp4)
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/d1")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["file_size"] == 5
+
+
+def test_get_done_missing_file_converges_404(client, fake: FakeRecordingService, tmp_path) -> None:
+    """产物已被清理（双限/关服清盘）但会话滞留 done → 收敛 failed 并 404（前端静默 idle）。"""
+    fake.dir = tmp_path
+    _done_session_with_file(fake, tmp_path / "gone.mp4")
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.get("/api/recording/d1")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NO_RECORDING"
+    assert fake.sessions["d1"].state == RecordingState.FAILED.value
+
+
+def test_stop_done_includes_file_size(client, fake: FakeRecordingService, tmp_path) -> None:
+    """stop 返回 done 的响应即带 file_size——前端无需二次请求拿大小。"""
+    mp4 = tmp_path / "rec-d1.mp4"
+    mp4.write_bytes(b"abcdef")
+    fake.sessions["d1"] = RecordingSession(
+        id="rec-d1",
+        device_id="d1",
+        state=RecordingState.RECORDING.value,
+        local_path=str(mp4),
+    )
+    app.dependency_overrides[get_recording_service] = lambda: fake
+    try:
+        response = client.post("/api/recording/d1/stop")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["session"]["state"] == RecordingState.DONE.value
+    assert response.json()["file_size"] == 6
