@@ -13,6 +13,7 @@ Server 部署管理器测试
     - 错误处理
 """
 
+import hashlib
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
@@ -133,10 +134,12 @@ class TestPushServerBakRestore:
         return [c.args for c in exec_mock.call_args_list]
 
     @staticmethod
-    def _ls_bak_ok(size: int) -> MagicMock:
+    def _ls_bak_ok(size: int, sha256: str | None = None) -> MagicMock:
+        digest = sha256 or hashlib.sha256(b"dummy").hexdigest()
         out = (
             f"-rw-r--r-- 1 shell shell {size} 2026-09-30 12:00 "
-            f"/data/local/tmp/scrcpy-server.jar.bak"
+            f"/data/local/tmp/scrcpy-server.jar.bak\n"
+            f"{digest}  /data/local/tmp/scrcpy-server.jar.bak\n"
         ).encode()
         return TestPushServerBakRestore._proc(0, out=out)
 
@@ -197,6 +200,40 @@ class TestPushServerBakRestore:
         argv = self._argv_list(exec_mock)
         assert any("push" in a for a in argv)
         assert "cp" in argv[2]
+
+    @pytest.mark.asyncio
+    async def test_bak_same_size_different_hash_pushes(
+        self, mock_device_id, manager_with_jar
+    ):
+        """同尺寸不同内容 → hash 判据拦截，不误恢复（方案 44 T3，升级关键场景）。"""
+        seq = [self._ls_bak_ok(5, sha256="0" * 64), self._proc(0), self._proc(0)]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_count == 3
+        argv = self._argv_list(exec_mock)
+        assert any("push" in a for a in argv)
+        assert "cp" in argv[2]
+
+    @pytest.mark.asyncio
+    async def test_bak_hash_unavailable_falls_back_to_size(
+        self, mock_device_id, manager_with_jar
+    ):
+        """设备无 sha256sum（输出无 64-hex）→ 降级大小判据，仍走恢复（老设备兼容）。"""
+        out = (
+            b"-rw-r--r-- 1 shell shell 5 2026-09-30 12:00 "
+            b"/data/local/tmp/scrcpy-server.jar.bak\n"
+        )
+        seq = [self._proc(0, out=out), self._proc(0)]
+        with patch('asyncio.create_subprocess_exec', side_effect=seq) as exec_mock:
+            success = await manager_with_jar.push_server(mock_device_id)
+
+        assert success is True
+        assert exec_mock.call_count == 2
+        argv = self._argv_list(exec_mock)
+        assert not any("push" in a for a in argv)
+        assert "cp" in argv[1]
 
     @pytest.mark.asyncio
     async def test_bak_restore_failure_falls_back_to_push(

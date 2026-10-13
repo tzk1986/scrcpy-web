@@ -36,6 +36,8 @@ scrcpy-server 工作流程：
 """
 
 import asyncio
+import hashlib
+import re
 from pathlib import Path
 
 from app.core.config import settings
@@ -122,9 +124,11 @@ class ServerManager:
         # 只有首次部署 / JAR 升级 / bak 损坏 / 设备重启清 tmp 才真正 push。
         try:
             expected_size = self._jar_path.stat().st_size
+            expected_sha256 = hashlib.sha256(self._jar_path.read_bytes()).hexdigest()
         except OSError:
             expected_size = None
-        if await self._bak_restore(device_id, expected_size):
+            expected_sha256 = None
+        if await self._bak_restore(device_id, expected_size, expected_sha256):
             return True
 
         logger.info(
@@ -172,27 +176,35 @@ class ServerManager:
             logger.error("push_server_error", device=device_id, error=str(e))
             return False
 
-    async def _bak_restore(self, device_id: str, expected_size: int | None) -> bool:
+    async def _bak_restore(
+        self, device_id: str, expected_size: int | None, expected_sha256: str | None
+    ) -> bool:
         """
-        尝试从 .bak 恢复主 JAR（D1）。
+        尝试从 .bak 恢复主 JAR（D1；方案 44 T3 加固为大小 + sha256 双判据）。
 
-        仅当 .bak 存在且大小与本地 JAR 吻合时执行 cp；任何失败或校验不符
-        均返回 False，由调用方回退完整 push（D3）。cp 而非 mv：恢复后的主
-        JAR 会再次被退出中的 server 自删（E002），bak 必须常驻供下次恢复。
+        一次 shell 调用（ls -l && sha256sum）取大小与哈希：
+        - 大小按 ls -l 第 5 列精确解析（同尺寸不同内容不再误恢复）；
+        - 设备无 sha256sum（老 toybox/裁剪 ROM）时降级为仅大小判据；
+        - expected 任一为 None（本地 jar 缺失）时不恢复。
+
+        任何失败或校验不符均返回 False，由调用方回退完整 push（D3）。
+        cp 而非 mv：恢复后的主 JAR 会再次被退出中的 server 自删（E002），
+        bak 必须常驻供下次恢复。
 
         参数：
             device_id: 设备的 ADB 序列号。
-            expected_size: 本地 JAR 字节数；None（本地 jar 缺失）时直接不恢复。
+            expected_size: 本地 JAR 字节数；None 时直接不恢复。
+            expected_sha256: 本地 JAR 的 SHA256 十六进制；None 时直接不恢复。
 
         返回：
             True 表示已从 bak 恢复，False 表示需要 push。
         """
-        if expected_size is None:
+        if expected_size is None or expected_sha256 is None:
             return False
         try:
             process = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell",
-                "ls", "-l", SCRCPY_SERVER_BAK_PATH,
+                f"ls -l {SCRCPY_SERVER_BAK_PATH} && sha256sum {SCRCPY_SERVER_BAK_PATH}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -203,7 +215,17 @@ class ServerManager:
                 timeout=ADB_TIMEOUT_SECONDS
             )
 
-            if process.returncode != 0 or str(expected_size) not in stdout.decode():
+            text = stdout.decode(errors="replace")
+            ls_match = re.search(r"^\S+\s+\d+\s+\S+\s+\S+\s+(\d+)\s", text, re.M)
+            if ls_match is None or int(ls_match.group(1)) != expected_size:
+                return False
+
+            sha_match = re.search(r"\b([0-9a-f]{64})\b", text)
+            if sha_match is None:
+                # 老设备无 sha256sum：降级仅大小判据（保恢复路径不中断）
+                logger.debug("bak_hash_unavailable", device=device_id)
+            elif sha_match.group(1) != expected_sha256:
+                logger.info("bak_hash_mismatch", device=device_id)
                 return False
 
             process = await asyncio.create_subprocess_exec(
