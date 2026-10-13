@@ -1,0 +1,143 @@
+# 方案 44：scrcpy 升级模块化方案
+
+> **状态**：立项完成（2026-10-13，耦合点代码级清点 + 上游演进调研完成）；
+> 待用户 review，实施排期另行指示。
+> **背景**：现随包 scrcpy-server v4.1（上游最新 v5.0.1，2026-10-08）。
+> 用户要求评估「上游更新后仅换包即升级」的可行性，并给出升级方案，
+> 方便后续升级使用。
+
+## 一、背景与目标
+
+**用户意图**：scrcpy 上游迭代较快，希望后续升级成本可控——理想形态
+「仅替换随包 jar + 少量常量」即可完成升级，而不是散点改代码。
+
+**成功标准**：
+- 全仓 scrcpy-server 版本引用**单源化**（除 jar 本身外，版本只在 1 处
+  定义，其余全部推导/引用）；
+- 清理现存散点与 2.4 残留（上次升级漏改的 4 处为证）；
+- 升级 SOP 文档化（照做即可，含校验清单）；自动化校验补强（启动参数
+  与常量一致性、jar 哈希与清单一致性）；防升级误恢复加固（.bak 机制）；
+- （推荐选做）以 v5.0.1 完成一次真实升级试跑，实证升级通道（真机出流 +
+  exe 打包核验）。
+
+**约束**：不改变 scrcpy 协议代码（除非升级目标跨大版本）；零新依赖；
+不动抓帧/流链路；master 直做、禁 push。
+
+## 二、现状调研（2026-10-13）
+
+### 耦合点清单（版本升级必须同步的位置）
+
+| # | 位置 | 内容 | 性质 |
+|---|---|---|---|
+| 1 | `backend/app/scrcpy/scrcpy-server.jar` | 二进制本体 | 替换 |
+| 2 | `backend/app/scrcpy/constants.py:127` | `SCRCPY_SERVER_VERSION = "4.1"`（全仓唯一生效常量） | 必改 |
+| 3 | `backend/app/infrastructure/stream/scrcpy.py:218` | app_process 首参取常量（server 端硬校验：版本不符即拒启 "does not match"） | 消费 |
+| 4 | `backend/app/infrastructure/stream/server_manager.py:301` | 以常量充当 get_server_version（无设备端探测） | 消费 |
+| 5 | `scripts/fetch_tools.py:41,90` | JAR_URL 硬编码 `v4.1` + SHA256 手抄 | 必改 |
+| 6 | `tests/unit/test_fetch_tools.py:45-47` | URL 尾缀断言 v4.1 | 必改 |
+| 7 | `tests/scrcpy/test_constants.py:183` | `== "4.1"` 断言 | 必改 |
+| 8a | 已随 4.1 更新（散点）：`tests/scrcpy/debug_scrcpy_server.py:67`、`debug_scrcpy_minimal.py:72`、`tests/manual/probe_encoder_stability.py:122`、`spike_stream_reuse.py:37` | 脚本内硬编码 4.1 | 散点 |
+| 8b | **仍是 2.4（上次升级漏改）**：`tests/scrcpy/test_scrcpy_manual.sh:18`、`test_scrcpy_minimal.sh:4`、`debug_scrcpy_direct.py:51`、`backend/app/scrcpy/README.md:213` | 残留 | 散点/腐化 |
+| 9 | 打包 `openscrcpy.spec:47` | 按目录注入 jar（无版本耦合） | 无耦合 |
+| 10 | 前端/文档 | 无版本显示（文档仅注释说明） | 无耦合 |
+
+### 协议耦合（仅跨大版本才动）
+
+- 启动参数表（`scrcpy.py:213-236`：max_size/max_fps/video_bit_rate/
+  tunnel_forward/control/audio/send_frame_meta/raw_stream 等）——对照
+  v5.0.1 `Options.java` 键名全部仍存在；
+- 握手（`stream_protocol.py:161-170`：1B dummy + 64B 设备名 + 4B codec id）；
+  12B 包头（**v4.0 新引入的 session 包**）；
+- 控制消息（`control_sender.py` 全部：touch 32B / keycode / scroll /
+  RESET_VIDEO=17）——逐字节对照 v5.0.1 `ControlMessage.java` 一致。
+
+### 上游演进与兼容性（WebSearch，2026-10 时点）
+
+- 版本线：3.0（2024-11-24，server 57 文件变更）→ 4.0（05-12，断层：server
+  48 文件变更 + 12B session 元数据）→ 4.1（07-12，VP8/VP9）→ **5.0.1
+  （2026-10-08，最新）**；
+- **4.1 → 5.0.1：server/ 仅 4 个文件变化**（构建脚本、音频、相机），
+  `Options.java` / `Streamer.java` / `ControlMessage.java` **字节级一致**；
+  5.0 的硬件解码亮点全在官方 client 侧，与本自研客户端无关；
+- 上游官方立场（doc/develop.md）：**server 与 client 版本必须完全一致**
+  （jar 内 VERSION_NAME 硬校验，不符即拒启）；协议视为内部实现，**无向前/
+  向后兼容承诺**。
+
+### 结论：分档
+
+| 档 | 可行性 | 说明 |
+|---|---|---|
+| 同协议代（4.x→5.x，协议未变） | **接近「仅换包」**：换 jar + 常量 + URL/SHA + 2 处测试断言 ≈ 完成 | 散点单源化后即成标准 SOP |
+| 跨大版本（如 3.x→4.x 式断层） | **否** | 协议代码（握手/包头/控制消息/参数）必须逐项重核重写；本方案不为其设计适配层，届时应单独立项 |
+
+### 附带发现（风险点）
+
+- **`.bak` 误恢复**：server_manager 对新旧 jar 仅按文件大小比对来恢复备份
+  （`server_manager.py:206`）——升级后新旧 jar 同尺寸会错误恢复旧版；
+- 官方 jar 有 `SHA256SUMS.txt`（含 GPG 签名）可双源校验，替代目前手抄 hash。
+
+## 三、设计
+
+### §1 版本单源化
+
+- `fetch_tools.py` 的 JAR_URL 改为由 `SCRCPY_SERVER_VERSION` 模板推导
+  （`https://github.com/Genymobile/scrcpy/releases/download/v{V}/scrcpy-server-v{V}`，
+  官方资产无 `.jar` 后缀）；脚本独立运行需处理 import 路径（`sys.path`
+  注入 backend 或共享纯常量数据文件，零新依赖）；
+- 散点全清：8a/8b 全部改读常量（或环境变量兜底）；2.4 残留一次性归零；
+- 测试断言改引用常量（断言变为「URL/参数与常量一致」而非钉死字符串——
+  升级时只改常量一处）。
+
+### §2 升级 SOP（文档化 + 校验自动化）
+
+扩 `docs/经验记录.md`（E015 新增）+ 本方案附录：
+1. 改 `SCRCPY_SERVER_VERSION`（若上游换 URL 模板一并改 fetch_tools）；
+2. `python scripts/fetch_tools.py` 下载 + `--print-hash` 回填 + 对照官方
+   `SHA256SUMS.txt` 双源核对；
+3. 跑三处锁定测试（URL / 常量 / 启动参数一致性）；
+4. 用 GitHub compare API 比对 server/ diff 与 release notes——**判定是否
+   跨协议代**（若 `Options.java` / `ControlMessage.java` 有差异 → 进入协议
+   重核模式，非本 SOP 范围）；
+5. 真机 smoke（.25：推流 30s 出图 + 控制注入生效）；脚本捕获
+   "does not match" 即判失败；
+6. 打包核验（exe zip 内含新 jar 且哈希与清单一致）。
+
+### §3 自动化校验补强
+
+- 单测：启动命令 `args[0] == SCRCPY_SERVER_VERSION`（离线锁定，防消费点
+  漂移）；
+- 单测：fetch_tools 下载清单哈希与实际 jar 一致（`--verify` 完善，若既有
+  能力覆盖则补测试锁定）；
+- 可选：离线读 jar 内 VERSION_NAME 字符串与常量比对（实现方式实施时评估）。
+
+### §4 .bak 误恢复加固
+
+- server_manager 备份恢复判据从「文件大小」升级为「大小 + mtime/hash 之
+  一」（同尺寸不同内容不再误恢复）；补单测覆盖「新旧同尺寸」场景。
+
+### §5（推荐选做）v5.0.1 真实升级试跑
+
+- 按 §2 SOP 把版本从 4.1 升到 5.0.1（协议已字节级核验无变化，预期风险
+  低），完成通道实证：真机出流/控制 + exe 打包 + 冒烟；异常则回滚
+  （改回常量 + 恢复旧 jar，git 历史留底）。
+- 战略意义：以一次低风险真实升级，把「模块化升级通道」从文档变成被
+  验证的能力。
+
+## 四、任务分解（拟，实施待排期）
+
+| 任务 | 内容 | 规模 |
+|---|---|---|
+| T1 | 版本单源化：fetch_tools 模板化 + 散点清理（含 2.4 残留）+ 测试断言改引用 | M |
+| T2 | 自动化校验：启动参数一致性单测 + jar 哈希校验测试补强 | S |
+| T3 | .bak 误恢复加固 + 单测 | S |
+| T4 | （选做）v5.0.1 升级试跑：常量/URL/hash + 真机 smoke + exe 核验 | M |
+| T5 | 文档：经验记录 E015 升级 SOP + README/发布说明版本引用核对 | S |
+
+## 五、风险与已知限制
+
+| 项 | 说明 | 缓解 |
+|---|---|---|
+| 升级试跑未知回归 | 协议已字节级核验一致，风险集中在构建差异 | 真机 smoke + 回滚路径（常量 + 旧 jar 在 git 历史）兜底 |
+| 跨大版本升级 | 未来上游若再破坏协议，仍需协议重核 | 非本方案承诺；SOP 第 4 步负责识别并单独立项 |
+| fetch_tools 独立运行 | 脚本导入 backend 常量需处理 PYTHONPATH | `sys.path` 注入或共享纯数据模块（零新依赖） |
+| 官方 SHA256SUMS 获取 | 需随 releases 页下载 | SOP 步骤固定来源 URL；失败退回单源校验并记录 |
