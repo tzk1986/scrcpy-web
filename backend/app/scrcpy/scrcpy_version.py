@@ -10,4 +10,4 @@ runpy.run_path 直接执行本文件读取常量，绕开 app 包导入链
 独立脚本环境不可用）。
 """
 
-SCRCPY_SERVER_VERSION = "4.1"
+SCRCPY_SERVER_VERSION = "5.0.1"

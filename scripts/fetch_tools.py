@@ -100,7 +100,7 @@ TOOLS: list[ZipEntry | FileEntry] = [
     FileEntry(
         "scrcpy-server.jar",
         JAR_URL,
-        "deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae",
+        "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536",
         JAR_DIR,
     ),
 ]

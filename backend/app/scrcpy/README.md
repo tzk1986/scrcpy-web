@@ -210,7 +210,7 @@ opts = DEFAULT_ENCODER_OPTS  # max_size=1080, bit_rate="4M", codec="h264", fps=3
 
 ```bash
 adb shell CLASSPATH=/data/local/tmp/scrcpy-server.jar \
-    com.genymobile.scrcpy.Server 4.1 \
+    com.genymobile.scrcpy.Server 5.0.1 \
     max_size=1080 \
     max_fps=30 \
     video_codec=h264 \
@@ -261,7 +261,7 @@ adb shell input text "<text>"
 
 - **scrcpy-server.jar**: 需要单独下载并放置在 `backend/app/scrcpy/` 目录
   - 下载地址：https://github.com/Genymobile/scrcpy/releases
-  - 当前版本：v4.1（唯一分发点 backend/app/scrcpy/scrcpy_version.py）
+  - 当前版本：v5.0.1（唯一分发点 backend/app/scrcpy/scrcpy_version.py）
   
 - **ADB**: Android Debug Bridge，需要在 PATH 中可用
 
@@ -334,7 +334,7 @@ adb logcat -s scrcpy
 
 ## 下一步
 
-- [ ] 下载并集成 scrcpy-server.jar v4.1
+- [ ] 下载并集成 scrcpy-server.jar v5.0.1
 - [ ] 实现完整的视频流传输管道
 - [ ] 集成到 WebSocket 端点
 - [ ] 前端 WebCodecs 解码器
