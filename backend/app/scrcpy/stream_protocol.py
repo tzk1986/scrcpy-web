@@ -1,5 +1,5 @@
 """
-scrcpy-server v4.1 流协议解析（12 字节包头）
+scrcpy-server 流协议解析（12 字节包头；v4.1~v5.0.1 协议逐字段一致）
 =============================================
 
 按官方源码 fa57d7c6（server/src/.../device/Streamer.java、

@@ -21,7 +21,7 @@ scrcpy-server 视频编码器
     - 延迟 <5ms（对比 adb shell input 的 50-200ms）
     - 控制 socket 不可用时自动回退到 adb shell input
 
-视频流协议（scrcpy-server v4.1，官方源码 fa57d7c6 逐字段核对）：
+视频流协议（scrcpy-server v4.1~v5.0.1 协议一致，官方源码 fa57d7c6 逐字段核对）：
     - 默认 send_stream_meta/send_frame_meta/send_device_meta/send_dummy_byte
       均开启（服务端点 Options/Streamer.java）
     - 建连后客户端先收 1B dummy byte + 64B 设备名

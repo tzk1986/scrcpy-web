@@ -313,7 +313,7 @@ class ServerManager:
             device_id: 设备的 ADB 序列号。
 
         返回：
-            版本号字符串（如 "2.4"），如果无法获取返回 None。
+            唯一分发点 scrcpy_version.py 中的版本号字符串，无法获取时返回 None。
 
         注意：
             当前实现返回常量版本号。
