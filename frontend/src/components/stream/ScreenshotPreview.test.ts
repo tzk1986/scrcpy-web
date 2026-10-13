@@ -30,6 +30,7 @@ function createRecordingCtx() {
   const calls: string[] = []
   const fillTextLog: unknown[][] = []
   const fontLog: string[] = []
+  const alphaLog: number[] = []
   const record = (name: string) => () => {
     calls.push(name)
   }
@@ -37,6 +38,7 @@ function createRecordingCtx() {
     calls,
     fillTextLog,
     fontLog,
+    alphaLog,
     clearRect: record('clearRect'),
     drawImage: record('drawImage'),
     beginPath: record('beginPath'),
@@ -62,7 +64,9 @@ function createRecordingCtx() {
     set font(v: string) {
       fontLog.push(v)
     },
-    set globalAlpha(_v: number) {},
+    set globalAlpha(v: number) {
+      alphaLog.push(v)
+    },
     set imageSmoothingEnabled(_v: boolean) {},
     set textAlign(_v: CanvasTextAlign) {},
     set textBaseline(_v: CanvasTextBaseline) {},
@@ -183,6 +187,11 @@ function defaultLineRatio(wrapper: VueWrapper): number {
   return (wrapper.vm as unknown as { getDefaultLineRatio: () => number }).getDefaultLineRatio()
 }
 
+/** 读取组件暴露的选中索引（命中选中/移动/删除断言用）。 */
+function selectedIdx(wrapper: VueWrapper): number | null {
+  return (wrapper.vm as unknown as { getSelectedIndex: () => number | null }).getSelectedIndex()
+}
+
 /** 选工具 → pointer 拖拽 → 松手提交；返回前清空 ctx 记录只留提交时刻的重放。 */
 async function drawShape(wrapper: VueWrapper, toolClass: string, to = { x: 60, y: 40 }) {
   await wrapper.find(toolClass).trigger('click')
@@ -199,6 +208,7 @@ beforeEach(() => {
   fakeCtx.calls.length = 0
   fakeCtx.fillTextLog.length = 0
   fakeCtx.fontLog.length = 0
+  fakeCtx.alphaLog.length = 0
   vi.stubGlobal('Image', FakeImage)
   getContextMock
     .mockReset()
@@ -430,7 +440,13 @@ describe('ScreenshotPreview 撤销 / 清空', () => {
     mockCanvasRect(wrapper)
 
     await drawShape(wrapper, '.tool-pen')
-    await drawShape(wrapper, '.tool-rect')
+    // 命中检测语义下起点压在上层命令上会进入移动而非新绘：第二笔起点避开画笔轨迹
+    await wrapper.find('.tool-rect').trigger('click')
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 50, clientY: 10 })
+    await canvas.trigger('pointermove', { clientX: 80, clientY: 60 })
+    await canvas.trigger('pointerup', { clientX: 80, clientY: 60 })
+    await nextTick()
     expect(commandCount(wrapper)).toBe(2)
 
     fakeCtx.calls.length = 0
@@ -692,5 +708,172 @@ describe('ScreenshotPreview 参数组与快捷键', () => {
     await nextTick()
     expect(commandCount(wrapper)).toBe(1)
     expect(redoCount(wrapper)).toBe(0)
+  })
+})
+
+describe('ScreenshotPreview 选中与编辑', () => {
+  it('文字 ghost：悬停半透明预览（save/restore + alpha 0.5），点击才落字，pointerleave 清预览', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('待放置文案')
+    await wrapper.find('.text-confirm').trigger('click')
+
+    const canvas = wrapper.find('canvas')
+    fakeCtx.calls.length = 0
+    fakeCtx.fillTextLog.length = 0
+    fakeCtx.alphaLog.length = 0
+    await canvas.trigger('pointermove', { clientX: 50, clientY: 30 })
+    await nextTick()
+
+    expect(fakeCtx.calls).toContain('save')
+    expect(fakeCtx.calls).toContain('restore')
+    expect(fakeCtx.alphaLog).toContain(0.5)
+    expect(fakeCtx.fillTextLog.some((a) => a[0] === '待放置文案')).toBe(true)
+    expect(commandCount(wrapper)).toBe(0) // ghost 未落字
+
+    // 移出画布：hoverPoint 清空，重绘不再有 ghost（此时命令栈为空，无 fillText 即无 ghost）
+    fakeCtx.calls.length = 0
+    fakeCtx.fillTextLog.length = 0
+    await canvas.trigger('pointerleave')
+    await nextTick()
+    expect(fakeCtx.fillTextLog.length).toBe(0)
+
+    // 点击才落字（命令数 +1）
+    await canvas.trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1)
+    expect(fakeCtx.fillTextLog.some((a) => a[0] === '待放置文案')).toBe(true)
+  })
+
+  it('命中选中：点击矩形边框 → getSelectedIndex()===0，重绘含虚线选中框（无新增命令）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-rect') // 画布 from(20,20) to(120,80)
+    expect(commandCount(wrapper)).toBe(1)
+
+    fakeCtx.calls.length = 0
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 }) // 上边框画布 (70,20)
+    await nextTick()
+
+    expect(selectedIdx(wrapper)).toBe(0)
+    expect(commandCount(wrapper)).toBe(1)
+    expect(fakeCtx.calls).toContain('setLineDash')
+    expect(fakeCtx.calls).toContain('strokeRect')
+    await canvas.trigger('pointerup')
+  })
+
+  it('拖拽移动：命中选中后拖动实时平移命令坐标（client Δ ×2 换算画布像素）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-rect') // 画布 from(20,20) to(120,80)
+
+    const canvas = wrapper.find('canvas')
+    // 上边框中点画布 (70,20)（client 35,10）按下选中并进入移动
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    // 拖到 client (55,20) → 画布 (110,40)，Δ(+40,+20)
+    await canvas.trigger('pointermove', { clientX: 55, clientY: 20 })
+    await canvas.trigger('pointerup', { clientX: 55, clientY: 20 })
+    await nextTick()
+
+    expect(commandCount(wrapper)).toBe(1)
+    const cmd = commandList(wrapper)[0] as unknown as {
+      from: { x: number; y: number }
+      to: { x: number; y: number }
+    }
+    expect(cmd.from.x).toBeCloseTo(60, 6)
+    expect(cmd.from.y).toBeCloseTo(40, 6)
+    expect(cmd.to.x).toBeCloseTo(160, 6)
+    expect(cmd.to.y).toBeCloseTo(100, 6)
+  })
+
+  it('Delete/Backspace 删除选中命令（redo 栈清空）；Esc 取消选中（命令保留）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-rect')
+    const canvas = wrapper.find('canvas')
+
+    // 点边框选中 → Esc 取消选中（命令保留）
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    await canvas.trigger('pointerup')
+    expect(selectedIdx(wrapper)).toBe(0)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(selectedIdx(wrapper)).toBeNull()
+    expect(commandCount(wrapper)).toBe(1)
+
+    // 再选中 → Delete 删除（选中清空、redo 栈清空）
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    await canvas.trigger('pointerup')
+    expect(selectedIdx(wrapper)).toBe(0)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(0)
+    expect(selectedIdx(wrapper)).toBeNull()
+    expect(redoCount(wrapper)).toBe(0)
+
+    // Backspace 同样删除选中
+    await drawShape(wrapper, '.tool-rect')
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    await canvas.trigger('pointerup')
+    expect(selectedIdx(wrapper)).toBe(0)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }))
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(0)
+  })
+
+  it('双击文字进入编辑：确认后原地改文案（命令数不变、字号保留）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    // 放置文字：画布 (100,60)，fontSize 0.045 → 36px
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('告警')
+    await wrapper.find('.text-confirm').trigger('click')
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1)
+
+    // 双击文字盒内（盒 x∈[100,124]（measure=length×12）、y∈[24,69]）→ 输入框预填原文案
+    await canvas.trigger('dblclick', { clientX: 55, clientY: 32 }) // 画布 (110,64)
+    await nextTick()
+    const input = wrapper.find('input.text-draft')
+    expect((input.element as HTMLInputElement).value).toBe('告警')
+
+    await input.setValue('严重告警')
+    await wrapper.find('.text-confirm').trigger('click')
+    await nextTick()
+
+    const cmds = commandList(wrapper)
+    expect(cmds).toHaveLength(1) // 原地更新，无新增命令
+    expect((cmds[0] as unknown as { text: string }).text).toBe('严重告警')
+    expect(cmds[0].fontSize).toBe(0.045)
+  })
+
+  it('笔划类命中用点距：画笔线中点附近命中，远离不命中', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await drawShape(wrapper, '.tool-pen') // 画布 (20,20) → (120,80)
+    const canvas = wrapper.find('canvas')
+
+    // 线段中点画布 (70,50)（client 35,25）→ 命中索引 0
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 25 })
+    await nextTick()
+    expect(selectedIdx(wrapper)).toBe(0)
+    await canvas.trigger('pointerup')
+
+    // 远离线段（画布 (20,120)，client 10,60）→ 不命中、选中清空
+    await canvas.trigger('pointerdown', { clientX: 10, clientY: 60 })
+    await nextTick()
+    expect(selectedIdx(wrapper)).toBeNull()
+    await canvas.trigger('pointerup')
+    expect(commandCount(wrapper)).toBe(1)
   })
 })

@@ -15,7 +15,11 @@
   交互：
     - pointer 事件在画布上拖拽绘制；坐标按画布显示尺寸与像素尺寸比例换算
     - 文字工具：工具栏展开行内输入框 + 「确认」，确认后点击画布放置文字
-      （方案裁决 4：不用 window.prompt，避免组件测试非确定性）
+      （方案裁决 4：不用 window.prompt，避免组件测试非确定性）；
+      待放置时悬停画布显示半透明 ghost 预览，点击才落字
+    - 命中编辑：点击已放置标注 → 选中（虚线框）并进入移动（拖动实时平移）；
+      Delete/Backspace 删除选中；双击文字 → 原地二次编辑（确认不发新命令）；
+      Escape 退出编辑/取消选中；命中检测走 toCanvasPoint 比例换算坐标
     - 字号/线宽按「相对图宽比例」存储（annotationModel），渲染时 ×canvas.width 换算
     - 参数行：6 预设色板 + 自定义色 + 线宽/字号滑块（原生 range，按当前工具显隐），
       右侧标签显示换算后像素值；画布滚轮也可调参（×1.1/÷1.1）
@@ -122,7 +126,8 @@
           @pointerdown.prevent="onPointerDown"
           @pointermove="onPointerMove"
           @pointerup="onPointerUp"
-          @pointerleave="onPointerUp"
+          @pointerleave="onPointerLeave"
+          @dblclick="onDblclick"
           @wheel.prevent="onWheel"
         />
       </div>
@@ -140,8 +145,11 @@ import {
   LINE_RATIO_MAX,
   LINE_RATIO_MIN,
   TOOL_KEYS,
+  cmdBBox,
   fontPx,
+  hitTest,
   linePx,
+  translateCmd,
   type AnnotationCmd,
   type Point,
   type Tool,
@@ -180,6 +188,14 @@ const redoStack = ref<AnnotationCmd[]>([])
 const textDraft = ref('')
 const confirmedText = ref('')
 const drag = ref<DragState | null>(null)
+/** 悬停点（文字工具 ghost 预览位置；pointermove 无拖拽/移动时更新，移出画布清空）。 */
+const hoverPoint = ref<Point | null>(null)
+/** 当前选中的命令索引（点击命中 → 可拖动/Delete 删除）。 */
+const selectedIndex = ref<number | null>(null)
+/** 移动中的命令（pointerdown 命中进入；pointermove 实时平移，pointerup 结束）。 */
+const moveState = ref<{ index: number; last: Point } | null>(null)
+/** 双击文字进入的编辑态（confirmText 原地更新该命令，不新增）。 */
+const editingIndex = ref<number | null>(null)
 
 /** 新标注默认字号比例（字号滑块/滚轮调整；文字命令携带入栈）。 */
 const fontRatio = ref(FONT_RATIO_DEFAULT)
@@ -261,7 +277,7 @@ watch(
   { immediate: true },
 )
 
-// 每次打开弹窗都是全新标注会话（commands/redo/drag/文字态/工具一并归零）。
+// 每次打开弹窗都是全新标注会话（commands/redo/交互态/文字态/工具/参数一并归零）。
 watch(
   () => props.visible,
   (visible) => {
@@ -269,9 +285,15 @@ watch(
       commands.value = []
       redoStack.value = []
       drag.value = null
+      moveState.value = null
+      selectedIndex.value = null
+      editingIndex.value = null
+      hoverPoint.value = null
       textDraft.value = ''
       confirmedText.value = ''
       tool.value = 'pen'
+      fontRatio.value = FONT_RATIO_DEFAULT
+      lineRatio.value = LINE_RATIO_DEFAULT
     }
   },
 )
@@ -305,6 +327,14 @@ function toCanvasPoint(e: { clientX: number; clientY: number }): Point | null {
     x: ((e.clientX - rect.left) / rect.width) * canvas.width,
     y: ((e.clientY - rect.top) / rect.height) * canvas.height,
   }
+}
+
+/** measure 回调（命中检测/包围盒文字宽用）：按换算后字号测量像素宽。 */
+function measureText(text: string, px: number): number {
+  const ctx = canvasRef.value?.getContext('2d')
+  if (!ctx) return text.length * 12
+  ctx.font = `${px}px sans-serif`
+  return ctx.measureText(text).width
 }
 
 /** 箭头头部两翼（头长 = 线宽像素 ×3.5、±30° 张角；默认 4px 线宽 → 14px，与原固定值一致）。 */
@@ -369,7 +399,7 @@ function drawCmd(ctx: CanvasRenderingContext2D, cmd: AnnotationCmd, canvasWidth:
   }
 }
 
-/** 全量重绘：清屏 → 底图 → 命令栈回放 → 拖拽中的未提交形状。 */
+/** 全量重绘：清屏 → 底图 → 命令栈回放 → 拖拽预览 → ghost 预览 → 选中虚线框。 */
 function redraw() {
   const canvas = canvasRef.value
   if (!canvas) return
@@ -380,30 +410,53 @@ function redraw() {
   if (baseImage.value) ctx.drawImage(baseImage.value, 0, 0, canvas.width, canvas.height)
   for (const cmd of commands.value) drawCmd(ctx, cmd, canvasWidth)
   const d = drag.value
-  if (!d) return
-  if (d.tool === 'pen') {
+  if (d) {
+    if (d.tool === 'pen') {
+      drawCmd(
+        ctx,
+        {
+          kind: 'pen',
+          points: d.points.length ? d.points : [d.current],
+          color: strokeColor.value,
+          lineWidth: lineRatio.value,
+        },
+        canvasWidth,
+      )
+    } else if (d.tool === 'arrow') {
+      drawCmd(
+        ctx,
+        { kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
+        canvasWidth,
+      )
+    } else {
+      drawCmd(
+        ctx,
+        { kind: 'rect', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
+        canvasWidth,
+      )
+    }
+  }
+  // ghost 预览：文字工具已确认文案且悬停画布 → 半透明预览（点击才落字）
+  const hover = hoverPoint.value
+  if (tool.value === 'text' && confirmedText.value && hover) {
+    ctx.save()
+    ctx.globalAlpha = 0.5
     drawCmd(
       ctx,
-      {
-        kind: 'pen',
-        points: d.points.length ? d.points : [d.current],
-        color: strokeColor.value,
-        lineWidth: lineRatio.value,
-      },
+      { kind: 'text', at: hover, text: confirmedText.value, color: strokeColor.value, fontSize: fontRatio.value },
       canvasWidth,
     )
-  } else if (d.tool === 'arrow') {
-    drawCmd(
-      ctx,
-      { kind: 'arrow', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
-      canvasWidth,
-    )
-  } else {
-    drawCmd(
-      ctx,
-      { kind: 'rect', from: d.start, to: d.current, color: strokeColor.value, lineWidth: lineRatio.value },
-      canvasWidth,
-    )
+    ctx.restore()
+  }
+  // 选中虚线框（cmdBBox 外扩 4px；画完复位虚线）
+  const selected = selectedIndex.value
+  if (selected !== null && selected < commands.value.length) {
+    const box = cmdBBox(commands.value[selected], canvasWidth, measureText)
+    ctx.setLineDash([6, 4])
+    ctx.strokeStyle = '#409eff'
+    ctx.lineWidth = 1
+    ctx.strokeRect(box.x - 4, box.y - 4, box.width + 8, box.height + 8)
+    ctx.setLineDash([])
   }
 }
 
@@ -425,6 +478,17 @@ watch(
 function onPointerDown(e: PointerEvent) {
   const point = toCanvasPoint(e)
   if (!point) return
+  const canvas = canvasRef.value
+  // 命中已有命令：选中并进入移动（拖动实时平移，pointerup 结束）
+  const hit = canvas ? hitTest(commands.value, point, canvas.width, measureText) : null
+  if (hit !== null) {
+    selectedIndex.value = hit
+    moveState.value = { index: hit, last: point }
+    drag.value = null
+    redraw()
+    return
+  }
+  selectedIndex.value = null
   const active = tool.value
   if (active === 'text') {
     // 文字工具：未确认文案时不落字
@@ -446,16 +510,32 @@ function onPointerDown(e: PointerEvent) {
 }
 
 function onPointerMove(e: PointerEvent) {
-  const d = drag.value
-  if (!d) return
   const point = toCanvasPoint(e)
   if (!point) return
-  d.current = point
-  if (d.tool === 'pen') d.points.push(point)
+  const move = moveState.value
+  if (move) {
+    const cmd = commands.value[move.index]
+    if (cmd) {
+      translateCmd(cmd, point.x - move.last.x, point.y - move.last.y)
+      move.last = point
+    }
+    redraw()
+    return
+  }
+  const d = drag.value
+  if (d) {
+    d.current = point
+    if (d.tool === 'pen') d.points.push(point)
+    redraw()
+    return
+  }
+  // 无拖拽/移动：更新悬停点（文字工具 ghost 预览）
+  hoverPoint.value = point
   redraw()
 }
 
 function onPointerUp() {
+  moveState.value = null
   const d = drag.value
   drag.value = null
   if (!d) return
@@ -486,10 +566,40 @@ function onPointerUp() {
   redraw()
 }
 
+/** 指针移出画布：清 ghost 悬停点并结束拖拽/移动（沿用 pointerup 提交语义）。 */
+function onPointerLeave() {
+  hoverPoint.value = null
+  onPointerUp()
+  redraw()
+}
+
+/** 双击画布：命中文字命令 → 进入原地编辑（输入框预填，确认后写回该命令）。 */
+function onDblclick(e: MouseEvent) {
+  const point = toCanvasPoint(e)
+  const canvas = canvasRef.value
+  if (!point || !canvas) return
+  const hit = hitTest(commands.value, point, canvas.width, measureText)
+  if (hit === null) return
+  const cmd = commands.value[hit]
+  if (cmd.kind !== 'text') return
+  editingIndex.value = hit
+  selectedIndex.value = hit
+  tool.value = 'text'
+  textDraft.value = cmd.text
+  confirmedText.value = cmd.text
+  redraw()
+}
+
 /** 落新命令：入栈并清空 redo 栈（新分支从当前状态出发，旧 redo 不可达）。 */
 function pushCmd(cmd: AnnotationCmd) {
   commands.value.push(cmd)
   redoStack.value = []
+}
+
+/** 栈变化后：越界的选中/编辑索引归零（被移除的命令不再可选）。 */
+function dropDanglingIndexes() {
+  if (selectedIndex.value !== null && selectedIndex.value >= commands.value.length) selectedIndex.value = null
+  if (editingIndex.value !== null && editingIndex.value >= commands.value.length) editingIndex.value = null
 }
 
 /** 撤销：命令栈出栈入 redo 栈并重绘。 */
@@ -498,6 +608,8 @@ function undo() {
   if (!cmd) return
   redoStack.value.push(cmd)
   drag.value = null
+  moveState.value = null
+  dropDanglingIndexes()
   redraw()
 }
 
@@ -507,19 +619,43 @@ function redo() {
   if (!cmd) return
   commands.value.push(cmd)
   drag.value = null
+  moveState.value = null
   redraw()
 }
 
-/** 清空：命令栈与 redo 栈双双归零并重绘（回到纯底图）。 */
+/** 清空：命令栈与 redo 栈双双归零、交互态复位并重绘（回到纯底图）。 */
 function clearAll() {
   commands.value = []
   redoStack.value = []
   drag.value = null
+  moveState.value = null
+  selectedIndex.value = null
+  editingIndex.value = null
   redraw()
 }
 
-/** 文字工具「确认」：把输入框草稿提升为待放置文字。 */
+/** 删除当前选中的命令（splice 出栈；redo 栈清空——分支不再可达）。 */
+function deleteSelected() {
+  const idx = selectedIndex.value
+  if (idx === null || idx >= commands.value.length) return
+  commands.value.splice(idx, 1)
+  redoStack.value = []
+  selectedIndex.value = null
+  if (editingIndex.value !== null && editingIndex.value >= commands.value.length) editingIndex.value = null
+  redraw()
+}
+
+/** 文字工具「确认」：编辑态 → 原地更新该命令文案（无新增）；否则提升草稿为待放置文字。 */
 function confirmText() {
+  const idx = editingIndex.value
+  if (idx !== null && idx < commands.value.length) {
+    const cmd = commands.value[idx]
+    if (cmd.kind === 'text') cmd.text = textDraft.value
+    confirmedText.value = textDraft.value
+    editingIndex.value = null
+    redraw()
+    return
+  }
   confirmedText.value = textDraft.value
 }
 
@@ -553,13 +689,28 @@ function onWheel(e: WheelEvent) {
 /**
  * 弹窗快捷键（window 级监听）：
  *   - Ctrl/Cmd+Z 撤销；Ctrl/Cmd+Shift+Z 重做；Ctrl/Cmd+S 导出 PNG
+ *   - Escape：编辑中 → 退出编辑；否则取消拖拽/移动并清选中
+ *   - Delete/Backspace：删除选中命令（无选中不拦截默认）
  *   - 数字键 1-N（按 TOOL_KEYS 表序）切工具
- * 输入框/文本域聚焦时仅放行 Escape（T3 编辑态退出用），其余按键不劫持打字。
+ * 输入框/文本域聚焦时仅放行 Escape（编辑态退出用），其余按键不劫持打字。
  */
 function onKeydown(e: KeyboardEvent) {
   if (!props.visible) return
   const target = e.target as HTMLElement | null
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') && e.key !== 'Escape') {
+    return
+  }
+  if (e.key === 'Escape') {
+    if (editingIndex.value !== null) {
+      editingIndex.value = null
+      return
+    }
+    if (drag.value || moveState.value || selectedIndex.value !== null) {
+      drag.value = null
+      moveState.value = null
+      selectedIndex.value = null
+      redraw()
+    }
     return
   }
   const ctrl = e.ctrlKey || e.metaKey
@@ -574,8 +725,14 @@ function onKeydown(e: KeyboardEvent) {
     exportPng()
     return
   }
+  if (!ctrl && (e.key === 'Delete' || e.key === 'Backspace')) {
+    if (selectedIndex.value !== null) {
+      e.preventDefault()
+      deleteSelected()
+    }
+    return
+  }
   // Ctrl/Cmd+C → 复制到剪贴板：T5 接线（本轮占位，不拦截浏览器默认行为）。
-  // Delete/Backspace → 删除选中命令：T3 接线。
   if (!ctrl && e.key >= '1' && e.key <= String(TOOL_KEYS.length)) {
     tool.value = TOOL_KEYS[Number(e.key) - 1]
   }
@@ -635,8 +792,10 @@ function exportPng() {
  * 测试亦用它断言撤销/清空的命令栈重置语义）。
  *
  * getCommands / getRedoCount：命令栈快照与 redo 栈长度；
- * getDefaultFontRatio / getDefaultLineRatio：滑块/滚轮调参后的默认比例
- * （均为测试断言暴露，沿用 getAnnotationCount 先例）。
+ * getDefaultFontRatio / getDefaultLineRatio：滑块/滚轮调参后的默认比例；
+ * getSelectedIndex：当前选中索引（命中选中/移动/删除断言用）。
+ *
+ * （均为测试断言暴露，沿用 getAnnotationCount 先例。）
  */
 defineExpose({
   getAnnotationCount: () => commands.value.length,
@@ -644,6 +803,7 @@ defineExpose({
   getRedoCount: () => redoStack.value.length,
   getDefaultFontRatio: () => fontRatio.value,
   getDefaultLineRatio: () => lineRatio.value,
+  getSelectedIndex: () => selectedIndex.value,
 })
 </script>
 
