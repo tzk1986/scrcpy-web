@@ -159,7 +159,7 @@ class AdbConfig(BaseSettings):
 class StreamConfig(BaseSettings):
     max_size: int = 1080
     bit_rate: str = "4M"
-    codec: str = "h264"
+    codec: Literal["h264", "h265"] = "h264"
     fps: int = 30
     # 自适应码率：scrcpy 协议无运行中改码率消息，通过按档重启编码器实现（每次切换约 1-3s 黑屏）
     adaptive_bitrate: bool = True

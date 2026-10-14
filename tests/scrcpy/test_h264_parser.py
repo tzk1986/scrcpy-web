@@ -25,6 +25,8 @@ from app.scrcpy.constants import (
     NALU_TYPE_SPS,
     NALU_TYPE_PPS,
     NALU_TYPE_SLICE,
+    NALU_TYPE_HEVC_SPS,
+    NALU_TYPE_HEVC_VPS,
 )
 
 
@@ -626,3 +628,28 @@ class TestScanPacketNalus:
             assert len(sliced) == len(ref_out)
             for expected, actual in zip(ref_out, sliced):
                 assert expected == actual
+
+    def test_scan_packet_nalus_hevc(self):
+        """hevc=True：2 字节 NAL 头，类型取 (首字节 >> 1) & 0x3F（方案 45 T3）。
+        VPS=0x40,0x01；SPS=0x42,0x01；IDR=0x26,0x01（type=(0x26>>1)=19）；
+        非关键=0x02,0x01（type=1）。"""
+        data = (
+            b"\x00\x00\x00\x01" + bytes([0x40, 0x01]) + b"\x00\x00\x01" + bytes([0x42, 0x01])
+            + b"\x00\x00\x01" + bytes([0x26, 0x01]) + b"\x00\x00\x01" + bytes([0x02, 0x01])
+        )
+        ranges = scan_packet_nalus(data, hevc=True)
+
+        assert [ntype for _, _, ntype in ranges] == [
+            NALU_TYPE_HEVC_VPS,
+            NALU_TYPE_HEVC_SPS,
+            19,
+            1,
+        ]
+
+    def test_scan_packet_nalus_h264_default_unchanged(self):
+        """回归钉：不传 hevc 参数时行为与改动前逐字节一致（h264 低 5 位取型）。"""
+        idr = b"\x00\x00\x01\x65IDR"
+        p = b"\x00\x00\x01\x41P01"
+        data = idr + p
+        assert scan_packet_nalus(data) == [(0, len(idr), 5), (len(idr), len(data), 1)]
+        assert scan_packet_nalus(data, hevc=False) == scan_packet_nalus(data)

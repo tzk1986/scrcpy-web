@@ -49,7 +49,7 @@ from .constants import (
 logger = get_logger(__name__)
 
 
-def scan_packet_nalus(data: bytes) -> list[tuple[int, int, int]]:
+def scan_packet_nalus(data: bytes, *, hevc: bool = False) -> list[tuple[int, int, int]]:
     """
     包协议模式零拷贝 NALU 边界扫描（方案 26）。
 
@@ -61,6 +61,8 @@ def scan_packet_nalus(data: bytes) -> list[tuple[int, int, int]]:
 
     参数：
         data: 一个完整协议包载荷（Annex B）。
+        hevc: True 按 HEVC（h265）2 字节 NAL 头取型
+            （(header >> 1) & 0x3F）；False（默认）保持 H264 低 5 位语义。
 
     返回：
         (start, end, nalu_type) 列表，start/end 为半开区间下标。
@@ -72,7 +74,12 @@ def scan_packet_nalus(data: bytes) -> list[tuple[int, int, int]]:
         # NAL 头紧随起始码：4 字节码在 start+4，3 字节码在 start+3；
         # 两者由起始码第三字节区分（0x01 vs 0x00）
         header = start + 4 if data[start + 2] == 0x00 else start + 3
-        ntype = data[header] & 0x1F if header < end else -1
+        if header >= end:
+            ntype = -1
+        elif hevc:
+            ntype = (data[header] >> 1) & 0x3F
+        else:
+            ntype = data[header] & 0x1F
         ranges.append((start, end, ntype))
 
     prev_start = -1

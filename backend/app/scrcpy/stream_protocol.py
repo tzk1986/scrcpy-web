@@ -39,6 +39,7 @@ SC_PACKET_FLAG_KEY_FRAME = 1 << 61            # bit61：关键帧
 SC_PACKET_PTS_MASK = SC_PACKET_FLAG_KEY_FRAME - 1  # PTS 有效位
 
 SC_CODEC_ID_H264 = 0x68323634                 # "h264"（大端）
+SC_CODEC_ID_H265 = 0x68323635                 # "h265" 的 4 字节 little-endian 序号（方案 45 T3）
 SC_CODEC_ID_DISABLED = 0                      # 设备显式禁用该流
 SC_CODEC_ID_ERROR = 1                         # 设备端配置错误，必须中止
 
@@ -166,7 +167,7 @@ async def read_packets(reader: asyncio.StreamReader) -> AsyncIterator[SessionEve
         raise StreamDisabled()
     if codec_id == SC_CODEC_ID_ERROR:
         raise StreamConfigError()
-    if codec_id != SC_CODEC_ID_H264:
+    if codec_id not in (SC_CODEC_ID_H264, SC_CODEC_ID_H265):
         raise UnsupportedCodecError(codec_id)
 
     while True:

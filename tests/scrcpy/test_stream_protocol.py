@@ -25,6 +25,7 @@ from app.scrcpy.stream_protocol import (
     SC_PACKET_FLAG_KEY_FRAME,
     SC_PACKET_FLAG_SESSION,
     SC_CODEC_ID_H264,
+    SC_CODEC_ID_H265,
     SC_CODEC_ID_DISABLED,
     SC_CODEC_ID_ERROR,
     SessionEvent,
@@ -219,6 +220,36 @@ class TestReadPackets:
     async def test_unsupported_codec_raises(self):
         """未知 codec id 抛 UnsupportedCodecError"""
         stream = b"\x00" + b"u".ljust(64, b"\x00") + make_codec_id(0xDEADBEEF)
+        with pytest.raises(UnsupportedCodecError):
+            async for _ in read_packets(make_reader(stream)):
+                pass
+
+    async def test_accepts_h265_codec_id(self):
+        """SC_CODEC_ID_H265（"h265" 大端 0x68323635）被接受，握手后正常切包
+        （方案 45 T3：协议放开 h265）"""
+        payload = b"\x00\x00\x00\x01" + bytes([0x26]) + b"\x26" * 10
+        stream = (
+            b"\x00"
+            + b"v".ljust(64, b"\x00")
+            + make_codec_id(SC_CODEC_ID_H265)
+            + make_session(1080, 1920)
+            + make_header(SC_PACKET_FLAG_KEY_FRAME, len(payload)) + payload
+        )
+        events = await self._collect(stream)
+
+        assert len(events) == 2
+        assert isinstance(events[0], SessionEvent)
+        assert isinstance(events[1], MediaEvent) and events[1].payload == payload
+
+    async def test_h265_constant_value(self):
+        """h265 codec id 常量钉死：0x68323635（"h265" 逐字节大端）"""
+        assert SC_CODEC_ID_H265 == 0x68323635
+
+    async def test_unknown_codec_id_still_rejected(self):
+        """集合判定未破坏既有拒绝语义：h264/h265 之外的未知 id 仍抛
+        （与 test_unsupported_codec_raises 同为回归钉）"""
+        near_miss = SC_CODEC_ID_H265 + 1  # 0x68323636：非任何合法 id
+        stream = b"\x00" + b"w".ljust(64, b"\x00") + make_codec_id(near_miss)
         with pytest.raises(UnsupportedCodecError):
             async for _ in read_packets(make_reader(stream)):
                 pass

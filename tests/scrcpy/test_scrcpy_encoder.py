@@ -462,6 +462,70 @@ async def test_server_command_uses_version_constant():
 
 
 # ---------------------------------------------------------------------------
+# start()：codec 放开与白名单守卫（方案 45 T3）
+# ---------------------------------------------------------------------------
+
+async def test_start_uses_h265_codec():
+    """opts.codec=h265 → 启动命令 video_codec=h265（解除硬编码 h264）。"""
+    encoder = ScrcpyEncoder()
+    harness = SubprocessHarness(server_stderr=FakeStderr([b"Device: test-device\n"], block=True))
+
+    await drive_start(encoder, harness=harness, opts=EncoderOpts(codec="h265"))
+
+    cmd = harness.server_cmd()
+    assert "video_codec=h265" in cmd
+
+
+async def test_server_command_keeps_h264_default():
+    """回归钉：默认 opts 仍产出 video_codec=h264（零回归）。"""
+    encoder = ScrcpyEncoder()
+    harness = SubprocessHarness(server_stderr=FakeStderr([b"Device: test-device\n"], block=True))
+
+    await drive_start(encoder, harness=harness, opts=EncoderOpts(codec="h264"))
+
+    assert "video_codec=h264" in harness.server_cmd()
+
+
+async def test_start_rejects_unknown_codec():
+    """白名单守卫：h264/h265 之外 → start() 首次迭代即抛 ValueError，
+    且不触达 push/forward（参数校验先于 I/O）。"""
+    encoder = ScrcpyEncoder()
+    harness = SubprocessHarness()
+
+    with pytest.raises(ValueError, match="Unsupported video codec"):
+        await drive_start(encoder, harness=harness, opts=EncoderOpts(codec="vp9"))
+
+    assert harness.calls == []  # 未启动任何 adb 子进程
+
+
+async def test_codec_property_active_during_session_and_reset_on_stop():
+    """codec 属性：默认 h264；h265 会话中 yield 期为 "h265"；stop 复位 "h264"。"""
+    encoder = ScrcpyEncoder()
+    assert encoder.codec == "h264"
+    payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream))
+    seen: list[str] = []
+
+    await drive_start(
+        encoder,
+        harness=harness,
+        conn=conn,
+        opts=EncoderOpts(codec="h265"),
+        probe=lambda enc: seen.append(enc.codec),
+    )
+
+    assert seen == ["h265"]           # 会话期间（首 yield 时）已置 h265
+    assert encoder.codec == "h264"    # stop 复位
+
+
+# ---------------------------------------------------------------------------
 # start()：12B 包头读循环
 # ---------------------------------------------------------------------------
 

@@ -148,6 +148,10 @@ class StreamService:
         logger.info("starting_video_stream", device=device_id)
 
         s = settings()
+        # 守卫（方案 45 T3）：raw 兜底链路（H264Parser 启发式解析）仅建模
+        # h264，h265 下语义不成立，禁入组合；video.py 主循环捕获后转脱敏 error
+        if s.stream.raw_stream_fallback and s.stream.codec != "h264":
+            raise ValueError("raw_stream_fallback 仅支持 h264 编解码（冲突：codec=h265）")
         base_bps = parse_bit_rate(s.stream.bit_rate)
         current_bps = base_bps
         advisor: BitrateAdvisor | None = None

@@ -16,7 +16,9 @@
       restarting 码率预告与同值去重、非法输入帧忽略且输入面不断
       （方案 37 A4）；
     - 生命周期：流正常结束/抛异常/连接断开时 stop_stream 与 error 消息；
-    - _send_config codec 提取边界（3/4 字节起始码、SPS 过短回退默认值）。
+    - _send_config codec 提取边界（3/4 字节起始码、SPS 过短回退默认值）；
+    - h265（HEVC）链路（方案 45 T3）：惰性判定、VPS/SPS/PPS 配对下发 hvc1
+      config（SPS 提取 codec 串、过短回退保底串）。
 
 末尾另有直接调用 video_stream 的底层异常路径用例（send 抛
 WebSocketDisconnect、restarting/error 的 send_json 失败被吞掉），
@@ -92,12 +94,24 @@ SEI_B = nalu(0x06, b"SEIB")
 # ---------------------------------------------------------------------------
 
 class FakeEncoder:
-    """编码器替身：记录 send_input 调用；_control_sender 供端点日志访问。"""
+    """编码器替身：记录 send_input 调用；_control_sender 供端点日志访问；
+    codec 供 WS 层惰性 HEVC 判定（方案 45 T3，默认 h264 既有用例零变化）。"""
 
-    def __init__(self, resolution: tuple[int, int] = (1080, 1920)) -> None:
-        self.resolution = resolution
+    def __init__(
+        self, resolution: tuple[int, int] = (1080, 1920), codec: str = "h264"
+    ) -> None:
+        self._resolution = resolution
+        self._codec = codec
         self._control_sender = None
         self.inputs: list[dict[str, Any]] = []
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        return self._resolution
+
+    @property
+    def codec(self) -> str:
+        return self._codec
 
     async def send_input(self, data: dict[str, Any]) -> None:
         self.inputs.append(data)
@@ -504,6 +518,53 @@ def test_config_codec_from_three_byte_start_code_sps(video_client):
         assert config["description"] == (sps3 + pps3).hex()
         assert recv_binary(session) == frame(0, idr3)
         assert recv_binary(session) == frame(0, b"\x00\x00\x01\x41P006")
+
+
+# ---------------------------------------------------------------------------
+# h265（HEVC）config 链路（方案 45 T3）
+# ---------------------------------------------------------------------------
+
+# 特征值（brief 钉死）：SPS payload b0=0x01 → profile_space 0/profile 1；
+# compat=0x60000000 → 位反转 32bit = 6；level=120；constraints 首字节 0xB0 → 尾 ".B0"
+HEVC_VPS_TEST = b"\x00\x00\x00\x01\x40\x01\x0c\x01\xff\xff\x01\x60"
+HEVC_SPS_TEST = (
+    b"\x00\x00\x00\x01\x42\x01"
+    + bytes([0x01])                              # profile_space=0, tier=0, profile_idc=1
+    + (0x60000000).to_bytes(4, "big")            # compat → "6"
+    + bytes([0xB0, 0x00, 0x00, 0x00, 0x00, 0x00])  # constraints → 非零尾 ".B0"
+    + bytes([120])                               # level_idc → L120
+)
+HEVC_PPS_TEST = b"\x00\x00\x00\x01\x44\x01\x08\x00"
+HEVC_IDR_TEST = b"\x00\x00\x00\x01\x26\x01\xff"
+HEVC_P_TEST = b"\x00\x00\x00\x01\x02\x01\xff"
+
+
+def test_h265_config_message(video_client):
+    """encoder.codec=h265 → 惰性 HEVC 判定：VPS/SPS/PPS 齐备后下发 hvc1 config
+    （codec 取自 SPS、description = VPS+SPS+PPS 原始字节 hex），config 包内
+    IDR 同包直发、后续 P 包直通（与 h264 路径同构）。"""
+    svc = FakeStreamService(
+        [HEVC_VPS_TEST + HEVC_SPS_TEST + HEVC_PPS_TEST + HEVC_IDR_TEST, HEVC_P_TEST],
+        encoder=FakeEncoder(resolution=(1080, 1920), codec="h265"),
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        config = recv_json(session)
+        assert config["type"] == "config"
+        assert config["codec"] == "hvc1.1.6.L120.B0"
+        assert config["description"] == (HEVC_VPS_TEST + HEVC_SPS_TEST + HEVC_PPS_TEST).hex()
+        assert config["width"] == 1080 and config["height"] == 1920
+        assert config["idle_reset_seconds"] == 5.0
+        assert recv_binary(session) == frame(0, HEVC_IDR_TEST)  # config 包内 VCL 同包直发
+        assert recv_binary(session) == frame(0, HEVC_P_TEST)    # 直通
+
+
+def test_h265_short_sps_falls_back_to_default_codec_string():
+    """SPS 去起始码+2B NAL 头后 < 12B → 保底 codec 串，不抛异常
+    （Review Focus #4 兜底）。"""
+    from app.interfaces.ws.video import _hevc_codec_string
+
+    short_sps = b"\x00\x00\x00\x01\x42\x01\x01\x02\x03"
+    assert _hevc_codec_string(short_sps) == "hvc1.1.6.L93.B0"
 
 
 # ---------------------------------------------------------------------------

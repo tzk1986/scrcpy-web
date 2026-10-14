@@ -101,6 +101,7 @@ class ScrcpyEncoder:
         self._control_writer: asyncio.StreamWriter | None = None  # 控制连接
         self._control_sender: ControlSender | None = None  # 控制消息发送器
         self._resolution: tuple[int, int] = (0, 0)  # 屏幕分辨率
+        self._codec: str = "h264"  # 当前会话编解码器（方案 45 T3）
         self._server_manager = ServerManager()
         self._local_port = 27183
         self._socket_name: str = "scrcpy"  # 固定 socket 名称
@@ -112,6 +113,11 @@ class ScrcpyEncoder:
     def resolution(self) -> tuple[int, int]:
         """获取屏幕分辨率。"""
         return self._resolution
+
+    @property
+    def codec(self) -> str:
+        """当前会话编解码器（"h264"/"h265"），供 WS config 下发路由。"""
+        return self._codec
 
     async def start(
         self, device_id: str, opts: EncoderOpts
@@ -126,6 +132,11 @@ class ScrcpyEncoder:
         这样前端 canvas 坐标（基于视频帧尺寸）== 设备坐标（scrcpy-server 需要），
         避免坐标映射错位导致点击位置不准。
         """
+        # codec 白名单守卫（方案 45 T3）：参数校验先于任何 I/O
+        if opts.codec not in ("h264", "h265"):
+            raise ValueError(f"Unsupported video codec: {opts.codec!r}")
+        self._codec = opts.codec
+
         # 强制禁用缩放：视频帧尺寸 = 设备物理分辨率
         # 如果不这样做，max_size=1080 会把 1280x720 视频缩小为 1080x607，
         # 导致前端坐标（0-1080）与 scrcpy-server 期望的设备坐标（0-1280）不一致
@@ -220,7 +231,7 @@ class ScrcpyEncoder:
             f"max_size={opts.max_size}",
             f"max_fps={opts.fps}",
             f"video_bit_rate={bit_rate_value}",
-            "video_codec=h264",
+            f"video_codec={opts.codec}",
             "tunnel_forward=true",
             "control=true",
             "audio=false",
@@ -877,5 +888,6 @@ class ScrcpyEncoder:
         self._device_id = ""
         self._socket_name = "scrcpy"
         self._resolution = (0, 0)
+        self._codec = "h264"
         self._awaiting_keyframe = False
         self._last_idr_request_at = 0.0
