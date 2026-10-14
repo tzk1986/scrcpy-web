@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 方案 45「设置页 / codec 放开 / 检查更新 / 设备级覆盖」：配置分层新增用户覆盖层 `config/user.yaml`（base → user → {env} → 环境变量，watcher 无条件监听热重载）；`GET/PUT /api/settings` 读写接口（pydantic 白名单校验 + 原子写 + 损坏/只读响亮报错保旧配置）；独立设置页 `/settings`（运行参数 / 生效参数含来源徽标 / 运行环境 / 设备级覆盖四卡片，顶部菜单 + 设备页 `?device=` 跳转入口）；codec 后端放开 h265（`video_codec=opts.codec` + WS 侧 HEVC NAL 解析与 hvcC 配置下发 + 前端 WebCodecs 解码链路按 family 泛化、`isConfigSupported` 浏览器门控）；scrcpy 检查更新（仅手动触发查 GitHub Releases latest 四态提示，不自动下载）；设备级参数覆盖（user.yaml `devices.<id>` 节，流启动/录屏 start 消费，未覆盖键回落全局）
 
+### Fixed
+
+- 打包版打开设置页弹 cmd 窗口一闪而没：runtime-env 的 adb 版本探测 spawn 补 `CREATE_NO_WINDOW`（windowed 宿主为控制台子进程新建窗口，方案 15 同款问题在方案 45 新增点的回归）；窗口抑制回归测试由固定文件清单改为全树扫描 `backend/app`，新增派发点自动纳入门禁
+
 ## [0.7.6] - 2026-10-13（验证包，未发布 Release）
 
 ### Added

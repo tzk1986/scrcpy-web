@@ -31,6 +31,7 @@ from fastapi import APIRouter
 from app.core.config_watch import reload_config
 from app.core.exceptions import ConfigReloadError
 from app.core.launcher import request_shutdown
+from app.core.platform import CREATE_NO_WINDOW
 from app.scrcpy.constants import SCRCPY_SERVER_VERSION
 from app.scrcpy.server_manager import ServerManager
 from config.settings import settings
@@ -84,7 +85,11 @@ def _probe_adb_version(adb_path: str) -> str:
     """adb --version 探测（阻塞子进程，端点内经 asyncio.to_thread 执行）；失败返回「未知」。"""
     try:
         result = subprocess.run(
-            [adb_path, "version"], capture_output=True, text=True, timeout=5
+            [adb_path, "version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
         )
         for line in result.stdout.splitlines():
             if "Version" in line:
