@@ -12,7 +12,7 @@
  *   - 解码器 output/error 回调与 canvas 绘制、streaming 状态流转
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
-import { H264VideoStream } from './h264VideoStream'
+import { H264VideoStream, buildHvcCDescription } from './h264VideoStream'
 import type { WebSocketService } from './websocket'
 
 /** 最小合法 SPS+PPS（Annex B）：SPS 0x67... 5 字节 + PPS 0x68... 4 字节。 */
@@ -1045,6 +1045,205 @@ describe('WS 重连接线（方案 19 终审）', () => {
     expect(stream.suspended).toBe(false)
     expect(stream.state).toBe('configuring')
     expect(ws.sent).toEqual([])
+    stream.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// h265（HEVC）解码链路泛化（方案 45 T4）
+// ---------------------------------------------------------------------------
+
+/** 后端 T3 同款特征向量（tests/unit/test_video.py HEVC_*_TEST 去起始码）：
+ * SPS payload b0=0x01 → profile_space 0/profile 1；compat=0x60000000 → 位反转=6；
+ * constraints 首字节 0xB0；level=120 → codec 串 hvc1.1.6.L120.B0。 */
+const HEVC_VPS = new Uint8Array([0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x60])
+const HEVC_SPS = new Uint8Array([
+  0x42, 0x01,                                  // HEVC NAL 头（type 33 SPS）
+  0x01,                                        // profile_space=0, tier=0, profile_idc=1
+  0x60, 0x00, 0x00, 0x00,                      // compat（SPS 序）→ 记录内位反转 = 6
+  0xb0, 0x00, 0x00, 0x00, 0x00, 0x00,          // constraint indicator flags
+  0x78,                                        // level_idc = 120
+])
+const HEVC_PPS = new Uint8Array([0x44, 0x01, 0x08, 0x00])
+
+/** 按 ISO/IEC 14496-15 §8.3.3.1.2 HEVCDecoderConfigurationRecord 布局手算的期望字节。 */
+const EXPECTED_HVCC = new Uint8Array([
+  0x01,                                        // configurationVersion
+  0x01,                                        // profile_space(2)|tier(1)|profile_idc(5)
+  0x00, 0x00, 0x00, 0x06,                      // general_profile_compatibility_flags（位反转）
+  0xb0, 0x00, 0x00, 0x00, 0x00, 0x00,          // general_constraint_indicator_flags
+  0x78,                                        // general_level_idc
+  0xf0, 0x00,                                  // reserved(1111) + min_spatial_segmentation_idc=0（未指定）
+  0xfc,                                        // reserved(111111) + parallelismType=0（未指定）
+  0xfc,                                        // reserved(111111) + chromaFormat=0（未指定）
+  0xf8,                                        // reserved(11111) + bitDepthLumaMinus8=0（未指定）
+  0xf8,                                        // reserved(11111) + bitDepthChromaMinus8=0（未指定）
+  0x00, 0x00,                                  // avgFrameRate=0（未指定）
+  0x0f,                                        // constantFrameRate=0|numTemporalLayers=1|temporalIdNested=1|lengthSizeMinusOne=3
+  0x03,                                        // numOfArrays = 3（VPS/SPS/PPS）
+  0xa0, 0x00, 0x01, 0x00, 0x08, ...HEVC_VPS,   // VPS 数组：tag(complete=1,type=32) numNalus=1 len=8
+  0xa1, 0x00, 0x01, 0x00, 0x0e, ...HEVC_SPS,   // SPS 数组：tag(type=33) numNalus=1 len=14
+  0xa2, 0x00, 0x01, 0x00, 0x04, ...HEVC_PPS,   // PPS 数组：tag(type=34) numNalus=1 len=4
+])
+
+/** Annex B 化（4 字节起始码前缀）+ hex 化，复刻后端 description 生成方式。 */
+function annexBHex(...nalus: Uint8Array[]): string {
+  const out: number[] = []
+  for (const n of nalus) out.push(0, 0, 0, 1, ...n)
+  return out.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+const CONFIG_MSG_HEVC = JSON.stringify({
+  type: 'config',
+  codec: 'hvc1.1.6.L120.B0',
+  width: 1080,
+  height: 1920,
+  description: annexBHex(HEVC_VPS, HEVC_SPS, HEVC_PPS),
+})
+
+/** HEVC IDR_W_RADL（type 19 → 头 0x26）与 TRAIL_R（type 1 → 头 0x02）帧载荷。 */
+const HEVC_KEY_PAYLOAD = new Uint8Array([0, 0, 0, 1, 0x26, 0x01, 0xff])
+const HEVC_DELTA_PAYLOAD = new Uint8Array([0, 0, 0, 1, 0x02, 0x01, 0xff])
+
+describe('buildHvcCDescription（ISO 14496-15 hvcC）', () => {
+  it('后端特征向量逐字节符合 hvcC 布局', () => {
+    expect(buildHvcCDescription(HEVC_VPS, HEVC_SPS, HEVC_PPS)).toEqual(EXPECTED_HVCC)
+  })
+
+  it('头部关键字段（brief 钉死断言）：version=1、numOfArrays=3、byte21=0x0f', () => {
+    const desc = buildHvcCDescription(HEVC_VPS, HEVC_SPS, HEVC_PPS)
+    expect(desc[0]).toBe(1)
+    expect(desc[22]).toBe(3)
+    expect(desc[21]).toBe(0x0f)
+  })
+
+  it('数组区：tag 0xA0/0xA1/0xA2 + numNalus=1 + 2B 长度前缀 + 含 NAL 头的完整 NALU', () => {
+    const desc = buildHvcCDescription(HEVC_VPS, HEVC_SPS, HEVC_PPS)
+    expect(desc[23]).toBe(0xa0)
+    expect(desc.slice(24, 26)).toEqual(new Uint8Array([0x00, 0x01]))
+    expect(desc.slice(26, 28)).toEqual(new Uint8Array([0x00, HEVC_VPS.length]))
+    expect(desc.slice(28, 28 + HEVC_VPS.length)).toEqual(HEVC_VPS)
+
+    const spsTag = 28 + HEVC_VPS.length
+    expect(desc[spsTag]).toBe(0xa1)
+    expect(desc.slice(spsTag + 3, spsTag + 5))
+      .toEqual(new Uint8Array([0x00, HEVC_SPS.length]))
+
+    const ppsTag = spsTag + 5 + HEVC_SPS.length
+    expect(desc[ppsTag]).toBe(0xa2)
+    expect(desc.slice(ppsTag + 3, ppsTag + 5))
+      .toEqual(new Uint8Array([0x00, HEVC_PPS.length]))
+    expect(desc.length).toBe(ppsTag + 5 + HEVC_PPS.length)
+  })
+
+  it('SPS 去 NAL 头后不足 12B（profile/level 段缺失）返回空', () => {
+    const shortSps = new Uint8Array([0x42, 0x01, 0x01, 0x02, 0x03])
+    expect(buildHvcCDescription(HEVC_VPS, shortSps, HEVC_PPS).byteLength).toBe(0)
+  })
+})
+
+describe('h265 config 路由（方案 45 T4）', () => {
+  it('hvc1 config：VPS/SPS/PPS 按 HEVC NAL type 32/33/34 提取并构建 hvcC description', () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    const stream = makeStream(ws, canvas)
+
+    stream.start()
+    ws.handler!(CONFIG_MSG_HEVC)
+
+    const dec = FakeVideoDecoder.instances.at(-1)
+    expect(dec?.config?.codec).toBe('hvc1.1.6.L120.B0')
+    expect(dec?.config?.description).toBeInstanceOf(Uint8Array)
+    expect(Array.from(dec!.config!.description as Uint8Array))
+      .toEqual(Array.from(EXPECTED_HVCC))
+    expect(canvas.width).toBe(1080)
+    expect(canvas.height).toBe(1920)
+    expect(stream.state).toBe('configuring')
+
+    stream.stop()
+  })
+
+  it('hev1. 前缀同样路由到 h265 family', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+
+    stream.start()
+    ws.handler!(JSON.stringify({
+      ...JSON.parse(CONFIG_MSG_HEVC),
+      codec: 'hev1.1.6.L120.B0',
+    }))
+
+    const dec = FakeVideoDecoder.instances.at(-1)
+    expect(dec?.config?.codec).toBe('hev1.1.6.L120.B0')
+    expect(Array.from(dec!.config!.description as Uint8Array))
+      .toEqual(Array.from(EXPECTED_HVCC))
+
+    stream.stop()
+  })
+
+  it('h265 config 缺 VPS 时进入 error 且不建解码器', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+
+    stream.start()
+    ws.handler!(JSON.stringify({
+      type: 'config',
+      codec: 'hvc1.1.6.L120.B0',
+      width: 1080,
+      height: 1920,
+      description: annexBHex(HEVC_SPS, HEVC_PPS),
+    }))
+
+    expect(stream.state).toBe('error')
+    expect(stream.stats.error).toContain('Failed to extract VPS/SPS/PPS')
+    expect(FakeVideoDecoder.instances).toHaveLength(0)
+  })
+
+  it('h265 SPS 过短导致 hvcC 构建失败时进入 error', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+
+    stream.start()
+    ws.handler!(JSON.stringify({
+      type: 'config',
+      codec: 'hvc1.1.6.L120.B0',
+      width: 1080,
+      height: 1920,
+      description: annexBHex(HEVC_VPS, new Uint8Array([0x42, 0x01, 0x01, 0x02]), HEVC_PPS),
+    }))
+
+    expect(stream.state).toBe('error')
+    expect(stream.stats.error).toBe('Failed to build hvcC description')
+  })
+
+  it('h265 二进制帧：IRAP 头 0x26 判 key、0x02 判 delta 并送解码', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+    ws.handler!(CONFIG_MSG_HEVC)
+
+    ws.handler!(frameMessage(33_333, HEVC_KEY_PAYLOAD))
+    expect(FakeEncodedVideoChunk.instances.at(-1)?.init.type).toBe('key')
+    expect(FakeEncodedVideoChunk.instances.at(-1)?.init.timestamp).toBe(33_333)
+
+    ws.handler!(frameMessage(66_666, HEVC_DELTA_PAYLOAD))
+    expect(FakeEncodedVideoChunk.instances.at(-1)?.init.type).toBe('delta')
+
+    stream.stop()
+  })
+
+  it('h264 会话不受影响：HEVC IRAP 头 0x26 在 h264 family 下判 delta', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+
+    // 0x26 & 0x1F = 6 ≠ 5 → 非 IDR（h264 语义零回归）
+    ws.handler!(frameMessage(33_333, HEVC_KEY_PAYLOAD))
+    expect(FakeEncodedVideoChunk.instances.at(-1)?.init.type).toBe('delta')
+
+    ws.handler!(KEY_FRAME)
+    expect(FakeEncodedVideoChunk.instances.at(-1)?.init.type).toBe('key')
+
     stream.stop()
   })
 })

@@ -1,30 +1,34 @@
 /**
- * H.264 视频流服务（WebCodecs）
+ * H.264/H.265 视频流服务（WebCodecs）
  * =================================
  *
- * 通过 WebSocket 接收 H.264 码流，使用浏览器 WebCodecs VideoDecoder 解码，
- * 渲染到 canvas 上。
+ * 通过 WebSocket 接收视频码流，使用浏览器 WebCodecs VideoDecoder 解码，
+ * 渲染到 canvas 上。方案 45 T4：码流家族按 config.codec 前缀泛化
+ * （avc1.* → h264；hvc1.* / hev1.* → h265），h264 路径行为不变。
  *
  * 协议：
  *   服务端 → 客户端：
  *     - 配置消息（JSON）:
- *       { "type": "config", "codec": "avc1.XXYYZZ",
- *         "width": 1280, "height": 720, "description": "<hex SPS+PPS>" }
- *     - 视频帧（二进制）: [8B PTS 大端无符号 µs][H.264 Annex B NAL 单元]
+ *       { "type": "config", "codec": "avc1.XXYYZZ" | "hvc1.…",
+ *         "width": 1280, "height": 720,
+ *         "description": "<hex SPS+PPS（h264）或 VPS+SPS+PPS（h265，方案 45 T3）>" }
+ *     - 视频帧（二进制）: [8B PTS 大端无符号 µs][Annex B NAL 单元]
  *       （方案 32：PTS 为设备单调时钟原值，喂入 EncodedVideoChunk.timestamp）
  *     - 错误（JSON）: { "type": "error", "message": "..." }
  *
  *   客户端 → 服务端：JSON 输入消息
  *
  * 解码流程：
- *   1. 收到 config 消息 → 从 hex description 提取 SPS/PPS
- *   2. 构建 AVCC 格式（avcC box）description
+ *   1. 收到 config 消息 → 按家族从 hex description 提取参数集
+ *      （h264：SPS/PPS，NAL type 7/8；h265：VPS/SPS/PPS，NAL type 32/33/34）
+ *   2. 构建对应配置记录 description（h264：avcC；h265：hvcC，ISO 14496-15）
  *   3. 创建 VideoDecoder 实例
- *   4. 收到二进制帧 → Annex B 转 AVCC → EncodedVideoChunk → decode()
+ *   4. 收到二进制帧 → Annex B 转长度前缀格式 → EncodedVideoChunk → decode()
  *   5. VideoDecoder output → VideoFrame → drawImage(canvas)
  */
 
 import type { WebSocketService } from './websocket'
+import type { CodecFamily } from './h264NalUtils'
 import {
   extractNalus,
   scanFrame,
@@ -32,6 +36,99 @@ import {
   shouldDropFrame,
   MAX_DECODE_QUEUE,
 } from './h264NalUtils'
+
+/** 32 位整数按位整体反转（HEVC compat flags：SPS 序 → hvcC/codec 串序，与后端 T3 同变换） */
+function reverseBits32(value: number): number {
+  let v = value >>> 0
+  v = ((v >>> 1) & 0x55555555) | ((v & 0x55555555) << 1)
+  v = ((v >>> 2) & 0x33333333) | ((v & 0x33333333) << 2)
+  v = ((v >>> 4) & 0x0f0f0f0f) | ((v & 0x0f0f0f0f) << 4)
+  v = ((v >>> 8) & 0x00ff00ff) | ((v & 0x00ff00ff) << 8)
+  return ((v >>> 16) | (v << 16)) >>> 0
+}
+
+/**
+ * 构建 HEVCDecoderConfigurationRecord（hvcC，用于 VideoDecoder.configure
+ * 的 description；方案 45 T4）。
+ *
+ * 布局依据 ISO/IEC 14496-15 §8.3.3.1.2（2022 版 §8.3.2.1.2）：
+ *   23B 固定头 + 3 个 NAL 数组（VPS/SPS/PPS，array_completeness=1）：
+ *   [0]     configurationVersion = 1
+ *   [1]     profile_space(2)|tier_flag(1)|profile_idc(5) —— 直取 SPS payload b0
+ *   [2..5]  general_profile_compatibility_flags —— SPS payload b1..b4 的 32 位
+ *           按位整体反转（SPS 按 flag j MSB-first 写，记录 bit31 ↔ j=0；
+ *           与后端 codec 串 compat 字段同变换）
+ *   [6..11] general_constraint_indicator_flags —— SPS payload b5..b10 直拷
+ *   [12]    general_level_idc —— SPS payload b11
+ *   [13..14] 1111 + min_spatial_segmentation_idc = 0（未指定）
+ *   [15]    111111 + parallelismType = 0（未指定）
+ *   [16]    111111 + chromaFormat = 0（未指定）
+ *   [17]    11111 + bitDepthLumaMinus8 = 0（未指定）
+ *   [18]    11111 + bitDepthChromaMinus8 = 0（未指定）
+ *   [19..20] avgFrameRate = 0（未指定）
+ *   [21]    constantFrameRate=0|numTemporalLayers=1|temporalIdNested=1|lengthSizeMinusOne=3
+ *   [22]    numOfArrays = 3
+ *   数组区  tag(0xA0/0xA1/0xA2 = complete|type 32/33/34) + numNalus(2B)=1
+ *           + nalUnitLength(2B) + NALU（含 2B HEVC NAL 头）
+ *
+ * chromaFormat/bitDepth/min_spatial_segmentation 等取 0（规范语义「未指定」）：
+ * 这些是信息性字段，解码器（Chromium）从数组区 SPS 自行解析真实值；
+ * 派生它们需完整 RBSP 位读取（防伪起始码 + Exp-Golomb + PTL 子层循环），
+ * 收益不抵复杂度与出错面（R5 裁定的保守默认）。
+ *
+ * 入参为去起始码、含 2B NAL 头的 VPS/SPS/PPS（extractNalus 的 data 段）。
+ * SPS payload 不足 12B（profile/level 段缺失）时返回空（调用方按失败处理，
+ * 与 buildAvccDescription 的 SPS 过短语义一致）。
+ */
+export function buildHvcCDescription(
+  vps: Uint8Array, sps: Uint8Array, pps: Uint8Array,
+): Uint8Array<ArrayBuffer> {
+  const NAL_HEADER_LEN = 2  // HEVC NAL 头 2B（h264 为 1B）
+  if (sps.length < NAL_HEADER_LEN + 12 ||
+      vps.length <= NAL_HEADER_LEN || pps.length <= NAL_HEADER_LEN) {
+    console.error('[H264] HEVC param sets too short for hvcC:',
+      { vps: vps.length, sps: sps.length, pps: pps.length })
+    return new Uint8Array(0)
+  }
+
+  const arrays: Array<[tag: number, nal: Uint8Array]> = [
+    [0xa0, vps],   // array_completeness=1 | reserved=0 | NAL type 32 (VPS)
+    [0xa1, sps],   // NAL type 33 (SPS)
+    [0xa2, pps],   // NAL type 34 (PPS)
+  ]
+  let total = 23
+  for (const [, nal] of arrays) total += 5 + nal.length
+  const out = new Uint8Array(total)
+  const view = new DataView(out.buffer)
+
+  const p = NAL_HEADER_LEN  // SPS payload 起点
+  out[0] = 1                                        // configurationVersion
+  out[1] = sps[p]                                   // profile_space|tier|profile_idc
+  const compat = reverseBits32(
+    ((sps[p + 1] << 24) | (sps[p + 2] << 16) | (sps[p + 3] << 8) | sps[p + 4]) >>> 0,
+  )
+  view.setUint32(2, compat)                         // compat flags（位反转序）
+  out.set(sps.subarray(p + 5, p + 11), 6)           // constraint indicator flags
+  out[12] = sps[p + 11]                             // general_level_idc
+  out[13] = 0xf0                                    // 1111 + min_spatial_segmentation=0
+  out[15] = 0xfc                                    // 111111 + parallelismType=0
+  out[16] = 0xfc                                    // 111111 + chromaFormat=0
+  out[17] = 0xf8                                    // 11111 + bitDepthLumaMinus8=0
+  out[18] = 0xf8                                    // 11111 + bitDepthChromaMinus8=0
+  // [19..20] avgFrameRate=0（Uint8Array 初始化即为 0）
+  out[21] = 0x0f                                    // cfr=0|layers=1|nested=1|lenSizeMinusOne=3
+  out[22] = arrays.length                           // numOfArrays = 3
+
+  let off = 23
+  for (const [tag, nal] of arrays) {
+    out[off] = tag
+    view.setUint16(off + 1, 1)                      // numNalus = 1
+    view.setUint16(off + 3, nal.length)             // nalUnitLength（含 NAL 头）
+    out.set(nal, off + 5)
+    off += 5 + nal.length
+  }
+  return out
+}
 
 export type H264StreamState = 'idle' | 'configuring' | 'streaming' | 'error' | 'stopped'
 
@@ -73,9 +170,12 @@ export class H264VideoStream {
   private _height = 0
   private onStateChange?: (state: H264StreamState) => void
   private onStatsUpdate?: (stats: H264StreamStats) => void
-  // 保存最近的 SPS/PPS，用于重新初始化解码器
+  // 保存最近的参数集，用于重新初始化解码器（h265 另有 VPS，方案 45 T4）
   private spsData: Uint8Array | null = null
   private ppsData: Uint8Array | null = null
+  private vpsData: Uint8Array | null = null
+  // 码流家族：由 config.codec 前缀判定，驱动 NAL type 语义与关键帧判定（方案 45 T4）
+  private codecFamily: CodecFamily = 'h264'
   // 服务端自适应码率重启的宽限截止时间戳（暂停回退 watchdog 与 stats 上报）
   private _restartGraceUntil = 0
   // 截图回退期间进入 suspend：保留 ws 消息处理器、只计数不解码，
@@ -91,7 +191,7 @@ export class H264VideoStream {
   private _probeLastFrameTime = 0
   // 最近一次 config 的解析结果（suspend 期间新到的 config 暂存于此，resume 时复用）
   private _lastCodec: string | null = null
-  private _lastAvccDesc: ArrayBuffer | null = null
+  private _lastAvccDesc: BufferSource | null = null
   private _lastWidth = 0
   private _lastHeight = 0
   // 后端 RESET_VIDEO 保活间隔（config.idle_reset_seconds×1000，0 表示关闭/未知）
@@ -250,6 +350,8 @@ export class H264VideoStream {
 
     this.spsData = null
     this.ppsData = null
+    this.vpsData = null
+    this.codecFamily = 'h264'
     this._state = 'stopped'
     this.onStateChange?.(this._state)
   }
@@ -332,6 +434,9 @@ export class H264VideoStream {
       const descriptionHex = msg.description as string
       const width = msg.width as number || 0
       const height = msg.height as number || 0
+      // 码流家族判定（方案 45 T4）：hvc1./hev1. 前缀 → h265，其余（含缺省
+      // avc1.42E01E）→ h264，h264 分支与泛化前逐行等价
+      this.codecFamily = codec.startsWith('hvc1.') || codec.startsWith('hev1.') ? 'h265' : 'h264'
 
       console.log('[H264] Config received:', {
         codec,
@@ -345,20 +450,36 @@ export class H264VideoStream {
         return
       }
 
-      // 解析 hex 格式的 SPS+PPS（Annex B 格式，带起始码）
+      // 解析 hex 格式的参数集（Annex B 格式，带起始码；h264 为 SPS+PPS，
+      // h265 为 VPS+SPS+PPS，方案 45 T3）
       const annexBData = this.hexToUint8Array(descriptionHex)
       console.log('[H264] AnnexB data hex (first 40 bytes):',
         Array.from(annexBData.slice(0, 40)).map(b => b.toString(16).padStart(2, '0')).join(' '))
 
-      // 提取 SPS 和 PPS NAL 单元
+      // 按家族提取参数集 NAL 单元（h264：type 7/8 存 raw 含起始码——沿用原
+      // 语义供 buildAvccDescription 去码；h265：type 32/33/34 存 data 去起始码
+      // 含 2B NAL 头——buildHvcCDescription 直接消费）
       const nalus = extractNalus(annexBData)
       console.log('[H264] Extracted NALUs:', nalus.length)
       for (const nalu of nalus) {
-        const naluType = nalu.data[0] & 0x1F
+        const naluType = this.codecFamily === 'h265'
+          ? ((nalu.data[0] as number) >> 1) & 0x3f
+          : nalu.data[0] & 0x1F
         console.log('[H264] NALU type:', naluType,
           'length (with NAL header):', nalu.data.length,
           'first bytes:', Array.from(nalu.data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' '))
-        if (naluType === 7) {
+        if (this.codecFamily === 'h265') {
+          if (naluType === 32) {
+            // VPS
+            this.vpsData = nalu.data  // 去起始码、含 NAL 头
+          } else if (naluType === 33) {
+            // SPS
+            this.spsData = nalu.data
+          } else if (naluType === 34) {
+            // PPS
+            this.ppsData = nalu.data
+          }
+        } else if (naluType === 7) {
           // SPS
           this.spsData = nalu.raw  // 包含起始码
         } else if (naluType === 8) {
@@ -367,20 +488,38 @@ export class H264VideoStream {
         }
       }
 
-      if (!this.spsData || !this.ppsData) {
-        this.setError(`Failed to extract SPS/PPS from description. SPS: ${!!this.spsData}, PPS: ${!!this.ppsData}`)
-        return
+      let description: BufferSource
+      if (this.codecFamily === 'h265') {
+        if (!this.vpsData || !this.spsData || !this.ppsData) {
+          this.setError(`Failed to extract VPS/SPS/PPS from description. VPS: ${!!this.vpsData}, SPS: ${!!this.spsData}, PPS: ${!!this.ppsData}`)
+          return
+        }
+        // 创建 hvcC 格式的 description（HEVCDecoderConfigurationRecord）
+        const hvcC = buildHvcCDescription(this.vpsData, this.spsData, this.ppsData)
+        if (hvcC.byteLength === 0) {
+          this.setError('Failed to build hvcC description')
+          return
+        }
+        console.log('[H264] hvcC description hex:',
+          Array.from(hvcC).map(b => b.toString(16).padStart(2, '0')).join(' '))
+        console.log('[H264] hvcC description size:', hvcC.byteLength)
+        description = hvcC
+      } else {
+        if (!this.spsData || !this.ppsData) {
+          this.setError(`Failed to extract SPS/PPS from description. SPS: ${!!this.spsData}, PPS: ${!!this.ppsData}`)
+          return
+        }
+        // 创建 avcC 格式的 description
+        const avccDescription = this.buildAvccDescription(this.spsData, this.ppsData)
+        if (avccDescription.byteLength === 0) {
+          this.setError('Failed to build AVCC description')
+          return
+        }
+        console.log('[H264] AVCC description hex:',
+          Array.from(new Uint8Array(avccDescription)).map(b => b.toString(16).padStart(2, '0')).join(' '))
+        console.log('[H264] AVCC description size:', avccDescription.byteLength)
+        description = avccDescription
       }
-
-      // 创建 avcC 格式的 description
-      const avccDescription = this.buildAvccDescription(this.spsData, this.ppsData)
-      if (avccDescription.byteLength === 0) {
-        this.setError('Failed to build AVCC description')
-        return
-      }
-      console.log('[H264] AVCC description hex:',
-        Array.from(new Uint8Array(avccDescription)).map(b => b.toString(16).padStart(2, '0')).join(' '))
-      console.log('[H264] AVCC description size:', avccDescription.byteLength)
 
       // 关键：收到 config 后立即设置 canvas 绘制缓冲区尺寸为设备分辨率
       // CSS 尺寸由 object-fit:contain 控制，自适应容器并保持比例。
@@ -396,7 +535,7 @@ export class H264VideoStream {
 
       // 暂存 config 解析结果（suspend 期间仅暂存；resume 时复用重建解码器）
       this._lastCodec = codec
-      this._lastAvccDesc = avccDescription
+      this._lastAvccDesc = description
       this._lastWidth = width
       this._lastHeight = height
       // NaN 守卫（终审 Minor #4）：非有限数（缺失/非法字段）归 0
@@ -409,7 +548,7 @@ export class H264VideoStream {
       }
 
       // 初始化 VideoDecoder
-      this.initDecoder(codec, avccDescription, width, height)
+      this.initDecoder(codec, description, width, height)
 
     } else if (type === 'restarting') {
       // 服务端自适应码率重启预告：1-3s 黑屏属预期，宽限期内
@@ -450,14 +589,15 @@ export class H264VideoStream {
     const pts = Number(new DataView(data.buffer, data.byteOffset, 8).getBigUint64(0))
     const payload = data.subarray(8)
 
-    // 零拷贝单遍扫描（方案 26）：扫描与关键帧判定合一，AVCC 组装单次分配
-    const scan = scanFrame(payload)
+    // 零拷贝单遍扫描（方案 26）：扫描与关键帧判定合一，AVCC 组装单次分配；
+    // 关键帧语义按家族判定（h264 IDR=5；h265 IRAP 16..21，方案 45 T4）
+    const scan = scanFrame(payload, this.codecFamily)
 
     if (this._frameCount <= 5) {
       console.log('[H264] Frame', this._frameCount, ':',
         'raw size:', payload.length,
         'isKeyFrame:', scan.isKey,
-        'NALUs:', scan.nalus.map(n => `type=${payload[n.offset] & 0x1f},len=${n.length}`))
+        'NALUs:', scan.nalus.map(n => `type=${this.naluTypeOf(payload[n.offset])},len=${n.length}`))
     }
 
     // 丢帧策略（方案 31）：
@@ -507,8 +647,8 @@ export class H264VideoStream {
     }
   }
 
-  /** 初始化 VideoDecoder */
-  private initDecoder(codec: string, description: ArrayBuffer, width: number, height: number) {
+  /** 初始化 VideoDecoder（description 为 avcC/hvcC 配置记录，方案 45 T4 泛化为 BufferSource） */
+  private initDecoder(codec: string, description: BufferSource, width: number, height: number) {
     // 每条重建路径（config 重发 / resume / IDR 重建）都回到干净初始态：
     // 新解码器不含旧参考链，追赶锁定随之解除（方案 31）
     this._awaitingIdr = false
@@ -599,6 +739,11 @@ export class H264VideoStream {
   }
 
   // ===== Annex B / AVCC 转换 =====
+
+  /** 按当前家族解出 NAL 头字节中的 NAL type（仅日志用途；方案 45 T4） */
+  private naluTypeOf(header: number): number {
+    return this.codecFamily === 'h265' ? (header >> 1) & 0x3f : header & 0x1f
+  }
 
   /** 将 hex 字符串转为 Uint8Array */
   private hexToUint8Array(hex: string): Uint8Array {

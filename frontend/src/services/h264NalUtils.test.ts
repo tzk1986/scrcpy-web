@@ -159,6 +159,55 @@ describe('scanFrame', () => {
   })
 })
 
+describe('scanFrame with h265（方案 45 T4）', () => {
+  it('detects HEVC keyframe (IRAP NAL types 16..21)', () => {
+    // header=0x26 → (0x26>>1)&0x3F = 19 ∈ [16,21]（IDR_W_RADL）
+    const data = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xff])
+    const frame = scanFrame(data, 'h265')
+    expect(frame.isKey).toBe(true)
+  })
+
+  it('detects HEVC delta frame', () => {
+    // header=0x02 → (0x02>>1)&0x3F = 1（TRAIL_R）
+    const data = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0xff])
+    expect(scanFrame(data, 'h265').isKey).toBe(false)
+  })
+
+  it('IRAP 边界值 16（BLA_W_LP）与 21（CRA_NUT）均判关键帧', () => {
+    // type 16 → header 0x20；type 21 → header 0x2A
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x20, 0x01]), 'h265').isKey).toBe(true)
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x2a, 0x01]), 'h265').isKey).toBe(true)
+  })
+
+  it('IRAP 边界外侧 15 与 22 不判关键帧', () => {
+    // type 15 → header 0x1E；type 22 → header 0x2C（RASL/RASL 后前导图像等）
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x1e, 0x01]), 'h265').isKey).toBe(false)
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x2c, 0x01]), 'h265').isKey).toBe(false)
+  })
+
+  it('h264 IDR 头（0x65）在 h265 语义下不误判为关键帧', () => {
+    // (0x65>>1)&0x3F = 50 ∉ [16,21]
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x65, 0x01]), 'h265').isKey).toBe(false)
+  })
+
+  it('缺省 codec 参数保持 h264 语义（HEVC IRAP 头不判关键帧）', () => {
+    // 0x26 & 0x1F = 6 ≠ 5 → 非 IDR
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x26, 0x01])).isKey).toBe(false)
+    expect(scanFrame(new Uint8Array([0, 0, 0, 1, 0x65, 0x01])).isKey).toBe(true)
+  })
+
+  it('h265 多 NALU 载荷区间与 h264 扫描一致，仅关键帧判定不同', () => {
+    // 前导 SEI（type 39 → 0x4E）+ IDR_W_RADL（type 19 → 0x26）
+    const data = new Uint8Array([0, 0, 0, 1, 0x4e, 0x01, 0x02, 0, 0, 0, 1, 0x26, 0x03])
+    const frame = scanFrame(data, 'h265')
+    expect(frame.nalus).toEqual([
+      { offset: 4, length: 3 },
+      { offset: 11, length: 2 },
+    ])
+    expect(frame.isKey).toBe(true)
+  })
+})
+
 describe('frameToAvcc', () => {
   it('与旧管线（extractNalus + 4B 长度前缀组装）逐字节一致', () => {
     const sei = new Uint8Array([0, 0, 1, 0x06, 0xaa, 0xbb])   // 3 字节码 SEI

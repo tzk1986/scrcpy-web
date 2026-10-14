@@ -70,13 +70,29 @@ export interface FrameScan {
   isKey: boolean
 }
 
+/** 码流家族：h264（AVC）或 h265（HEVC，方案 45 T4 泛化） */
+export type CodecFamily = 'h264' | 'h265'
+
 /**
  * 零拷贝单遍扫描单帧（一整 AU）：产出 NALU 载荷区间与关键帧判定，
  * 边界语义与 extractNalus 逐字节一致（3 字节码优先于 4 字节码，
  * 码位后跳到载荷起点）。帧包边界即帧边界（方案 17/26），不做跨包
  * 缓冲。isKey 判定与 hasKeyFrame 一致（空载荷跳过）。
+ *
+ * codec 参数（方案 45 T4，缺省 'h264' 保持原语义）：
+ *   - h264：NAL 头 1B，IDR 判定 (header & 0x1F) === 5
+ *   - h265：NAL 头 2B，NAL type = (header >> 1) & 0x3F，
+ *     IRAP [16, 21]（BLA_W_LP..CRA_NUT，含两种 IDR）判关键帧
  */
-export function scanFrame(data: Uint8Array): FrameScan {
+export function scanFrame(data: Uint8Array, codec: CodecFamily = 'h264'): FrameScan {
+  const isKeyNal = (header: number): boolean => {
+    if (codec === 'h265') {
+      const ntype = (header >> 1) & 0x3f
+      return ntype >= 16 && ntype <= 21
+    }
+    return (header & 0x1f) === 5
+  }
+
   const nalus: FrameNaluPos[] = []
   const len = data.length
   let codeStart = -1  // 当前 NALU 起始码位置（-1 = 尚未找到）
@@ -92,7 +108,7 @@ export function scanFrame(data: Uint8Array): FrameScan {
       if (codeStart >= 0) {
         const length = i - dataStart
         nalus.push({ offset: dataStart, length })
-        if (length > 0 && (data[dataStart] & 0x1f) === 5) isKey = true
+        if (length > 0 && isKeyNal(data[dataStart])) isKey = true
       }
       codeStart = i
       dataStart = i + (is4 ? 4 : 3)
@@ -106,7 +122,7 @@ export function scanFrame(data: Uint8Array): FrameScan {
   if (codeStart >= 0) {
     const length = len - dataStart
     nalus.push({ offset: dataStart, length })
-    if (length > 0 && (data[dataStart] & 0x1f) === 5) isKey = true
+    if (length > 0 && isKeyNal(data[dataStart])) isKey = true
   }
   return { nalus, isKey }
 }
