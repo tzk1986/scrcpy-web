@@ -33,6 +33,7 @@
     - 断开按钮：关闭 WebSocket 和调试会话，返回列表页
     - 截图按钮（方案 37 B7）：抓帧 → ScreenshotPreview 预览弹窗标注/导出（不再直接下载）
     - 文件按钮（方案 39 T5）：跳转 /device/:id/files 文件管理独立页
+    - 设置按钮（方案 45 T5）：跳转 /settings 独立设置页
 
   子组件关系：
     DeviceDetail.vue → VideoPlayer.vue
@@ -48,6 +49,7 @@
       <div class="actions">
         <el-button class="btn-files" @click="goFiles">文件</el-button>
         <el-button @click="captureScreenshot">截图</el-button>
+        <el-button data-test="device-settings-btn" @click="goSettings">设置</el-button>
         <el-button @click="disconnect">断开</el-button>
         <RecordingPanel :device-id="deviceId" />
       </div>
@@ -138,6 +140,11 @@ function disconnect() {
 /** 跳转设备文件管理独立页（方案 39 T5）。 */
 function goFiles() {
   router.push({ name: 'device-files', params: { id: deviceId } })
+}
+
+/** 跳转独立设置页（方案 45 T5；T8 改为带 ?device=<device_id>）。 */
+function goSettings() {
+  router.push('/settings')
 }
 
 /**

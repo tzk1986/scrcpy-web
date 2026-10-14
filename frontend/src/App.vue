@@ -17,6 +17,7 @@
           <h1>OpenScrcpy</h1>
           <el-menu mode="horizontal" :router="true">
             <el-menu-item index="/">Dashboard</el-menu-item>
+            <el-menu-item index="/settings">设置</el-menu-item>
           </el-menu>
           <el-button
             text

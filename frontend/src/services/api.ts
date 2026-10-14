@@ -99,6 +99,24 @@ export interface DeleteResult {
   error: string | null
 }
 
+/** 单个设置项（方案 45 T2）：生效值 + 来源层次（出厂默认/用户设置/环境覆盖）。 */
+export interface SettingEntry {
+  value: number | string | boolean
+  source: 'default' | 'user' | 'env'
+}
+
+/** GET /api/settings 合并视图（stream/recording 两节，键为设置项名）。 */
+export interface SettingsView {
+  stream: Record<string, SettingEntry>
+  recording: Record<string, SettingEntry>
+}
+
+/** PUT /api/settings 补丁体：节级合并写入；节传 null = 重置该节为出厂默认。 */
+export interface SettingsPatch {
+  stream?: Record<string, unknown> | null
+  recording?: Record<string, unknown> | null
+}
+
 // 创建 axios 实例，配置基础 URL 和超时
 const client = axios.create({
   baseURL: '/api',
@@ -706,6 +724,26 @@ export const api = {
     const res = await client.get<FileJob>(
       `/devices/${encodeURIComponent(deviceId)}/file-jobs/${encodeURIComponent(jobId)}`
     )
+    return res.data
+  },
+
+  // ==================== 设置 API（方案 45）====================
+
+  /**
+   * 读取设置合并视图（生效值 + 来源）。
+   * 对应：GET /api/settings
+   */
+  async getSettings(): Promise<SettingsView> {
+    const res = await client.get<SettingsView>('/settings')
+    return res.data
+  },
+
+  /**
+   * 写入用户设置（节级合并；节传 null = 重置该节为出厂默认）。
+   * 对应：PUT /api/settings
+   */
+  async putSettings(patch: SettingsPatch): Promise<{ saved: boolean }> {
+    const res = await client.put<{ saved: boolean }>('/settings', patch)
     return res.data
   },
 }
