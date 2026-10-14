@@ -17,6 +17,7 @@
     ├── AdbError                 — ADB 子进程返回非零退出码（400）
     ├── DeviceUnreachableError   — TCP 可达性预检失败（400，connect/disconnect 前置）
     ├── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）
+    ├── SettingsStoreError       — 用户设置存储 user.yaml 读写失败（500，方案 45 T2）
     ├── RecordingDisabledError   — 录制总开关关闭时请求开启（400）
     ├── ScanBusyError            — 已有扫描进行中，重复请求被拒（409，方案 36）
     ├── InvalidScanRangeError    — 扫描网段非法或超上限（422，方案 36）
@@ -123,6 +124,15 @@ class ConfigReloadError(OpenScrcpyException):
 
     def __init__(self, reason: str):
         super().__init__(f"Config reload failed: {reason}", code="CONFIG_RELOAD_FAILED")
+
+
+class SettingsStoreError(OpenScrcpyException):
+    """用户设置存储（config/user.yaml）读写失败（损坏/不可写）。"""
+
+    status_code = 500
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="SETTINGS_STORE_ERROR")
 
 
 class RecordingDisabledError(OpenScrcpyException):

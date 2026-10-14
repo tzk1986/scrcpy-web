@@ -44,6 +44,7 @@ from app.core.exceptions import (
     validation_exception_handler,
 )
 from app.interfaces.http import apps, debug, devices, files, network, performance, recording, sessions, system
+from app.interfaces.http import settings as settings_api
 from app.interfaces.http.origin_guard import OriginGuardMiddleware
 from app.interfaces.ws import debug as ws_debug
 from app.interfaces.ws import performance as ws_performance
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(recording.router)   # /api/recording
     app.include_router(sessions.router)    # /api/sessions
     app.include_router(system.router)      # /api/system（配置热重载）
+    app.include_router(settings_api.router)  # /api/settings（方案 45 设置读写）
 
     # --- WebSocket 端点 ---------------------------------------------------
     # 每个 WS 端点委托给 interfaces/ws/ 中的处理器，
