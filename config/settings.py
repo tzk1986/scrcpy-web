@@ -3,8 +3,9 @@ Configuration Settings
 
 Loads configuration from:
 1. config/base.yaml (defaults)
-2. config/{env}.yaml (environment-specific)
-3. Environment variables (highest priority)
+2. config/user.yaml (user overrides)
+3. config/{env}.yaml (environment-specific)
+4. Environment variables (highest priority)
 """
 
 import os
@@ -298,6 +299,16 @@ def get_settings() -> Settings:
 
     env = os.getenv("APP_ENV", "base")
     config = load_yaml_config("base")
+
+    # 用户覆盖层：config/user.yaml（不入仓，设置页写入点）；缺失/为空跳过。
+    # 非 mapping（列表/标量损坏）视为失败抛 ValueError → reload_settings 保旧配置。
+    user_config = load_yaml_config("user")
+    if user_config:
+        if not isinstance(user_config, dict):
+            raise ValueError(
+                "config/user.yaml must be a YAML mapping; keeping previous settings"
+            )
+        config = _deep_merge(config, user_config)
 
     if env != "base":
         env_config = load_yaml_config(env)

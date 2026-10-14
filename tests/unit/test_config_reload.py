@@ -52,6 +52,16 @@ def _base_config(**app_overrides) -> dict:
     return {"app": app, "server": {"host": "0.0.0.0", "port": 8765}}
 
 
+def _layered_loader(layers: dict):
+    """按层名取配置的 loader（env 参数即层名；user 层可回非 dict 以测损坏场景）。"""
+
+    def loader(env: str = "base"):
+        value = layers.get(env, {})
+        return copy.deepcopy(value) if isinstance(value, dict) else value
+
+    return loader
+
+
 # ---------------------------------------------------------------------------
 # reload_settings / reload_config
 # ---------------------------------------------------------------------------
@@ -96,6 +106,47 @@ def test_reload_rejects_missing_or_empty_base_yaml(monkeypatch):
     assert settings() is old
 
 
+def test_user_layer_overrides_base(monkeypatch):
+    monkeypatch.setattr(
+        config_settings, "load_yaml_config",
+        _layered_loader({
+            "base": _base_config(),
+            "user": {"stream": {"bit_rate": "6M"}},
+        }),
+    )
+    reloaded = reload_settings()
+
+    assert reloaded.stream.bit_rate == "6M"
+    assert reloaded.stream.fps == 30  # 未覆盖键回落默认
+
+
+def test_env_layer_overrides_user(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setattr(
+        config_settings, "load_yaml_config",
+        _layered_loader({
+            "base": _base_config(),
+            "user": {"stream": {"bit_rate": "6M"}},
+            "production": {"stream": {"bit_rate": "8M"}},
+        }),
+    )
+    assert reload_settings().stream.bit_rate == "8M"
+
+
+def test_user_layer_non_mapping_keeps_old_config(monkeypatch):
+    old = settings()
+
+    monkeypatch.setattr(
+        config_settings, "load_yaml_config",
+        _layered_loader({"base": _base_config(), "user": ["not", "a", "map"]}),
+    )
+    result = reload_config()
+
+    assert result["reloaded"] is False
+    assert "user.yaml" in result["error"]
+    assert settings() is old
+
+
 def test_reload_endpoint_rejects_empty_base_yaml(monkeypatch):
     monkeypatch.setattr(config_settings, "load_yaml_config", lambda env="base": {})
     res = make_client().post("/api/system/config/reload")
@@ -133,6 +184,10 @@ def test_watched_paths_includes_base_yaml():
     assert "base.yaml" in [p.name for p in watched_paths()]
 
 
+def test_watched_paths_includes_user_yaml_unconditionally():
+    assert "user.yaml" in [p.name for p in watched_paths()]
+
+
 def test_config_watcher_detects_mtime_change(tmp_path, monkeypatch):
     cfg = tmp_path / "base.yaml"
     cfg.write_text("app: {}\n", encoding="utf-8")
@@ -146,6 +201,17 @@ def test_config_watcher_detects_mtime_change(tmp_path, monkeypatch):
     os.utime(cfg, (future, future))
     assert watcher.poll_changed() is True
     assert watcher.poll_changed() is False  # 快照已更新
+
+
+def test_watcher_detects_first_creation_of_user_yaml(tmp_path, monkeypatch):
+    target = tmp_path / "user.yaml"  # 不存在 → scan 记 mtime 0.0
+    monkeypatch.setattr("app.core.config_watch.watched_paths", lambda: [target])
+    watcher = ConfigWatcher(interval=0.01)
+    watcher._mtimes = watcher.scan()
+    assert watcher.poll_changed() is False
+
+    target.write_text("stream: {}\n", encoding="utf-8")
+    assert watcher.poll_changed() is True
 
 
 async def test_config_watcher_triggers_reload_on_change(tmp_path, monkeypatch):

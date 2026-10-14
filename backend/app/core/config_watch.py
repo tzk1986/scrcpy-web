@@ -9,7 +9,7 @@
 消费点无需重启即可拿到新值。
 
 范围与边界（方案 01「配置热重载」）：
-    - 监听对象：config/base.yaml 与 config/{APP_ENV}.yaml
+    - 监听对象：config/base.yaml、config/user.yaml 与 config/{APP_ENV}.yaml
     - .env 不监听：load_dotenv(override=False) 语义下已存在的环境变量
       不会被 .env 修改覆盖，改 .env 需重启生效
     - server.host/port 变更需重启（uvicorn 已绑定旧地址），仅记录告警
@@ -36,8 +36,8 @@ def config_dir() -> Path:
 
 
 def watched_paths() -> list[Path]:
-    """当前应监听的配置文件清单：base.yaml + 当前 APP_ENV 的环境文件。"""
-    paths = [config_dir() / "base.yaml"]
+    """当前应监听的配置文件清单：base.yaml + user.yaml（无条件）+ 当前 APP_ENV 的环境文件。"""
+    paths = [config_dir() / "base.yaml", config_dir() / "user.yaml"]
     env = os.getenv("APP_ENV", "base")
     if env != "base":
         env_file = config_dir() / f"{env}.yaml"

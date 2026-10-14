@@ -29,6 +29,9 @@ frontend/.vite/
 frontend/*.tsbuildinfo
 frontend/vite.config.d.ts
 
+# Config
+config/user.yaml
+
 # Database
 *.sqlite
 *.sqlite3
