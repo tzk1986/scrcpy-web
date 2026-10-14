@@ -121,11 +121,40 @@
         </div>
       </template>
     </el-card>
+
+    <el-card class="section-card" data-test="device-overrides">
+      <template #header>设备级参数覆盖</template>
+      <div class="section-row">
+        <el-select
+          v-model="overrideDeviceId"
+          placeholder="选择设备"
+          data-test="override-device-select"
+        >
+          <el-option v-for="d in deviceList" :key="d.device_id" :label="d.device_id" :value="d.device_id" />
+        </el-select>
+        <template v-if="overrideDeviceId">
+          <StreamFieldSet v-model="overrideStreamForm" :h265-supported="h265Supported" />
+          <div class="actions">
+            <el-button
+              type="primary"
+              data-test="save-override"
+              :loading="saving"
+              @click="saveOverride"
+            >
+              保存该设备覆盖
+            </el-button>
+            <el-button data-test="clear-override" @click="clearOverride">清除该设备覆盖</el-button>
+          </div>
+        </template>
+        <span v-else class="hint">选择设备后可为该设备单独调整串流参数（弱设备降规格）</span>
+      </div>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import RecordingFieldSet, {
@@ -153,6 +182,7 @@ const SOURCE_TAG_TYPES: Record<SettingEntry['source'], 'info' | 'primary' | 'war
   env: 'warning',
 }
 
+const route = useRoute()
 const h265Supported = ref(false)
 const saving = ref(false)
 const settingsView = ref<SettingsView | null>(null)
@@ -167,6 +197,16 @@ const streamForm = ref<StreamFormValue>({
   adaptive_bitrate: true,
 })
 const recordingForm = ref<RecordingFormValue>({ bit_rate: '4M', time_limit: 60 })
+/** 设备级覆盖卡（方案 45 T8）：设备列表 / 当前选中设备 / 该设备串流覆盖表单。 */
+const deviceList = ref<{ device_id: string }[]>([])
+const overrideDeviceId = ref('')
+const overrideStreamForm = ref<StreamFormValue>({
+  max_size: streamForm.value.max_size,
+  bit_rate: streamForm.value.bit_rate,
+  fps: streamForm.value.fps,
+  codec: streamForm.value.codec,
+  adaptive_bitrate: streamForm.value.adaptive_bitrate,
+})
 
 /** 后端结构化错误（{"error":{code,message}}）取 message，缺失时回退文案。 */
 function errorText(e: unknown, fallback: string): string {
@@ -188,6 +228,24 @@ async function loadSettings() {
   recordingForm.value = {
     bit_rate: String(view.recording.bit_rate.value),
     time_limit: Number(view.recording.time_limit.value),
+  }
+  syncOverrideForm() // 覆盖卡表单与最新合并视图对齐（选中设备已定但视图晚到时兜底）
+}
+
+/** 依选中设备把覆盖卡表单回填：有覆盖用覆盖值，未覆盖键回落全局表单值。 */
+function syncOverrideForm() {
+  const id = overrideDeviceId.value
+  if (!id || !settingsView.value) return
+  const over = settingsView.value.devices?.[id]?.stream
+  overrideStreamForm.value = {
+    max_size: over?.max_size !== undefined ? Number(over.max_size) : streamForm.value.max_size,
+    bit_rate: over?.bit_rate !== undefined ? String(over.bit_rate) : streamForm.value.bit_rate,
+    fps: over?.fps !== undefined ? Number(over.fps) : streamForm.value.fps,
+    codec: (over?.codec as 'h264' | 'h265' | undefined) ?? streamForm.value.codec,
+    adaptive_bitrate:
+      over?.adaptive_bitrate !== undefined
+        ? Boolean(over.adaptive_bitrate)
+        : streamForm.value.adaptive_bitrate,
   }
 }
 
@@ -248,6 +306,54 @@ function resetRecording() {
   return resetSection('recording')
 }
 
+/** 保存选中设备的 stream 覆盖：devices.<id>.stream 节提交（后端键，语义「下次连接生效」）。 */
+async function saveOverride() {
+  const id = overrideDeviceId.value
+  if (!id) return
+  saving.value = true
+  try {
+    await api.putSettings({
+      devices: { [id]: { stream: { ...overrideStreamForm.value } as Record<string, unknown> } },
+    })
+    await loadSettings() // 刷新视图与覆盖卡回填（保存后覆盖值即合并视图值）
+    ElMessage.success('已保存，该设备下次连接生效')
+  } catch (e) {
+    ElMessage.error(errorText(e, '保存失败，请重试'))
+  } finally {
+    saving.value = false
+  }
+}
+
+/** 清除选中设备的全部覆盖：devices.<id> 传 null = 删除该设备覆盖节。 */
+async function clearOverride() {
+  const id = overrideDeviceId.value
+  if (!id) return
+  try {
+    await ElMessageBox.confirm(`将删除设备 ${id} 的全部参数覆盖并回到全局设置？`, '清除确认', {
+      confirmButtonText: '清除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return // 用户取消
+  }
+  saving.value = true
+  try {
+    await api.putSettings({ devices: { [id]: null } })
+    await loadSettings()
+    ElMessage.success('已清除该设备覆盖')
+  } catch (e) {
+    ElMessage.error(errorText(e, '清除失败，请重试'))
+  } finally {
+    saving.value = false
+  }
+}
+
+// 选中设备变化 → 覆盖卡表单按该设备合并视图回填
+watch(overrideDeviceId, () => {
+  syncOverrideForm()
+})
+
 /** 检查 scrcpy-server 上游版本（方案 45 §4.2）：仅手动触发提示，不自动下载。 */
 async function checkUpdate() {
   checkingUpdate.value = true
@@ -270,6 +376,17 @@ onMounted(() => {
   loadSettings().catch((e) => {
     ElMessage.error(errorText(e, '设置加载失败'))
   })
+  // 设备级覆盖卡（T8）：拉取设备列表供选择；?device=<id> 查询串且在列表内 → 聚焦选中
+  api
+    .listDevices()
+    .then((list) => {
+      deviceList.value = Array.isArray(list) ? (list as { device_id: string }[]) : []
+      const q = String(route.query.device ?? '')
+      if (q && !overrideDeviceId.value && deviceList.value.some((d) => d.device_id === q)) {
+        overrideDeviceId.value = q
+      }
+    })
+    .catch(() => {})
   // 运行环境信息（T6）：只读展示，与设置拉取并行
   api
     .getRuntimeEnv()

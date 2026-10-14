@@ -35,6 +35,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import EncoderOpts
 from app.infrastructure.stream.scrcpy import EncoderStalledError, ScrcpyEncoder
+from config.settings import device_stream_settings
 
 logger = get_logger(__name__)
 
@@ -147,25 +148,26 @@ class StreamService:
         """
         logger.info("starting_video_stream", device=device_id)
 
-        s = settings()
+        # 设备级覆盖合并视图（方案 45 T8）：该设备无覆盖节时即全局 stream 对象本身
+        s = device_stream_settings(device_id)
         # 守卫（方案 45 T3）：raw 兜底链路（H264Parser 启发式解析）仅建模
         # h264，h265 下语义不成立，禁入组合；video.py 主循环捕获后转脱敏 error
-        if s.stream.raw_stream_fallback and s.stream.codec != "h264":
+        if s.raw_stream_fallback and s.codec != "h264":
             raise ValueError("raw_stream_fallback 仅支持 h264 编解码（冲突：codec=h265）")
-        base_bps = parse_bit_rate(s.stream.bit_rate)
+        base_bps = parse_bit_rate(s.bit_rate)
         current_bps = base_bps
         advisor: BitrateAdvisor | None = None
-        if s.stream.adaptive_bitrate:
+        if s.adaptive_bitrate:
             tiers = tuple(
                 parse_bit_rate(t)
-                for t in str(s.stream.bitrate_tiers).split(",")
+                for t in str(s.bitrate_tiers).split(",")
                 if t.strip()
             )
             if tiers:
                 advisor = BitrateAdvisor(
                     AdvisorConfig(
                         tiers_bps=tiers,
-                        target_fps=float(s.stream.fps),
+                        target_fps=float(s.fps),
                         start_bps=base_bps,
                     )
                 )
@@ -181,10 +183,10 @@ class StreamService:
                 encoder = self._encoder_factory()
                 self.encoders[device_id] = encoder
                 opts = EncoderOpts(
-                    max_size=s.stream.max_size,
+                    max_size=s.max_size,
                     bit_rate=str(current_bps),
-                    codec=s.stream.codec,
-                    fps=s.stream.fps,
+                    codec=s.codec,
+                    fps=s.fps,
                 )
                 restart_bitrate = None
                 stalled = False

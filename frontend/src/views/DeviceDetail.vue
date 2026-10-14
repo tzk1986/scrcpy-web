@@ -142,9 +142,9 @@ function goFiles() {
   router.push({ name: 'device-files', params: { id: deviceId } })
 }
 
-/** 跳转独立设置页（方案 45 T5；T8 改为带 ?device=<device_id>）。 */
+/** 跳转独立设置页（方案 45 T5；T8 带 ?device=<device_id> 供覆盖卡聚焦）。 */
 function goSettings() {
-  router.push('/settings')
+  router.push({ path: '/settings', query: { device: deviceId } })
 }
 
 /**

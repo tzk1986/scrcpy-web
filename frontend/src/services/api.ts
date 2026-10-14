@@ -105,16 +105,25 @@ export interface SettingEntry {
   source: 'default' | 'user' | 'env'
 }
 
-/** GET /api/settings 合并视图（stream/recording 两节，键为设置项名）。 */
+/** 单设备覆盖节内容（方案 45 T8）：值为该设备的 stream/recording 覆盖（exclude_none 视图）。 */
+export interface DeviceOverrideView {
+  stream?: Record<string, number | string | boolean>
+  recording?: Record<string, number | string | boolean>
+}
+
+/** GET /api/settings 合并视图（stream/recording 两节 + 设备级覆盖键值表）。 */
 export interface SettingsView {
   stream: Record<string, SettingEntry>
   recording: Record<string, SettingEntry>
+  devices: Record<string, DeviceOverrideView>
 }
 
 /** PUT /api/settings 补丁体：节级合并写入；节传 null = 重置该节为出厂默认。 */
 export interface SettingsPatch {
   stream?: Record<string, unknown> | null
   recording?: Record<string, unknown> | null
+  /** 设备级覆盖（方案 45 T8）：devices.<id> 节合并；整设备传 null = 删除该设备覆盖。 */
+  devices?: Record<string, Record<string, Record<string, unknown>> | null>
 }
 
 /** 运行环境信息（方案 45 T6，对应后端 GET /api/system/runtime-env 只读透明化）。 */

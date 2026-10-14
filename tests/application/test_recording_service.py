@@ -218,6 +218,54 @@ async def test_self_heal_stops_stale_recording(service, mock_adb):
     mock_adb.stop_recording.assert_called_once_with("d1")
 
 
+async def test_self_heal_respects_device_level_time_limit(monkeypatch, mock_adb, tmp_path):
+    """方案 45 T8：巡检按会话设备取 time_limit——覆盖值更大的会话不判 stale。"""
+    import config.settings as config_settings
+    from config.settings import reload_settings
+
+    def layered(env: str = "base"):
+        if env == "base":
+            return {"app": {"name": "OpenScrcpy"},
+                    "server": {"host": "0.0.0.0", "port": 8765}}
+        if env == "user":
+            return {
+                "recording": {"dir": str(tmp_path)},
+                "devices": {"d1": {"recording": {"time_limit": 600}}},
+            }
+        return {}
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(config_settings, "load_yaml_config", layered)
+    saved = config_settings._settings
+    config_settings._settings = None
+    try:
+        reload_settings()
+        service = RecordingService(mock_adb)
+        aged = time.time() - (settings().recording.time_limit + 31)
+        overridden = RecordingSession(
+            id="stale000000",
+            device_id="d1",
+            started_at=aged,
+            state=RecordingState.RECORDING.value,
+            remote_path="/sdcard/openscrcpy_rec_stale000000.mp4",
+        )
+        global_cfg = RecordingSession(
+            id="other000000",
+            device_id="d9",
+            started_at=aged,
+            state=RecordingState.RECORDING.value,
+            remote_path="/sdcard/openscrcpy_rec_other000000.mp4",
+        )
+        service.sessions["d1"] = overridden
+        service.sessions["d9"] = global_cfg
+        await service._self_heal()
+        assert overridden.state == RecordingState.RECORDING.value
+        assert global_cfg.state in (RecordingState.DONE.value, RecordingState.FAILED.value)
+        mock_adb.stop_recording.assert_called_once_with("d9")
+    finally:
+        config_settings._settings = saved
+
+
 # ---------------------------------------------------------------------------
 # 自然结束自动收尾（方案 42 §1）
 # ---------------------------------------------------------------------------

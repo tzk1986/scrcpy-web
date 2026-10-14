@@ -35,7 +35,7 @@ from app.core.exceptions import AdbError, ConflictError
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
 from app.domain.recording import RecordingSession, RecordingState
-from config.settings import app_base_dir
+from config.settings import app_base_dir, device_recording_settings
 
 logger = get_logger(__name__)
 
@@ -102,7 +102,8 @@ class RecordingService:
         existing = self.sessions.get(device_id)
         if existing is not None and existing.state in _IN_PROGRESS_STATES:
             raise ConflictError()
-        cfg = settings().recording
+        # 设备级覆盖合并视图（方案 45 T8）：无覆盖的设备即全局 recording 对象本身
+        cfg = device_recording_settings(device_id)
         session_id = uuid4().hex[:12]
         remote_path = f"{self.REMOTE_PREFIX}{session_id}.mp4"
         # 先启动设备端再落表：失败时本 start 无副作用（表内无会话可收敛）
@@ -336,23 +337,32 @@ class RecordingService:
           AdbError 异常打断的罕见路径）→ 设备端兜底 rm 后收敛 failed，
           消除持续 409 的滞留。rm 等待期间复核状态，防与真实 stop 并发误杀
           已 done 会话（Review Focus ③）。
+        - time_limit 按会话设备取设备级覆盖合并视图（方案 45 T8）。
         """
-        cfg = settings().recording
         now = time.time()
+        # 方案 45 T8：time_limit 按会话设备取覆盖合并视图（无覆盖回落全局）
         stale_ids = [
             s.device_id
             for s in self.sessions.values()
             if s.state == RecordingState.RECORDING.value
-            and s.started_at < now - (cfg.time_limit + self.SELF_HEAL_GRACE_SECONDS)
+            and s.started_at
+            < now
+            - (
+                device_recording_settings(s.device_id).time_limit
+                + self.SELF_HEAL_GRACE_SECONDS
+            )
         ]
         for device_id in stale_ids:
             logger.warning("recording_self_heal", device=device_id)
             await self.stop(device_id)
-        stuck_cutoff = now - (cfg.time_limit + self.STUCK_STATE_TIMEOUT_SECONDS)
         for s in list(self.sessions.values()):
             if s.state not in (RecordingState.STOPPING.value, RecordingState.PULLING.value):
                 continue
-            if s.started_at >= stuck_cutoff:
+            cutoff = now - (
+                device_recording_settings(s.device_id).time_limit
+                + self.STUCK_STATE_TIMEOUT_SECONDS
+            )
+            if s.started_at >= cutoff:
                 continue
             logger.warning("recording_stuck_self_heal", device=s.device_id, state=s.state)
             await self.adb.rm_remote(s.device_id, s.remote_path)

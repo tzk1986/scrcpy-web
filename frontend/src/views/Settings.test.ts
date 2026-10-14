@@ -34,8 +34,16 @@ const mockApi = vi.hoisted(() => ({
   putSettings: vi.fn(),
   getRuntimeEnv: vi.fn(),
   checkScrcpyUpdate: vi.fn(),
+  listDevices: vi.fn(),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
+
+const routeMock = vi.hoisted(() => ({
+  current: { query: {} as Record<string, unknown> },
+}))
+vi.mock('vue-router', () => ({
+  useRoute: () => routeMock.current,
+}))
 
 const codecMock = vi.hoisted(() => ({ isH265DecoderSupported: vi.fn() }))
 vi.mock('@/services/codecSupport', () => codecMock)
@@ -247,6 +255,8 @@ async function mountSettings(): Promise<VueWrapper> {
         'el-card': ElCardStub,
         'el-button': ElButtonStub,
         'el-divider': true,
+        'el-select': ElSelectStub,
+        'el-option': ElOptionStub,
         'el-descriptions': ElDescriptionsStub,
         'el-descriptions-item': ElDescriptionsItemStub,
         'el-tag': ElTagStub,
@@ -266,9 +276,11 @@ function axiosError(code: string, message: string) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  routeMock.current = { query: {} }
   mockApi.getSettings.mockResolvedValue(DEFAULT_VIEW)
   mockApi.putSettings.mockResolvedValue({ saved: true })
   mockApi.getRuntimeEnv.mockResolvedValue(RUNTIME_ENV_VIEW)
+  mockApi.listDevices.mockResolvedValue([{ device_id: 'd1' }, { device_id: 'd9' }])
   codecMock.isH265DecoderSupported.mockResolvedValue(false)
   elMock.ElMessageBox.confirm.mockReset().mockResolvedValue('confirm')
 })
@@ -537,6 +549,77 @@ describe('Settings.vue', () => {
     expect(elMock.ElMessage.error).toHaveBeenCalledWith('写入用户设置失败')
     expect(elMock.ElMessage.success).not.toHaveBeenCalled()
     expect(wrapper.find('[data-test="save-stream"]').attributes('data-loading')).toBe('false')
+
+    wrapper.unmount()
+  })
+
+  // ==================== 设备级参数覆盖卡（方案 45 T8） ====================
+
+  it('?device=d1 进入即聚焦选中该设备（覆盖卡联动渲染）', async () => {
+    routeMock.current = { query: { device: 'd1' } }
+    const wrapper = await mountSettings()
+
+    const select = wrapper.find('[data-test="override-device-select"]')
+    expect(select.exists()).toBe(true)
+    expect(select.attributes('data-value')).toBe('d1')
+    expect(wrapper.findAll('[data-test="save-override"]').length).toBe(1)
+    expect(wrapper.find('[data-test="clear-override"]').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('query.device 不在设备列表内 → 不强行选中（保持未选提示）', async () => {
+    routeMock.current = { query: { device: 'ghost' } }
+    const wrapper = await mountSettings()
+
+    expect(wrapper.find('[data-test="override-device-select"]').attributes('data-value')).toBe('')
+    expect(wrapper.text()).toContain('选择设备后可为该设备单独调整串流参数')
+
+    wrapper.unmount()
+  })
+
+  it('选设备覆盖回填（覆盖值优先、未覆盖键回落全局），保存 → putSettings 带 devices 键', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...DEFAULT_VIEW,
+      devices: { d1: { stream: { max_size: 720, bit_rate: '2M' } } },
+    })
+    const wrapper = await mountSettings()
+
+    wrapper.getComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', 'd1')
+    await flushPromises()
+
+    const fieldSets = wrapper.findAllComponents(StreamFieldSet)
+    expect(fieldSets.length).toBe(2)
+    expect(fieldSets[1].props('modelValue')).toEqual({
+      max_size: 720,
+      bit_rate: '2M',
+      fps: 30,
+      codec: 'h264',
+      adaptive_bitrate: true,
+    })
+
+    await wrapper.find('[data-test="save-override"]').trigger('click')
+    await flushPromises()
+
+    expect(mockApi.putSettings).toHaveBeenCalledWith({
+      devices: { d1: { stream: expect.objectContaining({ max_size: 720, bit_rate: '2M' }) } },
+    })
+    expect(elMock.ElMessage.success).toHaveBeenCalledWith('已保存，该设备下次连接生效')
+    expect(mockApi.getSettings).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+  })
+
+  it('清除该设备覆盖：确认后 putSettings devices[id]=null 并重拉设置', async () => {
+    routeMock.current = { query: { device: 'd1' } }
+    const wrapper = await mountSettings()
+
+    await wrapper.find('[data-test="clear-override"]').trigger('click')
+    await flushPromises()
+
+    expect(elMock.ElMessageBox.confirm).toHaveBeenCalledOnce()
+    expect(mockApi.putSettings).toHaveBeenCalledWith({ devices: { d1: null } })
+    expect(mockApi.getSettings).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
   })

@@ -15,7 +15,14 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.core import settings_store
 from app.core.exceptions import SettingsStoreError
-from config.settings import RecordingOverride, StreamOverride, load_yaml_config, settings
+from config.settings import (
+    DeviceId,
+    DeviceOverride,
+    RecordingOverride,
+    StreamOverride,
+    load_yaml_config,
+    settings,
+)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -28,12 +35,49 @@ class SettingsPatch(BaseModel):
 
     stream: StreamOverride | None = None
     recording: RecordingOverride | None = None
+    # 设备级覆盖（方案 45 T8）：devices.<id> 节合并；整设备传 null = 删除该设备覆盖
+    devices: dict[DeviceId, DeviceOverride | None] | None = None
 
     @model_validator(mode="after")
     def _require_any_section(self) -> "SettingsPatch":
         if not self.model_fields_set:
-            raise ValueError("至少提交一个配置节（stream/recording）")
+            raise ValueError("至少提交一个配置节（stream/recording/devices）")
         return self
+
+
+def _merge_devices(user: dict[str, Any], patch: dict[str, DeviceOverride | None]) -> None:
+    """devices.<id> 节合并：整设备传 null = 删除；否则逐节 merge 提交子集。"""
+    if not patch:
+        return
+    existing = user.get("devices")
+    if existing is None:
+        existing = {}
+        user["devices"] = existing
+    elif not isinstance(existing, dict):
+        raise SettingsStoreError(
+            f"{settings_store.user_yaml_path().name} 的 devices 节不是映射，无法合并（请先修复文件）"
+        )
+    for dev_id, override in patch.items():
+        if override is None:
+            existing.pop(dev_id, None)
+            continue
+        dev_cfg = existing.setdefault(dev_id, {})
+        if not isinstance(dev_cfg, dict):
+            raise SettingsStoreError(f"devices.{dev_id} 不是映射，无法合并")
+        for section in ("stream", "recording"):
+            section_override = getattr(override, section)
+            if section_override is None:
+                continue
+            section_patch = section_override.model_dump(exclude_unset=True, exclude_none=True)
+            if not section_patch:
+                continue
+            target = dev_cfg.get(section)
+            if target is None:
+                dev_cfg[section] = section_patch
+            elif isinstance(target, dict):
+                target.update(section_patch)
+            else:
+                raise SettingsStoreError(f"devices.{dev_id}.{section} 不是映射，无法合并")
 
 
 def _source_of(
@@ -71,6 +115,10 @@ async def get_settings_payload() -> dict[str, Any]:
             }
             for key in _RECORDING_FORM_KEYS
         },
+        "devices": {
+            dev_id: override.model_dump(exclude_none=True)
+            for dev_id, override in s.devices.items()
+        },
     }
 
 
@@ -90,6 +138,8 @@ async def put_settings_payload(patch: SettingsPatch) -> dict[str, bool]:
             else patch.recording.model_dump(exclude_unset=True, exclude_none=True)
         )
         settings_store.merge_section(user, "recording", recording_patch)
+    if "devices" in patch.model_fields_set and patch.devices is not None:
+        _merge_devices(user, patch.devices)
     try:
         settings_store.write_user_config(user)
     except OSError as e:

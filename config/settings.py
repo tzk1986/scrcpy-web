@@ -8,13 +8,15 @@ Loads configuration from:
 4. Environment variables (highest priority)
 """
 
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -242,6 +244,13 @@ class SecurityConfig(BaseSettings):
     cors_origins: list[str] = ["http://localhost:8080"]
 
 
+# 设备级覆盖的设备键白名单（方案 45 T8）：ADB 序列号 / ip:port / emulator-*。
+# 写入侧（PUT settings）据此 422 拒绝坏键；读取侧（helpers）仅做 dict 查询不校验。
+DeviceId = Annotated[
+    str, StringConstraints(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+]
+
+
 class Settings(BaseSettings):
     app: AppConfig = Field(default_factory=AppConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -252,6 +261,9 @@ class Settings(BaseSettings):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    # 设备级参数覆盖节（方案 45 T8）：<device_id> → stream/recording 可选覆盖。
+    # user.yaml 层合并写入；流/录屏启动时经 device_*_settings helper 消费。
+    devices: dict[DeviceId, DeviceOverride] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -381,3 +393,32 @@ class RecordingOverride(BaseModel):
 
     bit_rate: str | None = Field(default=None, pattern=r"^\d+[MK]$")
     time_limit: int | None = Field(default=None, ge=1, le=1800)
+
+
+class DeviceOverride(BaseModel):
+    """单设备覆盖节（stream/recording 各可选；节为 None 表示不覆盖该侧）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stream: StreamOverride | None = None
+    recording: RecordingOverride | None = None
+
+
+def device_stream_settings(device_id: str) -> StreamConfig:
+    """设备级 stream 合并视图：覆盖节内非空字段深优于全局，未覆盖键回落全局。"""
+    base = settings().stream
+    dev = settings().devices.get(device_id)
+    if dev is None or dev.stream is None:
+        return base
+    patch = dev.stream.model_dump(exclude_none=True)
+    return base.model_copy(update=patch) if patch else base
+
+
+def device_recording_settings(device_id: str) -> RecordingConfig:
+    """设备级 recording 合并视图（同 device_stream_settings 语义）。"""
+    base = settings().recording
+    dev = settings().devices.get(device_id)
+    if dev is None or dev.recording is None:
+        return base
+    patch = dev.recording.model_dump(exclude_none=True)
+    return base.model_copy(update=patch) if patch else base

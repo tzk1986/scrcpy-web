@@ -115,6 +115,40 @@ def test_get_fails_loudly_on_non_mapping_user_yaml(settings_env):
     assert res.json()["error"]["code"] == "SETTINGS_STORE_ERROR"
 
 
+def test_put_device_override_and_get_lists_it(settings_env):
+    res = make_client().put(
+        "/api/settings",
+        json={"devices": {"192.168.8.18:5555": {"stream": {"max_size": 720}}}},
+    )
+    assert res.status_code == 200
+
+    reload_settings()
+    body = make_client().get("/api/settings").json()
+    assert body["devices"]["192.168.8.18:5555"]["stream"] == {"max_size": 720}
+
+
+def test_put_device_override_null_removes_device(settings_env):
+    make_client().put(
+        "/api/settings",
+        json={"devices": {"d1": {"stream": {"fps": 24}}, "d2": {"stream": {"fps": 10}}}},
+    )
+    res = make_client().put("/api/settings", json={"devices": {"d1": None}})
+    assert res.status_code == 200
+
+    reload_settings()
+    body = make_client().get("/api/settings").json()
+    assert "d1" not in body["devices"]
+    assert "d2" in body["devices"]
+
+
+def test_put_device_override_rejects_bad_device_key(settings_env):
+    res = make_client().put(
+        "/api/settings", json={"devices": {"bad key!": {"stream": {"fps": 24}}}}
+    )
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 def test_put_fails_loudly_when_config_dir_not_writable(settings_env, monkeypatch):
     def boom(config):
         raise OSError("read-only fs")
