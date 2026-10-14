@@ -163,6 +163,7 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import {
   FONT_RATIO_DEFAULT,
   FONT_RATIO_MAX,
@@ -837,17 +838,22 @@ function exportPng() {
 
 /**
  * 复制到剪贴板：画布 → PNG Blob → ClipboardItem('image/png') → clipboard.write（Chrome-only）。
- * 特性检测：剪贴板 API 缺失（如非安全上下文）直接静默返回；权限/焦点等写入失败静默不抛。
+ * 点击反馈三态 toast：成功 / 写入失败（权限/焦点）/ API 缺失（如非安全上下文，不触 toBlob）。
  */
 function copyToClipboard() {
   const canvas = canvasRef.value
-  if (!canvas || !navigator.clipboard?.write) return
+  if (!canvas) return
+  if (!navigator.clipboard?.write) {
+    ElMessage.warning('当前浏览器环境不支持复制图片到剪贴板')
+    return
+  }
   canvas.toBlob(async (blob) => {
     if (!blob) return
     try {
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+      ElMessage.success('已复制到剪贴板')
     } catch {
-      /* 剪贴板权限/焦点问题静默 */
+      ElMessage.error('复制失败，请检查页面焦点或浏览器权限')
     }
   }, 'image/png')
 }
@@ -886,9 +892,14 @@ defineExpose({
   flex-wrap: wrap;
 }
 
+/* 选中态：填充高亮（走 el-button 的 CSS 变量以压过组件默认样式，含 hover） */
 .tool-active {
-  border-color: #409eff;
-  color: #409eff;
+  --el-button-bg-color: #409eff;
+  --el-button-border-color: #409eff;
+  --el-button-text-color: #fff;
+  --el-button-hover-bg-color: #66b1ff;
+  --el-button-hover-border-color: #66b1ff;
+  --el-button-hover-text-color: #fff;
 }
 
 .color-picker {

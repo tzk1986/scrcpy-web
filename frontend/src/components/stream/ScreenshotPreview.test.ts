@@ -13,8 +13,8 @@
  *     （window 监听；输入框聚焦时数字键不劫持）
  *   - 新工具（T4）：椭圆（ctx.ellipse）/ 荧光笔（alpha 0.35）/ 序号（点击落字递增编号）/
  *     马赛克（拖拽提交无 color、重绘离屏缩-放 drawImage≥2、预览虚线框、两轴 ≥2px 守卫）
- *   - 剪贴板（T5）：复制按钮/Ctrl+C → ClipboardItem(image/png) 经 clipboard.write 写出；
- *     clipboard API 缺失静默不抛（不触 toBlob）
+ *   - 剪贴板（T5）：复制按钮/Ctrl+C → ClipboardItem(image/png) 经 clipboard.write 写出，
+ *     点击反馈三态 toast——成功提示 / write 拒绝提示失败 / API 缺失提示不支持（不触 toBlob）
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
  *
@@ -28,6 +28,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import ScreenshotPreview from './ScreenshotPreview.vue'
+
+const hEl = vi.hoisted(() => ({
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}))
+vi.mock('element-plus', () => ({
+  ElMessage: hEl.ElMessage,
+}))
 
 /** 记录全部绘制调用的 fake 2d context。 */
 function createRecordingCtx() {
@@ -1089,6 +1096,7 @@ describe('ScreenshotPreview 剪贴板（T5）', () => {
     const wrapper = await mountAndSettle()
 
     await wrapper.find('.btn-copy').trigger('click')
+    await flushPromises()
 
     expect(toBlobMock).toHaveBeenCalledTimes(1)
     expect(toBlobMock.mock.calls[0][1]).toBe('image/png')
@@ -1098,15 +1106,30 @@ describe('ScreenshotPreview 剪贴板（T5）', () => {
     expect(items[0]).toBeInstanceOf(FakeClipboardItem)
     expect(Object.keys(items[0].items)).toEqual(['image/png'])
     expect(items[0].items['image/png']).toBeInstanceOf(Blob)
+    expect(hEl.ElMessage.success).toHaveBeenCalledWith('已复制到剪贴板')
   })
 
-  it('clipboard API 缺失：点击复制静默不抛（不触 toBlob）', async () => {
+  it('clipboard.write 拒绝：点击复制提示失败', async () => {
+    const write = vi.fn().mockRejectedValue(new Error('NotAllowedError'))
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { write } })
+    vi.stubGlobal('ClipboardItem', FakeClipboardItem)
+    const wrapper = await mountAndSettle()
+
+    await wrapper.find('.btn-copy').trigger('click')
+    await flushPromises()
+
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(hEl.ElMessage.error).toHaveBeenCalledWith('复制失败，请检查页面焦点或浏览器权限')
+  })
+
+  it('clipboard API 缺失：点击复制提示不支持且不触 toBlob', async () => {
     vi.stubGlobal('navigator', { ...navigator, clipboard: undefined })
     const wrapper = await mountAndSettle()
 
-    // 无 clipboard.write → 特性检测提前返回；无 ClipboardItem 全局也不得抛错
+    // 无 clipboard.write → 特性检测路径提示不支持；无 ClipboardItem 全局也不得抛错
     await expect(wrapper.find('.btn-copy').trigger('click')).resolves.toBeUndefined()
     expect(toBlobMock).not.toHaveBeenCalled()
+    expect(hEl.ElMessage.warning).toHaveBeenCalledWith('当前浏览器环境不支持复制图片到剪贴板')
   })
 
   it('Ctrl+C 触发复制到剪贴板（window keydown）', async () => {
