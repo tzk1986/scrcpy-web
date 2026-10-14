@@ -10,8 +10,15 @@
 
 用于监听关闭（app.config_watch=false）或需要立即生效（不等轮询间隔）
 的场景。重载失败时返回 400 CONFIG_RELOAD_FAILED，旧配置保持生效。
+
+另有（方案 45 §4.1-③）：
+
+    GET /api/system/runtime-env — 运行环境信息（只读透明化）
 """
 
+import asyncio
+import subprocess
+import sys
 from typing import Any
 
 from fastapi import APIRouter
@@ -19,6 +26,9 @@ from fastapi import APIRouter
 from app.core.config_watch import reload_config
 from app.core.exceptions import ConfigReloadError
 from app.core.launcher import request_shutdown
+from app.scrcpy.constants import SCRCPY_SERVER_VERSION
+from app.scrcpy.server_manager import ServerManager
+from config.settings import settings
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -62,4 +72,33 @@ async def shutdown_endpoint() -> dict[str, Any]:
     return {
         "accepted": accepted,
         "message": "服务正在退出" if accepted else "当前运行方式未接入在线退出，请手动停止服务",
+    }
+
+
+def _probe_adb_version(adb_path: str) -> str:
+    """adb --version 探测（阻塞子进程，端点内经 asyncio.to_thread 执行）；失败返回「未知」。"""
+    try:
+        result = subprocess.run(
+            [adb_path, "version"], capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            if "Version" in line:
+                return line.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "未知"
+
+
+@router.get("/runtime-env")
+async def runtime_env_endpoint() -> dict[str, Any]:
+    """运行环境信息（方案 45 §4.1-③）：只读透明化，不改动二进制获取方式。"""
+    # 与全仓一致走 .path 自动检测（源码 tools/adb.exe、frozen _internal/tools/、回退 "adb"）
+    adb_path = settings().adb.path
+    adb_version = await asyncio.to_thread(_probe_adb_version, adb_path)
+    return {
+        "scrcpy_server_version": SCRCPY_SERVER_VERSION,
+        "jar_path": str(ServerManager().get_local_jar_path()),
+        "adb_path": adb_path,
+        "adb_version": adb_version,
+        "frozen": bool(getattr(sys, "frozen", False)),
     }

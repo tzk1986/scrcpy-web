@@ -40,6 +40,66 @@
         </div>
       </div>
     </el-card>
+
+    <el-card class="section-card" data-test="effective-values">
+      <template #header>生效参数（当前实际生效值）</template>
+      <template v-if="settingsView">
+        <h4 class="group-title">串流（下次连接生效）</h4>
+        <el-descriptions :column="2" border>
+          <el-descriptions-item
+            v-for="(entry, key) in settingsView.stream"
+            :key="key"
+            :label="key"
+          >
+            <span class="entry-value">{{ entry.value }}</span>
+            <el-tag size="small" :type="SOURCE_TAG_TYPES[entry.source]">
+              {{ SOURCE_LABELS[entry.source] }}
+            </el-tag>
+          </el-descriptions-item>
+        </el-descriptions>
+        <h4 class="group-title">录屏（每次开始录屏时读取）</h4>
+        <el-descriptions :column="2" border>
+          <el-descriptions-item
+            v-for="(entry, key) in settingsView.recording"
+            :key="key"
+            :label="key"
+          >
+            <span class="entry-value">{{ entry.value }}</span>
+            <el-tag size="small" :type="SOURCE_TAG_TYPES[entry.source]">
+              {{ SOURCE_LABELS[entry.source] }}
+            </el-tag>
+          </el-descriptions-item>
+        </el-descriptions>
+      </template>
+    </el-card>
+
+    <el-card class="section-card" data-test="runtime-env">
+      <template #header>运行环境</template>
+      <template v-if="runtimeEnv">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="scrcpy-server 版本">
+            v{{ runtimeEnv.scrcpy_server_version }}
+          </el-descriptions-item>
+          <el-descriptions-item label="adb 版本">
+            {{ runtimeEnv.adb_version }}
+          </el-descriptions-item>
+          <el-descriptions-item label="jar 路径">
+            <el-collapse>
+              <el-collapse-item title="展开查看完整路径">
+                <pre class="path-value">{{ runtimeEnv.jar_path }}</pre>
+              </el-collapse-item>
+            </el-collapse>
+          </el-descriptions-item>
+          <el-descriptions-item label="adb 路径">
+            <el-collapse>
+              <el-collapse-item title="展开查看完整路径">
+                <pre class="path-value">{{ runtimeEnv.adb_path }}</pre>
+              </el-collapse-item>
+            </el-collapse>
+          </el-descriptions-item>
+        </el-descriptions>
+      </template>
+    </el-card>
   </div>
 </template>
 
@@ -51,11 +111,30 @@ import RecordingFieldSet, {
   type RecordingFormValue,
 } from '@/components/settings/RecordingFieldSet.vue'
 import StreamFieldSet, { type StreamFormValue } from '@/components/settings/StreamFieldSet.vue'
-import { api } from '@/services/api'
+import {
+  api,
+  type RuntimeEnvView,
+  type SettingEntry,
+  type SettingsView,
+} from '@/services/api'
 import { isH265DecoderSupported } from '@/services/codecSupport'
+
+/** 来源徽标文案/类型映射（T6）：仅渲染后端 source 字段，前端不做来源推导。 */
+const SOURCE_LABELS: Record<SettingEntry['source'], string> = {
+  default: '出厂默认',
+  user: '用户设置',
+  env: '环境覆盖',
+}
+const SOURCE_TAG_TYPES: Record<SettingEntry['source'], 'info' | 'primary' | 'warning'> = {
+  default: 'info',
+  user: 'primary',
+  env: 'warning',
+}
 
 const h265Supported = ref(false)
 const saving = ref(false)
+const settingsView = ref<SettingsView | null>(null)
+const runtimeEnv = ref<RuntimeEnvView | null>(null)
 const streamForm = ref<StreamFormValue>({
   max_size: 1080,
   bit_rate: '4M',
@@ -71,9 +150,10 @@ function errorText(e: unknown, fallback: string): string {
   return err?.response?.data?.error?.message || fallback
 }
 
-/** 拉取合并视图回填两段表单（保存/重置后同样调用以刷新来源）。 */
+/** 拉取合并视图回填两段表单与生效参数面板（保存/重置后同样调用以刷新来源）。 */
 async function loadSettings() {
   const view = await api.getSettings()
+  settingsView.value = view
   streamForm.value = {
     max_size: Number(view.stream.max_size.value),
     bit_rate: String(view.stream.bit_rate.value),
@@ -91,6 +171,7 @@ async function saveStream() {
   saving.value = true
   try {
     await api.putSettings({ stream: { ...streamForm.value } })
+    await loadSettings() // 刷新生效参数面板（保存后来源变为 用户设置）
     ElMessage.success('已保存，下次连接生效')
   } catch (e) {
     ElMessage.error(errorText(e, '保存失败，请重试'))
@@ -103,6 +184,7 @@ async function saveRecording() {
   saving.value = true
   try {
     await api.putSettings({ recording: { ...recordingForm.value } })
+    await loadSettings() // 刷新生效参数面板
     ElMessage.success('已保存')
   } catch (e) {
     ElMessage.error(errorText(e, '保存失败，请重试'))
@@ -150,6 +232,15 @@ onMounted(() => {
   loadSettings().catch((e) => {
     ElMessage.error(errorText(e, '设置加载失败'))
   })
+  // 运行环境信息（T6）：只读展示，与设置拉取并行
+  api
+    .getRuntimeEnv()
+    .then((v) => {
+      runtimeEnv.value = v
+    })
+    .catch((e) => {
+      ElMessage.error(errorText(e, '运行环境信息加载失败'))
+    })
 })
 </script>
 
@@ -171,5 +262,19 @@ onMounted(() => {
 .actions {
   display: flex;
   gap: 8px;
+}
+
+.group-title {
+  margin: 12px 0 8px;
+}
+
+.entry-value {
+  margin-right: 8px;
+}
+
+.path-value {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

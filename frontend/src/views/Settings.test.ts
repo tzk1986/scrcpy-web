@@ -32,6 +32,7 @@ vi.mock('element-plus', () => ({
 const mockApi = vi.hoisted(() => ({
   getSettings: vi.fn(),
   putSettings: vi.fn(),
+  getRuntimeEnv: vi.fn(),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
@@ -64,6 +65,15 @@ const DEFAULT_STREAM_FORM: StreamFormValue = {
   fps: 30,
   codec: 'h264',
   adaptive_bitrate: true,
+}
+
+/** 与真实后端形状一致：版本为 方案 44 单源常量原值 "5.0.1"，展示层补 v 前缀。 */
+const RUNTIME_ENV_VIEW = {
+  scrcpy_server_version: '5.0.1',
+  jar_path: 'C:/x/scrcpy-server.jar',
+  adb_path: 'C:/x/tools/adb.exe',
+  adb_version: 'Android Debug Bridge version 1.0.41',
+  frozen: false,
 }
 
 // ==================== el-* 轻量 stub ====================
@@ -171,6 +181,54 @@ const ElSwitchStub = defineComponent({
   },
 })
 
+const ElTagStub = defineComponent({
+  name: 'ElTag',
+  props: { type: String, size: String },
+  setup(props, { slots }) {
+    return () =>
+      h('span', { class: 'stub-tag', 'data-type': props.type ?? '' }, slots.default?.())
+  },
+})
+
+const ElDescriptionsStub = defineComponent({
+  name: 'ElDescriptions',
+  props: { border: Boolean, column: Number },
+  setup(_, { slots }) {
+    return () => h('div', { class: 'stub-descriptions' }, slots.default?.())
+  },
+})
+
+const ElDescriptionsItemStub = defineComponent({
+  name: 'ElDescriptionsItem',
+  props: { label: String },
+  setup(props, { slots }) {
+    return () =>
+      h('div', { class: 'stub-descriptions-item' }, [
+        h('span', { class: 'stub-label' }, props.label),
+        slots.default?.(),
+      ])
+  },
+})
+
+const ElCollapseStub = defineComponent({
+  name: 'ElCollapse',
+  setup(_, { slots }) {
+    return () => h('div', { class: 'stub-collapse' }, slots.default?.())
+  },
+})
+
+const ElCollapseItemStub = defineComponent({
+  name: 'ElCollapseItem',
+  props: { title: String, name: String },
+  setup(props, { slots }) {
+    return () =>
+      h('div', { class: 'stub-collapse-item' }, [
+        h('div', { class: 'stub-collapse-title' }, props.title),
+        slots.default?.(),
+      ])
+  },
+})
+
 /** FieldSet 直挂时使用的表单类 stub 集合 */
 const FORM_STUBS = {
   'el-form': ElFormStub,
@@ -188,6 +246,11 @@ async function mountSettings(): Promise<VueWrapper> {
         'el-card': ElCardStub,
         'el-button': ElButtonStub,
         'el-divider': true,
+        'el-descriptions': ElDescriptionsStub,
+        'el-descriptions-item': ElDescriptionsItemStub,
+        'el-tag': ElTagStub,
+        'el-collapse': ElCollapseStub,
+        'el-collapse-item': ElCollapseItemStub,
       },
     },
   })
@@ -204,6 +267,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockApi.getSettings.mockResolvedValue(DEFAULT_VIEW)
   mockApi.putSettings.mockResolvedValue({ saved: true })
+  mockApi.getRuntimeEnv.mockResolvedValue(RUNTIME_ENV_VIEW)
   codecMock.isH265DecoderSupported.mockResolvedValue(false)
   elMock.ElMessageBox.confirm.mockReset().mockResolvedValue('confirm')
 })
@@ -249,6 +313,57 @@ describe('Settings.vue', () => {
       recording: { bit_rate: '4M', time_limit: 60 },
     })
     expect(elMock.ElMessage.success).toHaveBeenCalledWith('已保存')
+
+    wrapper.unmount()
+  })
+
+  it('shows effective values with source badges（生效参数卡）', async () => {
+    const wrapper = await mountSettings()
+
+    const card = wrapper.find('[data-test="effective-values"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('bit_rate')
+    expect(card.text()).toContain('4M')
+
+    const badges = card.findAll('.stub-tag')
+    expect(badges.length).toBeGreaterThan(0)
+    for (const badge of badges) {
+      expect(badge.text()).toBe('出厂默认')
+      expect(badge.attributes('data-type')).toBe('info')
+    }
+
+    wrapper.unmount()
+  })
+
+  it('来源徽标映射：user → 用户设置 / env → 环境覆盖（前端只渲染后端 source）', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      stream: {
+        ...DEFAULT_VIEW.stream,
+        bit_rate: { value: '8M', source: 'user' },
+        codec: { value: 'h265', source: 'env' },
+      },
+      recording: DEFAULT_VIEW.recording,
+    })
+    const wrapper = await mountSettings()
+
+    const text = wrapper.find('[data-test="effective-values"]').text()
+    expect(text).toContain('8M')
+    expect(text).toContain('用户设置')
+    expect(text).toContain('环境覆盖')
+
+    wrapper.unmount()
+  })
+
+  it('shows runtime env info from api（运行环境卡）', async () => {
+    const wrapper = await mountSettings()
+
+    expect(mockApi.getRuntimeEnv).toHaveBeenCalledOnce()
+    const card = wrapper.find('[data-test="runtime-env"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('v5.0.1')
+    expect(card.text()).toContain('Android Debug Bridge version 1.0.41')
+    expect(card.text()).toContain('C:/x/scrcpy-server.jar')
+    expect(card.text()).toContain('C:/x/tools/adb.exe')
 
     wrapper.unmount()
   })
