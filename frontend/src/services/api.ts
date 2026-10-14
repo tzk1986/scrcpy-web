@@ -69,6 +69,15 @@ export interface RuntimeInfo {
   parse_warning: string
 }
 
+/** 历史录屏产物条目（方案 46，对应后端 GET /api/recording/files 元素）。 */
+export interface RecordingFileItem {
+  filename: string
+  device: string | null
+  session_id: string | null
+  size_bytes: number
+  created_at: string
+}
+
 /** 设备端目录条目（方案 39，对应后端 FileEntry）。 */
 export interface FileEntry {
   name: string
@@ -664,6 +673,29 @@ export const api = {
   async listRecordings() {
     const res = await client.get('/recording')
     return res.data as { recordings: RecordingSession[] }
+  },
+
+  /**
+   * 历史录屏产物列表（方案 46）
+   * 对应：GET /api/recording/files
+   */
+  async listRecordingFiles() {
+    const res = await client.get('/recording/files')
+    return res.data as { files: RecordingFileItem[] }
+  },
+
+  /**
+   * 删除单个历史产物（方案 46 拍板项 1）
+   * 对应：DELETE /api/recording/files/{filename}
+   */
+  async deleteRecordingFile(filename: string) {
+    const res = await client.delete(`/recording/files/${encodeURIComponent(filename)}`)
+    return res.data as { deleted: boolean }
+  },
+
+  /** 产物播放/下载端点 URL（GET /api/recording/files/{filename}，直链不经 axios）。 */
+  recordingFileUrl(filename: string): string {
+    return `/api/recording/files/${encodeURIComponent(filename)}`
   },
 
   // ==================== 文件管理 API（方案 39）====================

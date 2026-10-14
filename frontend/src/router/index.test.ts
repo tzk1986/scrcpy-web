@@ -8,18 +8,20 @@ import { describe, expect, it } from 'vitest'
 import router from '@/router'
 
 describe('router 路由表', () => {
-  it('包含 dashboard / device-detail / device-files / settings 四条路由', () => {
+  it('包含 dashboard / device-detail / device-files / recordings / settings 五条路由', () => {
     const routes = router.getRoutes()
     const byName = new Map(routes.map((r) => [r.name, r]))
     expect([...byName.keys()].sort()).toEqual([
       'dashboard',
       'device-detail',
       'device-files',
+      'recordings',
       'settings',
     ])
     expect(byName.get('dashboard')!.path).toBe('/')
     expect(byName.get('device-detail')!.path).toBe('/device/:id')
     expect(byName.get('device-files')!.path).toBe('/device/:id/files')
+    expect(byName.get('recordings')!.path).toBe('/recordings')
     expect(byName.get('settings')!.path).toBe('/settings')
   })
 

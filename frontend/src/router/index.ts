@@ -42,6 +42,12 @@ const router = createRouter({
       name: 'settings',
       component: () => import('@/views/Settings.vue'),
     },
+    {
+      // 录屏产物独立页（方案 46）：历史列表/播放/下载/删除；?device= 过滤
+      path: '/recordings',
+      name: 'recordings',
+      component: () => import('@/views/Recordings.vue'),
+    },
   ],
 })
 
