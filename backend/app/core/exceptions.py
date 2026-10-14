@@ -23,6 +23,7 @@
     ├── InvalidScanRangeError    — 扫描网段非法或超上限（422，方案 36）
     ├── ConflictError            — 同一设备已有进行态录屏会话（409，方案 37 B3）
     ├── RecordingNotFoundError   — 设备没有录屏会话（404，方案 37 B4）
+    ├── RecordingDeleteError     — 录屏产物删除失败（500，方案 46 T2）
     ├── InvalidPathError         — 设备文件路径格式非法（400，方案 39）
     ├── PathNotFoundError        — 设备端路径不存在（404，方案 39）
     ├── TransferBusyError        — 同一设备已有进行中的文件传输（409，方案 39）
@@ -185,6 +186,15 @@ class RecordingNotFoundError(OpenScrcpyException):
 
     def __init__(self, device_id: str) -> None:
         super().__init__(f"设备 {device_id} 没有录屏会话", code="NO_RECORDING")
+
+
+class RecordingDeleteError(OpenScrcpyException):
+    """录屏产物删除失败（文件被占用等 OS 层错误，方案 46 T2）。"""
+
+    status_code = 500
+
+    def __init__(self, filename: str) -> None:
+        super().__init__(f"录屏产物 {filename} 删除失败", code="RECORDING_DELETE_FAILED")
 
 
 class InvalidPathError(OpenScrcpyException):
