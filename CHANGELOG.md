@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 录屏产物独立页面（方案 46）：全局 `/recordings` 页历史录屏列表（扫盘为准，含旧格式兼容）——播放弹层 / 下载 / 导出 webm / 删除（二次确认，占用时响亮报错）；落盘命名嵌设备标识（`openscrcpy_rec_{dev}__{id}.mp4`）；设备页 done 态收敛为「已保存 + 查看录屏 + 重新录制」一行，产物处理不再挤占设备页
+
 ## [0.7.7] - 2026-10-14（验证包，未发布 Release）
 
 ### Added
