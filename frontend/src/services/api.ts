@@ -126,6 +126,15 @@ export interface RuntimeEnvView {
   frozen: boolean // PyInstaller 冻结运行标记
 }
 
+/** scrcpy-server 上游检查结果（方案 45 T7，对应后端 GET /api/system/scrcpy-update）。 */
+export interface ScrcpyUpdateResult {
+  status: 'upToDate' | 'updateAvailable' | 'installedNewer' | 'unknown'
+  current_version: string
+  latest_version: string | null
+  url: string | null
+  error: string | null
+}
+
 // 创建 axios 实例，配置基础 URL 和超时
 const client = axios.create({
   baseURL: '/api',
@@ -231,6 +240,15 @@ export const api = {
    */
   async getRuntimeEnv(): Promise<RuntimeEnvView> {
     const res = await client.get<RuntimeEnvView>('/system/runtime-env')
+    return res.data
+  },
+
+  /**
+   * 检查 scrcpy-server 上游版本（方案 45 T7-§4.2：仅手动触发提示，不自动下载）。
+   * 对应：GET /api/system/scrcpy-update
+   */
+  async checkScrcpyUpdate(): Promise<ScrcpyUpdateResult> {
+    const res = await client.get<ScrcpyUpdateResult>('/system/scrcpy-update')
     return res.data
   },
 

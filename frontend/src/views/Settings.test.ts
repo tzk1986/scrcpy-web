@@ -33,6 +33,7 @@ const mockApi = vi.hoisted(() => ({
   getSettings: vi.fn(),
   putSettings: vi.fn(),
   getRuntimeEnv: vi.fn(),
+  checkScrcpyUpdate: vi.fn(),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
@@ -364,6 +365,95 @@ describe('Settings.vue', () => {
     expect(card.text()).toContain('Android Debug Bridge version 1.0.41')
     expect(card.text()).toContain('C:/x/scrcpy-server.jar')
     expect(card.text()).toContain('C:/x/tools/adb.exe')
+
+    wrapper.unmount()
+  })
+
+  it('检查更新 updateAvailable：版本对比文案 + 发布页链接 href', async () => {
+    mockApi.checkScrcpyUpdate.mockResolvedValue({
+      status: 'updateAvailable',
+      current_version: '5.0.1',
+      latest_version: 'v5.1.0',
+      url: 'https://github.com/Genymobile/scrcpy/releases',
+      error: null,
+    })
+    const wrapper = await mountSettings()
+
+    await wrapper.find('[data-test="check-update"]').trigger('click')
+    await flushPromises()
+
+    expect(mockApi.checkScrcpyUpdate).toHaveBeenCalledOnce()
+    const result = wrapper.find('[data-test="update-result"]')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).toContain('上游有 v5.1.0（本地 5.0.1）')
+    expect(result.text()).toContain('方案 44 换包流程')
+    const link = result.find('a')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe('https://github.com/Genymobile/scrcpy/releases')
+    expect(link.text()).toBe('查看发布页')
+
+    wrapper.unmount()
+  })
+
+  it('检查更新 upToDate：已是最新文案', async () => {
+    mockApi.checkScrcpyUpdate.mockResolvedValue({
+      status: 'upToDate',
+      current_version: '5.0.1',
+      latest_version: 'v5.0.1',
+      url: 'https://github.com/Genymobile/scrcpy/releases',
+      error: null,
+    })
+    const wrapper = await mountSettings()
+
+    await wrapper.find('[data-test="check-update"]').trigger('click')
+    await flushPromises()
+
+    const result = wrapper.find('[data-test="update-result"]')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).toContain('已是最新（本地 5.0.1）')
+
+    wrapper.unmount()
+  })
+
+  it('检查更新 installedNewer：本地高于上游文案', async () => {
+    mockApi.checkScrcpyUpdate.mockResolvedValue({
+      status: 'installedNewer',
+      current_version: '5.0.1',
+      latest_version: 'v4.9.0',
+      url: 'https://github.com/Genymobile/scrcpy/releases',
+      error: null,
+    })
+    const wrapper = await mountSettings()
+
+    await wrapper.find('[data-test="check-update"]').trigger('click')
+    await flushPromises()
+
+    const result = wrapper.find('[data-test="update-result"]')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).toContain('本地版本高于上游（本地 5.0.1 / 上游 v4.9.0）')
+
+    wrapper.unmount()
+  })
+
+  it('检查更新 unknown：显示 error + warning toast', async () => {
+    mockApi.checkScrcpyUpdate.mockResolvedValue({
+      status: 'unknown',
+      current_version: '5.0.1',
+      latest_version: null,
+      url: null,
+      error: '无法访问 GitHub（离线/内网环境？）：offline',
+    })
+    const wrapper = await mountSettings()
+
+    await wrapper.find('[data-test="check-update"]').trigger('click')
+    await flushPromises()
+
+    const result = wrapper.find('[data-test="update-result"]')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).toContain('无法访问 GitHub（离线/内网环境？）：offline')
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith(
+      '无法访问 GitHub（离线/内网环境？）：offline'
+    )
 
     wrapper.unmount()
   })

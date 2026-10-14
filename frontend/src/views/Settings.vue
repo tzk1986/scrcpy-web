@@ -98,6 +98,27 @@
             </el-collapse>
           </el-descriptions-item>
         </el-descriptions>
+        <el-button data-test="check-update" :loading="checkingUpdate" @click="checkUpdate">
+          检查更新
+        </el-button>
+        <div v-if="updateResult" data-test="update-result">
+          <!-- 四态文案（方案 45 §4.2：仅提示，不自动下载，升级走方案 44 换包 SOP） -->
+          <template v-if="updateResult.status === 'updateAvailable'">
+            上游有 {{ updateResult.latest_version }}（本地 {{ updateResult.current_version }}），
+            升级请走方案 44 换包流程
+            <a v-if="updateResult.url" :href="updateResult.url" target="_blank" rel="noopener">
+              查看发布页
+            </a>
+          </template>
+          <template v-else-if="updateResult.status === 'upToDate'">
+            已是最新（本地 {{ updateResult.current_version }}）
+          </template>
+          <template v-else-if="updateResult.status === 'installedNewer'">
+            本地版本高于上游（本地 {{ updateResult.current_version }} / 上游
+            {{ updateResult.latest_version }}）
+          </template>
+          <template v-else>{{ updateResult.error }}</template>
+        </div>
       </template>
     </el-card>
   </div>
@@ -114,6 +135,7 @@ import StreamFieldSet, { type StreamFormValue } from '@/components/settings/Stre
 import {
   api,
   type RuntimeEnvView,
+  type ScrcpyUpdateResult,
   type SettingEntry,
   type SettingsView,
 } from '@/services/api'
@@ -135,6 +157,8 @@ const h265Supported = ref(false)
 const saving = ref(false)
 const settingsView = ref<SettingsView | null>(null)
 const runtimeEnv = ref<RuntimeEnvView | null>(null)
+const checkingUpdate = ref(false)
+const updateResult = ref<ScrcpyUpdateResult | null>(null)
 const streamForm = ref<StreamFormValue>({
   max_size: 1080,
   bit_rate: '4M',
@@ -222,6 +246,20 @@ function resetStream() {
 
 function resetRecording() {
   return resetSection('recording')
+}
+
+/** 检查 scrcpy-server 上游版本（方案 45 §4.2）：仅手动触发提示，不自动下载。 */
+async function checkUpdate() {
+  checkingUpdate.value = true
+  try {
+    const result = await api.checkScrcpyUpdate()
+    updateResult.value = result
+    if (result.status === 'unknown') ElMessage.warning(result.error ?? '检查更新失败')
+  } catch (e) {
+    ElMessage.error('检查更新失败')
+  } finally {
+    checkingUpdate.value = false
+  }
 }
 
 onMounted(() => {
