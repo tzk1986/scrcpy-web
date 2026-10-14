@@ -64,7 +64,6 @@ type PanelState = 'idle' | 'recording' | 'done'
 
 const state = ref<PanelState>('idle')
 const elapsed = ref(0)
-const sessionId = ref('')
 
 const fileSize = ref(0)
 
@@ -93,8 +92,7 @@ function stopTimer() {
 /** 启动录屏；409（单设备互斥）时提示并保持空闲。 */
 async function start() {
   try {
-    const res = await api.startRecording(props.deviceId)
-    sessionId.value = res.session?.id ?? ''
+    await api.startRecording(props.deviceId)
     fileSize.value = 0
     state.value = 'recording'
     startTimer()
@@ -118,7 +116,6 @@ async function stop() {
     const res = await api.stopRecording(props.deviceId)
     const session = res?.session
     if (session?.state === 'done' && session.local_path) {
-      sessionId.value = session.id ?? ''
       fileSize.value = res?.file_size ?? 0
       state.value = 'done'
     } else {
@@ -138,7 +135,6 @@ onMounted(async () => {
     const res = await api.getRecording(props.deviceId)
     const session = res?.session
     if (session?.state === 'recording') {
-      sessionId.value = session.id ?? ''
       // 按 started_at 续计时：floor 只计已完整流逝的秒数（与走秒自增
       // 口径一致，也避免秒内小数造成展示抖动）
       const seed = Math.max(
@@ -148,7 +144,6 @@ onMounted(async () => {
       startTimer(seed)
       state.value = 'recording'
     } else if (session?.state === 'done' && session.local_path) {
-      sessionId.value = session.id ?? ''
       fileSize.value = res?.file_size ?? 0
       state.value = 'done'
     }
