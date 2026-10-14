@@ -26,6 +26,7 @@
 """
 
 import asyncio
+import re
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -62,6 +63,32 @@ class RecordingService:
     STUCK_STATE_TIMEOUT_SECONDS = 120.0
     # 主机落盘产物文件名模式（与 REMOTE_PREFIX basename 同源，方案 42 §3 清盘依据）
     LOCAL_FILE_GLOB = "openscrcpy_rec_*.mp4"
+
+    # 新命名：openscrcpy_rec_{dev}__{12hex}.mp4；旧命名：openscrcpy_rec_{12hex}.mp4
+    # dev 段 sanitize 后取 [A-Za-z0-9._-]+；__ 从右一次分割天然容纳 dev 内单下划线
+    _NEW_NAME_RE = re.compile(r"^openscrcpy_rec_(?P<dev>[A-Za-z0-9._-]+)__(?P<sid>[0-9a-f]{12})\.mp4$")
+    _OLD_NAME_RE = re.compile(r"^openscrcpy_rec_(?P<sid>[0-9a-f]{12})\.mp4$")
+
+    @staticmethod
+    def _sanitize_device(device_id: str) -> str:
+        """设备 id → 文件名片段：非法字符替换为 `-`（方案 46 §3.3）。"""
+        return re.sub(r"[^A-Za-z0-9._-]", "-", device_id)
+
+    @staticmethod
+    def parse_product_name(filename: str) -> tuple[str | None, str | None]:
+        """
+        落盘文件名 → (device, session_id)（方案 46 §3.3）。
+
+        新格式返回 (dev, sid)；旧格式返回 (None, sid)；
+        两者皆不匹配（含大写 hex、段数异常）返回 (None, None)。
+        """
+        m = RecordingService._NEW_NAME_RE.match(filename)
+        if m:
+            return m.group("dev"), m.group("sid")
+        m = RecordingService._OLD_NAME_RE.match(filename)
+        if m:
+            return None, m.group("sid")
+        return None, None
 
     def __init__(self, adb: AdbDriver) -> None:
         """
@@ -105,7 +132,9 @@ class RecordingService:
         # 设备级覆盖合并视图（方案 45 T8）：无覆盖的设备即全局 recording 对象本身
         cfg = device_recording_settings(device_id)
         session_id = uuid4().hex[:12]
-        remote_path = f"{self.REMOTE_PREFIX}{session_id}.mp4"
+        remote_path = (
+            f"{self.REMOTE_PREFIX}{self._sanitize_device(device_id)}__{session_id}.mp4"
+        )
         # 先启动设备端再落表：失败时本 start 无副作用（表内无会话可收敛）
         await self.adb.start_recording(
             device_id, remote_path, cfg.bit_rate, cfg.time_limit

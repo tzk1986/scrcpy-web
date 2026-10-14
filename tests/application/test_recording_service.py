@@ -74,7 +74,9 @@ async def test_second_start_conflicts(service):
 async def test_start_recording_params(service, mock_adb):
     cfg = settings().recording
     s = await service.start("d1")
-    assert s.remote_path == f"/sdcard/openscrcpy_rec_{s.id}.mp4"
+    assert s.remote_path.endswith(f"__{s.id}.mp4") and s.remote_path.startswith(
+        "/sdcard/openscrcpy_rec_"
+    )
     mock_adb.start_recording.assert_called_once_with(
         "d1", s.remote_path, cfg.bit_rate, cfg.time_limit
     )
@@ -370,7 +372,11 @@ async def test_self_heal_ignores_fresh_stopping(service, mock_adb):
 
 def test_cleanup_all_recordings_clears_pattern_only(service, tmp_path):
     """§3：仅删 openscrcpy_rec_*.mp4；他名文件与旁路文件不动。"""
-    hits = [tmp_path / "openscrcpy_rec_aaa111222333.mp4", tmp_path / "openscrcpy_rec_bbb111222333.mp4"]
+    hits = [
+        tmp_path / "openscrcpy_rec_aaa111222333.mp4",
+        tmp_path / "openscrcpy_rec_bbb111222333.mp4",
+        tmp_path / "openscrcpy_rec_192.168.8.18-5555__ccc111222333.mp4",
+    ]
     keeps = [tmp_path / "other.mp4", tmp_path / "openscrcpy_rec_c.txt"]
     for p in hits + keeps:
         p.write_bytes(b"x")
@@ -421,3 +427,36 @@ async def test_cleanup_loop_sweeps_immediately_at_startup(service, monkeypatch):
     assert swept == [True]
     assert cleaned == [True]
     await service.stop_cleanup_task()
+
+
+# ---------------------------------------------------------------------------
+# 方案 46 T1：落盘命名嵌设备标识 + 新旧格式解析
+# ---------------------------------------------------------------------------
+
+
+def test_start_remote_path_embeds_device(service: RecordingService) -> None:
+    """start 生成 openscrcpy_rec_{dev}__{12hex}.mp4：IP:port 设备 id 被 sanitize。"""
+    s = asyncio.run(service.start("192.168.8.18:5555"))
+    assert s.remote_path == f"/sdcard/openscrcpy_rec_192.168.8.18-5555__{s.id}.mp4"
+
+
+def test_start_remote_path_plain_serial_unchanged(service: RecordingService) -> None:
+    """USB 序列号形态（合法字符集）原样嵌入。"""
+    s = asyncio.run(service.start("rk3568_r"))
+    assert s.remote_path == f"/sdcard/openscrcpy_rec_rk3568_r__{s.id}.mp4"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("openscrcpy_rec_192.168.8.18-5555__a1b2c3d4e5f6.mp4", ("192.168.8.18-5555", "a1b2c3d4e5f6")),
+        ("openscrcpy_rec_a1b2c3d4e5f6.mp4", (None, "a1b2c3d4e5f6")),  # 旧格式
+        ("openscrcpy_rec_A1B2C3D4E5F6.mp4", (None, None)),  # 大写 hex 非法
+        ("openscrcpy_rec_dev_x__a1b2c3d4e5f6.mp4", ("dev_x", "a1b2c3d4e5f6")),  # dev 内单下划线
+        ("openscrcpy_rec_tooshort__a1b2c3d4e5f67.mp4", (None, None)),  # sid 13 位
+        ("other.mp4", (None, None)),
+        ("openscrcpy_rec_a1b2c3d4e5f6.txt", (None, None)),
+    ],
+)
+def test_parse_product_name(name: str, expected: tuple[str | None, str | None]) -> None:
+    assert RecordingService.parse_product_name(name) == expected
