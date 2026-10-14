@@ -6,15 +6,14 @@
  *   - formatElapsed：秒 → mm:ss
  *   - 空闲态：显示「录屏」按钮，挂载时查询当前会话
  *   - 开始：进入录制态（红点 + 计时 00:00 起、fake timers 推进到 00:05、停止按钮）
- *   - 停止：done + local_path → video 预览（/file 端点）+ 下载链接
+ *   - 停止：done + local_path → 一行提示（已保存 + 查看录屏链接跳 /recordings）
+ *     + 重新录制（方案 46：预览/下载/webm 导出移入独立录屏页）
  *   - 互斥：start 409 → ElMessage.error 提示且保持空闲（录屏入口仍在）
  *   - 卸载：录制中仅提示服务端 60 秒上限兜底，不调 stop API
- *   - webm 导出（B6）：done 态显示「导出 webm」按钮；点击调用
- *     exportWebmClip(videoEl) 并触发 clip.webm 下载；失败提示且按钮恢复；
- *     浏览器不支持时按钮禁用（webmExporter 模块整体 mock）
  *
  * 说明：仿 AppsView.test.ts 模式——vi.hoisted + vi.mock('element-plus') +
- * vi.mock('@/services/api')；el-button 用轻量 stub 替代。
+ * vi.mock('@/services/api')；el-button / router-link 用轻量 stub 替代
+ * （router-link 渲染成 <a :href>，供 href 编码断言）。
  * 计时依赖 setInterval：fake timers 只伪造 interval（setTimeout 保持真实，
  * 否则 flushPromises 依赖的 setTimeout(0) 会挂起）。
  */
@@ -37,12 +36,6 @@ const mockApi = vi.hoisted(() => ({
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
-const mockExporter = vi.hoisted(() => ({
-  exportWebmClip: vi.fn(),
-  isWebmRecorderSupported: vi.fn(),
-}))
-vi.mock('@/utils/webmExporter', () => mockExporter)
-
 import RecordingPanel, { formatElapsed } from './RecordingPanel.vue'
 
 const ElButtonStub = {
@@ -50,16 +43,23 @@ const ElButtonStub = {
   template: '<button class="stub-btn" type="button"><slot /></button>',
 }
 
-function mountPanel() {
+/** router-link stub：渲染成 <a :href> 供 href 断言（含 encodeURIComponent 编码）。 */
+const RouterLinkStub = {
+  name: 'RouterLink',
+  props: ['to'],
+  template: '<a :href="to"></a>',
+}
+
+function mountPanel(deviceId = 'dev1') {
   return shallowMount(RecordingPanel, {
-    props: { deviceId: 'dev1' },
+    props: { deviceId },
     global: {
-      stubs: { 'el-button': ElButtonStub },
+      stubs: { 'el-button': ElButtonStub, 'router-link': RouterLinkStub },
     },
   })
 }
 
-/** 挂载并进入 done 预览态（getRecording 返回 done + local_path）。 */
+/** 挂载并进入 done 态（getRecording 返回 done + local_path）。 */
 async function mountDonePanel() {
   mockApi.getRecording.mockResolvedValue({
     session: sessionWith({ state: 'done', local_path: 'data/recordings/s1.mp4' }),
@@ -87,9 +87,6 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
   for (const fn of Object.values(mockApi)) fn.mockReset()
   mockApi.getRecording.mockResolvedValue(undefined) // 默认无会话 → idle
-  mockExporter.exportWebmClip.mockReset()
-  mockExporter.isWebmRecorderSupported.mockReset()
-  mockExporter.isWebmRecorderSupported.mockReturnValue(true) // 默认支持 webm
   h.ElMessage.success.mockClear()
   h.ElMessage.error.mockClear()
   h.ElMessage.info.mockClear()
@@ -142,31 +139,28 @@ describe('RecordingPanel', () => {
     wrapper.unmount()
   })
 
-  it('停止返回 done + local_path → video 预览与下载链接指向 /file 端点', async () => {
+  it('停止返回 done → 一行提示：已保存 + 查看录屏链接 + 重新录制', async () => {
     mockApi.startRecording.mockResolvedValue({ session: sessionWith() })
     mockApi.stopRecording.mockResolvedValue({
       session: sessionWith({ state: 'done', local_path: 'data/recordings/s1.mp4' }),
       file_size: 3145728,
     })
-    const wrapper = mountPanel()
+    const wrapper = mountPanel('192.168.8.18:5555')
     await flushPromises()
     await wrapper.find('.record-start').trigger('click')
     await flushPromises()
-
     await wrapper.find('.record-stop').trigger('click')
     await flushPromises()
 
-    expect(mockApi.stopRecording).toHaveBeenCalledWith('dev1')
-    const video = wrapper.find('video')
-    expect(video.exists()).toBe(true)
-    expect(video.attributes('src')).toBe('/api/recording/dev1/file')
-    const link = wrapper.find('a.record-download')
-    expect(link.exists()).toBe(true)
-    expect(link.attributes('href')).toBe('/api/recording/dev1/file')
-    expect(link.attributes('download')).toMatch(/\.mp4$/)
-    expect(wrapper.find('.record-start').exists()).toBe(false)
+    expect(wrapper.find('video').exists()).toBe(false)
+    expect(wrapper.find('a.record-download').exists()).toBe(false)
+    expect(wrapper.find('.export-webm').exists()).toBe(false)
+    const view = wrapper.find('.record-view')
+    expect(view.exists()).toBe(true)
+    expect(view.attributes('href')).toBe('/recordings?device=192.168.8.18%3A5555')
+    expect(wrapper.find('.record-info').text()).toContain('已保存')
+    expect(wrapper.find('.record-info').text()).toContain('约 3.0 MB')
     expect(wrapper.find('.record-again').exists()).toBe(true)
-    expect(wrapper.find('.record-info').text()).toBe('约 3.0 MB')
   })
 
   it('开始互斥 409 → ElMessage.error 提示且保持录屏入口', async () => {
@@ -202,15 +196,17 @@ describe('RecordingPanel', () => {
     wrapper.unmount()
   })
 
-  it('挂载恢复完成态：done + local_path → 直接显示预览与下载', async () => {
+  it('挂载恢复完成态：done + local_path → 一行提示 + 查看录屏链接', async () => {
     mockApi.getRecording.mockResolvedValue({
       session: sessionWith({ state: 'done', local_path: 'data/recordings/s1.mp4' }),
     })
     const wrapper = mountPanel()
     await flushPromises()
 
-    expect(wrapper.find('video').exists()).toBe(true)
-    expect(wrapper.find('a.record-download').exists()).toBe(true)
+    expect(wrapper.find('video').exists()).toBe(false)
+    expect(wrapper.find('a.record-download').exists()).toBe(false)
+    expect(wrapper.find('.record-view').exists()).toBe(true)
+    expect(wrapper.find('.record-info').text()).toContain('已保存')
   })
 
   it('录制中卸载：提示服务端 60 秒上限兜底且不调 stop API', async () => {
@@ -242,62 +238,6 @@ describe('RecordingPanel', () => {
     expect(wrapper.find('video').exists()).toBe(false)
   })
 
-  it('done 态显示「导出 webm」按钮（浏览器支持时可用）', async () => {
-    const wrapper = await mountDonePanel()
-
-    const btn = wrapper.find('.export-webm')
-    expect(btn.exists()).toBe(true)
-    expect(btn.text()).toContain('导出 webm')
-    expect(btn.attributes('disabled')).toBeUndefined()
-  })
-
-  it('浏览器不支持 webm 时导出按钮禁用（降级防御，不硬抛）', async () => {
-    mockExporter.isWebmRecorderSupported.mockReturnValue(false)
-    const wrapper = await mountDonePanel()
-
-    const btn = wrapper.find('.export-webm')
-    expect(btn.exists()).toBe(true)
-    expect(btn.attributes('disabled')).toBeDefined()
-  })
-
-  it('点击「导出 webm」：exportWebmClip 拿 video 元素 → Blob 触发 clip.webm 下载后 revoke', async () => {
-    const wrapper = await mountDonePanel()
-
-    const blob = new Blob(['clip-data'], { type: 'video/webm' })
-    mockExporter.exportWebmClip.mockResolvedValue(blob)
-    const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-clip')
-    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL')
-    // 对象持有而非 let 变量：避免 TS 控制流把闭包赋值收窄成 never
-    const clicked = { anchor: null as HTMLAnchorElement | null }
-    const clickSpy = vi
-      .spyOn(HTMLAnchorElement.prototype, 'click')
-      .mockImplementation(function (this: HTMLAnchorElement) {
-        clicked.anchor = this
-      })
-
-    await wrapper.find('.export-webm').trigger('click')
-    await flushPromises()
-
-    expect(mockExporter.exportWebmClip).toHaveBeenCalledTimes(1)
-    expect(mockExporter.exportWebmClip.mock.calls[0][0]?.tagName).toBe('VIDEO')
-    expect(createUrlSpy).toHaveBeenCalledWith(blob)
-    expect(clicked.anchor?.download).toBe('clip.webm')
-    expect(clicked.anchor?.getAttribute('href')).toBe('blob:mock-clip')
-    expect(revokeSpy).toHaveBeenCalledWith('blob:mock-clip')
-    expect(clickSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it('导出失败 → ElMessage.error 提示且按钮恢复可用', async () => {
-    const wrapper = await mountDonePanel()
-
-    mockExporter.exportWebmClip.mockRejectedValue(new Error('boom'))
-    await wrapper.find('.export-webm').trigger('click')
-    await flushPromises()
-
-    expect(h.ElMessage.error).toHaveBeenCalledWith('webm 导出失败')
-    expect(wrapper.find('.export-webm').attributes('disabled')).toBeUndefined()
-  })
-
   it('done 态「重新录制」：点击 → 调 startRecording 进入录制态并清信息行（方案 42 T4）', async () => {
     const wrapper = await mountDonePanel()
     mockApi.startRecording.mockResolvedValue({ session: sessionWith() })
@@ -319,10 +259,10 @@ describe('RecordingPanel', () => {
     expect(h.ElMessage.error).not.toHaveBeenCalled()
   })
 
-  it('挂载恢复：done + file_size → 预览与大小信息行（方案 42 T4）', async () => {
+  it('挂载恢复：done + file_size → 已保存提示与大小信息行（方案 42 T4）', async () => {
     const wrapper = await mountDonePanel()
 
-    expect(wrapper.find('video').exists()).toBe(true)
-    expect(wrapper.find('.record-info').text()).toBe('约 1.0 MB')
+    expect(wrapper.find('.record-view').exists()).toBe(true)
+    expect(wrapper.find('.record-info').text()).toContain('约 1.0 MB')
   })
 })
