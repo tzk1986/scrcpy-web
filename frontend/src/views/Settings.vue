@@ -10,7 +10,16 @@
 -->
 <template>
   <div class="settings-page">
-    <h2>设置</h2>
+    <div class="page-header">
+      <h2>设置</h2>
+      <router-link
+        v-if="backDeviceId"
+        class="back-device"
+        :to="`/device/${encodeURIComponent(backDeviceId)}`"
+      >
+        <el-button class="btn-back-device" size="small">← 返回设备</el-button>
+      </router-link>
+    </div>
     <el-card class="section-card">
       <template #header>运行参数</template>
       <div class="section-row">
@@ -153,7 +162,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -183,6 +192,12 @@ const SOURCE_TAG_TYPES: Record<SettingEntry['source'], 'info' | 'primary' | 'war
 }
 
 const route = useRoute()
+
+/** 从设备页跳转进入的入口设备（经 ?device= 进入即显示返回按钮）。 */
+const backDeviceId = computed(() =>
+  typeof route.query.device === 'string' ? route.query.device : ''
+)
+
 const h265Supported = ref(false)
 const saving = ref(false)
 const settingsView = ref<SettingsView | null>(null)
@@ -402,6 +417,12 @@ onMounted(() => {
 <style scoped>
 .settings-page {
   padding: 1rem;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .section-card {

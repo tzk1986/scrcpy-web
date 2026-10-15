@@ -4,7 +4,7 @@
  * 覆盖：
  *   - 挂载加载列表：设备列原样 / 旧格式「未知设备（旧版产物）」/ 大小 1 位小数 /
  *     时间本地化 / 行内播放·下载·删除按钮
- *   - ?device= 过滤：仅该设备 + 「仅看」条 + 清除恢复全量
+ *   - ?device= 过滤：仅该设备 + 「仅看」条 + 清除恢复全量；「返回设备」链接
  *   - 下载 href：recordingFileUrl 编码文件名
  *   - 播放弹层：video src 指向文件端点；webm 导出按钮随支持面启用/禁用
  *   - 删除：二次确认 → api → 重拉；失败 → error toast 且列表不消失
@@ -75,7 +75,9 @@ function mountPage(deviceQuery?: string) {
         'el-button': { template: '<button><slot /></button>' },
         'el-dialog': { props: ['modelValue'], template: '<div v-if="modelValue"><slot /></div>' },
         'el-empty': { template: '<div><slot /></div>' },
-        RouterLinkStub,
+        // stubs 按组件使用名匹配：'RouterLinkStub' 作 key 不会命中 <router-link>，
+        // 须用 'router-link'，否则 shallowMount 走 auto-stub（渲染 router-link-stub 元素）
+        'router-link': RouterLinkStub,
       },
       components: { 'router-link': RouterLinkStub },
     },
@@ -108,6 +110,22 @@ describe('Recordings 页', () => {
     expect(w.find('.filter-bar').text()).toContain('192.168.8.18:5555')
     await w.find('.filter-clear').trigger('click')
     expect(w.findAll('.file-row')).toHaveLength(2)
+  })
+
+  it('?device= 进入显示「返回设备」链接（清除过滤不影响）；无 device 参数不显示', async () => {
+    const w = mountPage('192.168.8.18:5555')
+    await flushPromises()
+    const back = w.find('a.back-device')
+    expect(back.exists()).toBe(true)
+    expect(back.attributes('href')).toBe('/device/192.168.8.18%3A5555')
+    await w.find('.filter-clear').trigger('click')
+    expect(w.find('a.back-device').exists()).toBe(true)
+    w.unmount()
+
+    const w2 = mountPage()
+    await flushPromises()
+    expect(w2.find('a.back-device').exists()).toBe(false)
+    w2.unmount()
   })
 
   it('下载链接 href 为编码后的文件端点', async () => {

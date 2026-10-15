@@ -248,10 +248,17 @@ const FORM_STUBS = {
   'el-switch': ElSwitchStub,
 }
 
-async function mountSettings(): Promise<VueWrapper> {
+async function mountSettings(deviceQuery?: string): Promise<VueWrapper> {
+  // 仅在显式传入时覆写 query（存量用例手动预置 routeMock 后无参调用，不能被清空）
+  if (deviceQuery) routeMock.current = { query: { device: deviceQuery } }
   const wrapper = shallowMount(Settings, {
     global: {
       stubs: {
+        'router-link': {
+          name: 'RouterLink',
+          props: ['to'],
+          template: '<a :href="typeof to === \'string\' ? to : to.path"><slot /></a>',
+        },
         'el-card': ElCardStub,
         'el-button': ElButtonStub,
         'el-divider': true,
@@ -286,6 +293,17 @@ beforeEach(() => {
 })
 
 describe('Settings.vue', () => {
+  it('?device= 进入显示「返回设备」链接；无 device 参数不显示', async () => {
+    const w1 = await mountSettings('192.168.8.18:5555')
+    const back = w1.find('a.back-device')
+    expect(back.exists()).toBe(true)
+    expect(back.attributes('href')).toBe('/device/192.168.8.18%3A5555')
+
+    routeMock.current = { query: {} }
+    const w2 = await mountSettings()
+    expect(w2.find('a.back-device').exists()).toBe(false)
+  })
+
   it('挂载拉取设置并回填两个表单组件（后端键名）+ h265 探测透传', async () => {
     const wrapper = await mountSettings()
 

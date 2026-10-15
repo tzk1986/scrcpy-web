@@ -19,6 +19,9 @@
     <div class="page-header">
       <h2>录屏</h2>
       <div class="header-actions">
+        <router-link v-if="backDeviceId" class="back-device" :to="`/device/${encodeURIComponent(backDeviceId)}`">
+          <el-button class="btn-back-device" size="small">← 返回设备</el-button>
+        </router-link>
         <el-button class="btn-refresh" @click="load">刷新</el-button>
       </div>
     </div>
@@ -96,6 +99,11 @@ const visibleFiles = computed(() =>
 
 const playingUrl = computed(() =>
   playing.value ? api.recordingFileUrl(playing.value.filename) : ''
+)
+
+/** 从设备页跳转进入的入口设备（与过滤清除无关，只要经 ?device= 进入就可返回）。 */
+const backDeviceId = computed(() =>
+  typeof route.query.device === 'string' ? route.query.device : ''
 )
 
 /** 与后端 _sanitize_device 同规则：非法字符 → `-`（IP:port 查询匹配落盘名 dev 段）。 */
@@ -182,6 +190,12 @@ onMounted(load)
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .filter-bar {
