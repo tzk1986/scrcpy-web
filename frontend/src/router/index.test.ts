@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import router from '@/router'
 
 describe('router 路由表', () => {
-  it('包含 dashboard / device-detail / device-files / recordings / settings 五条路由', () => {
+  it('包含 dashboard / device-detail / device-files / recordings / settings / settings-help 六条路由', () => {
     const routes = router.getRoutes()
     const byName = new Map(routes.map((r) => [r.name, r]))
     expect([...byName.keys()].sort()).toEqual([
@@ -17,12 +17,14 @@ describe('router 路由表', () => {
       'device-files',
       'recordings',
       'settings',
+      'settings-help',
     ])
     expect(byName.get('dashboard')!.path).toBe('/')
     expect(byName.get('device-detail')!.path).toBe('/device/:id')
     expect(byName.get('device-files')!.path).toBe('/device/:id/files')
     expect(byName.get('recordings')!.path).toBe('/recordings')
     expect(byName.get('settings')!.path).toBe('/settings')
+    expect(byName.get('settings-help')!.path).toBe('/settings/help')
   })
 
   it('路由组件均为懒加载（动态 import 函数）', () => {

@@ -7,6 +7,7 @@
  *   /device/:id         → DeviceDetail.vue（设备详情 + 调试面板）
  *   /device/:id/files   → FileManager.vue（设备文件管理，方案 39）
  *   /settings           → Settings.vue（独立设置页，方案 45）
+ *   /settings/help      → SettingsHelp.vue（参数说明手册，方案 47）
  *
  * 路由模式：HTML5 History（无 # 号）
  * 懒加载：所有页面组件使用 import() 动态导入，优化首屏加载速度
@@ -41,6 +42,12 @@ const router = createRouter({
       path: '/settings',
       name: 'settings',
       component: () => import('@/views/Settings.vue'),
+    },
+    {
+      // 参数说明手册（方案 47 T6）：静态文档页，#<组>-<键> 锚点直达
+      path: '/settings/help',
+      name: 'settings-help',
+      component: () => import('@/views/SettingsHelp.vue'),
     },
     {
       // 录屏产物独立页（方案 46）：历史列表/播放/下载/删除；?device= 过滤

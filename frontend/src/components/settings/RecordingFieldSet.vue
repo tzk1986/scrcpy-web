@@ -6,12 +6,14 @@
 -->
 <template>
   <el-form label-width="140px" @submit.prevent>
-    <el-form-item label="录屏码率 bit_rate">
+    <el-form-item>
+      <template #label>录屏码率 bit_rate <HelpLink group="recording" param-key="bit_rate" /></template>
       <el-select v-model="value.bit_rate">
         <el-option v-for="v in BIT_RATES" :key="v" :label="v" :value="v" />
       </el-select>
     </el-form-item>
-    <el-form-item label="时长上限 time_limit">
+    <el-form-item>
+      <template #label>时长上限 time_limit <HelpLink group="recording" param-key="time_limit" /></template>
       <el-input-number v-model="value.time_limit" :min="1" :max="1800" />
       <span class="hint">秒；每次开始录屏时读取，保存即对新录屏生效</span>
     </el-form-item>
@@ -31,6 +33,7 @@ export interface RecordingFormValue {
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import HelpLink from './HelpLink.vue'
 
 /** 码率档位（与后端 RecordingOverride bit_rate 的 ^\d+[MK]$ 约束兼容的常用档） */
 const BIT_RATES = ['1M', '2M', '4M', '6M', '8M']

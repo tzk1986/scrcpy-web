@@ -7,27 +7,32 @@
 -->
 <template>
   <el-form label-width="140px" @submit.prevent>
-    <el-form-item label="最大分辨率 max_size">
+    <el-form-item>
+      <template #label>最大分辨率 max_size <HelpLink group="stream" param-key="max_size" /></template>
       <el-input-number v-model="value.max_size" :min="0" :max="4096" />
       <span class="hint">0 表示不缩放（服务端截图链路恒不缩放，仅影响视频流）</span>
     </el-form-item>
-    <el-form-item label="起始码率 bit_rate">
+    <el-form-item>
+      <template #label>起始码率 bit_rate <HelpLink group="stream" param-key="bit_rate" /></template>
       <el-select v-model="value.bit_rate">
         <el-option v-for="v in BIT_RATES" :key="v" :label="v" :value="v" />
       </el-select>
       <span class="hint">自适应码率开启时的起始档</span>
     </el-form-item>
-    <el-form-item label="帧率 fps">
+    <el-form-item>
+      <template #label>帧率 fps <HelpLink group="stream" param-key="fps" /></template>
       <el-input-number v-model="value.fps" :min="1" :max="120" />
     </el-form-item>
-    <el-form-item label="编解码 codec">
+    <el-form-item>
+      <template #label>编解码 codec <HelpLink group="stream" param-key="codec" /></template>
       <el-select v-model="value.codec">
         <el-option label="h264 (AVC)" value="h264" />
         <el-option label="h265 (HEVC)" value="h265" :disabled="!h265Supported" />
       </el-select>
       <span v-if="!h265Supported" class="hint">当前浏览器不支持 h265 解码，已禁用</span>
     </el-form-item>
-    <el-form-item label="自适应码率">
+    <el-form-item>
+      <template #label>自适应码率 <HelpLink group="stream" param-key="adaptive_bitrate" /></template>
       <el-switch v-model="value.adaptive_bitrate" />
     </el-form-item>
   </el-form>
@@ -49,6 +54,7 @@ export interface StreamFormValue {
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import HelpLink from './HelpLink.vue'
 
 /** 码率档位（与后端 StreamOverride bit_rate 的 ^\d+[MK]$ 约束兼容的常用档） */
 const BIT_RATES = ['1M', '2M', '4M', '6M', '8M']

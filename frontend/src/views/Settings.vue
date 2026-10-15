@@ -4,6 +4,7 @@
   数据链路：GET /api/settings 回填（生效值 + 来源）；PUT /api/settings
   提交后端键 patch（裁定 R4，表单值即后端键名，免映射层）；节传 null = 重置。
   h265 gating：T4 isH265DecoderSupported() 探测结果透传 StreamFieldSet。
+  方案 47 T6：页头「参数说明手册」入口 + 参数行「?」直达 /settings/help 锚点。
 
   子组件关系：
     Settings.vue → StreamFieldSet.vue / RecordingFieldSet.vue
@@ -11,7 +12,13 @@
 <template>
   <div class="settings-page">
     <div class="page-header">
-      <h2>设置</h2>
+      <div class="header-left">
+        <h2>设置</h2>
+        <!-- 方案 47 T6：参数说明手册入口（各参数行另有「?」直达锚点） -->
+        <router-link class="help-entry" data-test="help-entry" to="/settings/help">
+          参数说明手册
+        </router-link>
+      </div>
       <router-link
         v-if="backDeviceId"
         class="back-device"
@@ -438,6 +445,17 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.help-entry {
+  font-size: 13px;
+  color: var(--el-color-primary);
 }
 
 .section-card {

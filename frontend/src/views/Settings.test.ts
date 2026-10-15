@@ -296,6 +296,14 @@ beforeEach(() => {
 })
 
 describe('Settings.vue', () => {
+  it('页头含「参数说明手册」入口链接（方案 47 T6）', async () => {
+    const wrapper = await mountSettings()
+    const entry = wrapper.find('[data-test="help-entry"]')
+    expect(entry.exists()).toBe(true)
+    expect(entry.attributes('href')).toBe('/settings/help')
+    wrapper.unmount()
+  })
+
   it('?device= 进入显示「返回设备」链接；无 device 参数不显示', async () => {
     const w1 = await mountSettings('192.168.8.18:5555')
     const back = w1.find('a.back-device')
