@@ -22,8 +22,11 @@
     - 马赛克：拖拽出区域（两轴各 ≥2px 才提交），拖拽中显示虚线矩形轮廓，
       提交后以块状马赛克覆盖（底图未就绪时静默不画）；无颜色参数（参数行隐藏色板）
     - 命中编辑：点击已放置标注 → 选中（虚线框）并进入移动（拖动实时平移）；
+      选中后显示 8 向缩放手柄（方案 47 T3：角先边后命中、Shift 等比、
+      每帧从按下快照重建实时预览、松手有变化才落一步 transform）；
+      按下命中优先序：手柄 > 命令体 > 空白；悬停手柄切换对应缩放光标；
       Delete/Backspace 删除选中；双击文字 → 原地二次编辑（确认不发新命令）；
-      Escape 退出编辑/取消选中；命中检测走 toCanvasPoint 比例换算坐标
+      Escape 退出编辑/取消选中并结束拖拽/移动/缩放；命中检测走 toCanvasPoint 比例换算坐标
     - 字号/线宽按「相对图宽比例」存储（annotationModel），渲染时 ×canvas.width 换算
     - 参数行：6 预设色板 + 自定义色 + 线宽/字号滑块（原生 range，按当前工具显隐），
       右侧标签显示换算后像素值；画布滚轮也可调参（×1.1/÷1.1）
@@ -174,11 +177,16 @@ import {
   TOOL_KEYS,
   cmdBBox,
   drawCmd,
+  hitHandle,
   hitTest,
   nextNumberIndex,
+  resizeHandles,
+  transformCmd,
   translateCmd,
   type AnnotationCmd,
+  type BBox,
   type Point,
+  type ResizeHandleId,
   type Tool,
 } from './annotationModel'
 
@@ -238,6 +246,18 @@ const selectedIndex = ref<number | null>(null)
  * before=pointerdown 快照、moved=是否发生过位移——仅位移落定才产 transform 步。
  */
 const moveState = ref<{ index: number; last: Point; before: AnnotationCmd; moved: boolean } | null>(null)
+/**
+ * 缩放中的命令（方案 47 T3）：pointerdown 命中选中命令手柄进入。
+ * origin=按下时手柄位置、anchor=对角/对边锚点（缩放期间不动）、
+ * before=按下快照（每帧从快照重建再 transformCmd，避免累计误差与翻转抖动）。
+ */
+const resizeState = ref<{
+  index: number
+  handle: ResizeHandleId
+  origin: Point
+  anchor: Point
+  before: AnnotationCmd
+} | null>(null)
 /** 双击文字进入的编辑态（confirmText 原地更新该命令，不新增）。 */
 const editingIndex = ref<number | null>(null)
 
@@ -333,6 +353,7 @@ watch(
       redoHistory.value = []
       drag.value = null
       moveState.value = null
+      resizeState.value = null
       selectedIndex.value = null
       editingIndex.value = null
       hoverPoint.value = null
@@ -471,7 +492,7 @@ function redraw() {
     )
     ctx.restore()
   }
-  // 选中虚线框（cmdBBox 外扩 4px；画完复位虚线）
+  // 选中虚线框（cmdBBox 外扩 4px；画完复位虚线）+ 8 向缩放手柄方块（方案 47 T3）
   const selected = selectedIndex.value
   if (selected !== null && selected < commands.value.length) {
     const box = cmdBBox(commands.value[selected], canvasWidth, measureText)
@@ -480,6 +501,11 @@ function redraw() {
     ctx.lineWidth = 1
     ctx.strokeRect(box.x - 4, box.y - 4, box.width + 8, box.height + 8)
     ctx.setLineDash([])
+    const half = Math.max(3, canvasWidth * 0.004)
+    ctx.fillStyle = '#409eff'
+    for (const hd of resizeHandles(box)) {
+      ctx.fillRect(hd.x - half, hd.y - half, half * 2, half * 2)
+    }
   }
 }
 
@@ -502,6 +528,21 @@ function onPointerDown(e: PointerEvent) {
   const point = toCanvasPoint(e)
   if (!point) return
   const canvas = canvasRef.value
+  // 命中选中命令的缩放手柄：进入缩放（按下优先序 手柄 > 命令体 > 空白，方案 47 T3）
+  const grabbed = hitSelectedHandle(point)
+  if (grabbed) {
+    moveState.value = null
+    drag.value = null
+    resizeState.value = {
+      index: grabbed.index,
+      handle: grabbed.handle,
+      origin: grabbed.origin,
+      anchor: grabbed.anchor,
+      before: snapCmd(commands.value[grabbed.index]),
+    }
+    redraw()
+    return
+  }
   // 命中已有命令：选中并进入移动（拖动实时平移，pointerup 结束）
   const hit = canvas ? hitTest(commands.value, point, canvas.width, measureText) : null
   if (hit !== null) {
@@ -556,6 +597,27 @@ function onPointerDown(e: PointerEvent) {
 function onPointerMove(e: PointerEvent) {
   const point = toCanvasPoint(e)
   if (!point) return
+  const rs = resizeState.value
+  if (rs) {
+    // 逐轴倍率 = (指针-锚点)/(按下手柄-锚点)；边手柄所在轴分量为 0 → 该轴恒 1
+    let sx = rs.origin.x !== rs.anchor.x ? (point.x - rs.anchor.x) / (rs.origin.x - rs.anchor.x) : 1
+    let sy = rs.origin.y !== rs.anchor.y ? (point.y - rs.anchor.y) / (rs.origin.y - rs.anchor.y) : 1
+    if (e.shiftKey) {
+      // 等比：角手柄取绝对值较大轴（带符号，允许翻越锚点），边手柄取其可控轴
+      let f: number
+      if (rs.handle === 'e' || rs.handle === 'w') f = sx
+      else if (rs.handle === 'n' || rs.handle === 's') f = sy
+      else f = Math.abs(sx) >= Math.abs(sy) ? sx : sy
+      sx = f
+      sy = f
+    }
+    // 每帧从按下快照重建：同一帧内多次移动不累计，倍率始终相对初始包围盒
+    const fresh = snapCmd(rs.before)
+    transformCmd(fresh, sx, sy, rs.anchor)
+    commands.value[rs.index] = fresh
+    redraw()
+    return
+  }
   const move = moveState.value
   if (move) {
     const cmd = commands.value[move.index]
@@ -578,17 +640,30 @@ function onPointerMove(e: PointerEvent) {
     redraw()
     return
   }
-  // 无拖拽/移动：更新悬停点（文字工具 ghost 预览）
+  // 无拖拽/移动/缩放：更新悬停点（文字工具 ghost 预览）；悬停选中手柄时切换缩放光标（T3）
   hoverPoint.value = point
+  const hovered = hitSelectedHandle(point)
+  const canvas = canvasRef.value
+  if (canvas) canvas.style.cursor = hovered ? HANDLE_CURSORS[hovered.handle] : ''
   redraw()
 }
 
 function onPointerUp() {
+  const rs = resizeState.value
+  resizeState.value = null
+  if (rs) {
+    // 缩放落定：与按下快照全等则视为无操作（原地按手柄/回位不产步）
+    const cmd = commands.value[rs.index]
+    if (cmd && !sameCmd(rs.before, cmd)) {
+      commitStep({ kind: 'transform', index: rs.index, before: rs.before, after: snapCmd(cmd) })
+    }
+    redraw()
+  }
   const move = moveState.value
   moveState.value = null
   if (move?.moved) {
     const cmd = commands.value[move.index]
-    if (cmd) {
+    if (cmd && !sameCmd(move.before, cmd)) {
       commitStep({ kind: 'transform', index: move.index, before: move.before, after: snapCmd(cmd) })
     }
   }
@@ -684,6 +759,61 @@ function snapCmd(cmd: AnnotationCmd): AnnotationCmd {
   }
 }
 
+/** 手柄悬停光标映射（对角向共用 nwse/nesw，横竖边 ns/ew）。 */
+const HANDLE_CURSORS: Record<ResizeHandleId, string> = {
+  nw: 'nwse-resize',
+  se: 'nwse-resize',
+  ne: 'nesw-resize',
+  sw: 'nesw-resize',
+  n: 'ns-resize',
+  s: 'ns-resize',
+  e: 'ew-resize',
+  w: 'ew-resize',
+}
+
+/** 缩放锚点：角手柄取对角，边手柄取对边中点（缩放期间不动）。 */
+function resizeAnchor(bbox: BBox, handle: ResizeHandleId): Point {
+  const cx = bbox.x + bbox.width / 2
+  const cy = bbox.y + bbox.height / 2
+  switch (handle) {
+    case 'nw':
+      return { x: bbox.x + bbox.width, y: bbox.y + bbox.height }
+    case 'ne':
+      return { x: bbox.x, y: bbox.y + bbox.height }
+    case 'sw':
+      return { x: bbox.x + bbox.width, y: bbox.y }
+    case 'se':
+      return { x: bbox.x, y: bbox.y }
+    case 'n':
+      return { x: cx, y: bbox.y + bbox.height }
+    case 's':
+      return { x: cx, y: bbox.y }
+    case 'e':
+      return { x: bbox.x, y: cy }
+    case 'w':
+      return { x: bbox.x + bbox.width, y: cy }
+  }
+}
+
+/** 选中命令的手柄命中（缩放按下与悬停光标共用）：返回索引/手柄/按下原点/锚点；无选中或未命中 null。 */
+function hitSelectedHandle(point: Point): { index: number; handle: ResizeHandleId; origin: Point; anchor: Point } | null {
+  const idx = selectedIndex.value
+  const canvas = canvasRef.value
+  if (idx === null || !canvas || idx >= commands.value.length) return null
+  const box = cmdBBox(commands.value[idx], canvas.width, measureText)
+  const handles = resizeHandles(box)
+  const handle = hitHandle(point, handles, canvas.width)
+  if (!handle) return null
+  const origin = handles.find((h) => h.id === handle)
+  if (!origin) return null
+  return { index: idx, handle, origin: { x: origin.x, y: origin.y }, anchor: resizeAnchor(box, handle) }
+}
+
+/** 落定判定：命令与快照 JSON 全等即无变化（回位拖动/原地按手柄不产 transform 步）。 */
+function sameCmd(a: AnnotationCmd, b: AnnotationCmd): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
 /** 落一个操作步骤：入 history 并清 redoHistory（新分支从当前状态出发，旧重放不可达）。 */
 function commitStep(step: HistoryStep) {
   history.value.push(step)
@@ -724,6 +854,7 @@ function undo() {
   }
   drag.value = null
   moveState.value = null
+  resizeState.value = null
   dropDanglingIndexes()
   redraw()
 }
@@ -750,6 +881,7 @@ function redo() {
   }
   drag.value = null
   moveState.value = null
+  resizeState.value = null
   dropDanglingIndexes()
   redraw()
 }
@@ -762,6 +894,7 @@ function clearAll() {
   commands.value = []
   drag.value = null
   moveState.value = null
+  resizeState.value = null
   selectedIndex.value = null
   editingIndex.value = null
   redraw()
@@ -846,9 +979,10 @@ function onKeydown(e: KeyboardEvent) {
       editingIndex.value = null
       return
     }
-    if (drag.value || moveState.value || selectedIndex.value !== null) {
+    if (drag.value || moveState.value || resizeState.value || selectedIndex.value !== null) {
       drag.value = null
       moveState.value = null
+      resizeState.value = null
       selectedIndex.value = null
       redraw()
     }

@@ -17,12 +17,14 @@
  *     点击反馈三态 toast——成功提示 / write 拒绝提示失败 / API 缺失提示不支持（不触 toBlob）
  *   - 操作历史（方案 47 T2）：add/delete/transform/edit-text/clear 五类步骤——移位
  *     落定一步可撤销、无位移/文案未变不产步、清空一步可撤销整体回放、删除原位插回
+ *   - 缩放手柄（方案 47 T3）：选中后 8 手柄渲染（fillRect×8）、手柄命中优先于移动、
+ *     Shift 等比（角取较大轴）、原地按手柄/缩放中 Escape 不产步、悬停光标映射
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
  *
  * 说明：happy-dom 的 canvas.getContext('2d') 返回 null、无真实绘制——按语义层断言：
  * 把 2d context mock 成记录调用（clearRect/drawImage/beginPath/moveTo/lineTo/stroke/
- * strokeRect/fillText 等；其余绘制方法与属性 setter 一并预埋供后续任务），toBlob 同步
+ * strokeRect/fillRect/fillText 等；其余绘制方法与属性 setter 一并预埋供后续任务），toBlob 同步
  * 回调产出 Blob；全局 Image 用 FakeImage（自然尺寸 800x600，src 赋值异步触发 onload）。
  * 仿 AppsView.test.ts 模式（el-* 轻量 stub）。
  */
@@ -66,6 +68,7 @@ function createRecordingCtx() {
     ellipse: record('ellipse'),
     arc: record('arc'),
     fill: record('fill'),
+    fillRect: record('fillRect'),
     setLineDash: (dash: unknown[]) => {
       calls.push('setLineDash')
       dashLog.push(dash)
@@ -1191,7 +1194,8 @@ describe('ScreenshotPreview 操作历史（方案 47 T2）', () => {
     await canvas.trigger('pointerup')
     expect(historyCount(wrapper)).toBe(1) // 仅 add
 
-    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    // 顶边偏左 (60,20) 按下：选中态下该点距 n 手柄 (70,20) 10px>6px，仍走移动路径（T3 手柄优先）
+    await canvas.trigger('pointerdown', { clientX: 30, clientY: 10 })
     await canvas.trigger('pointermove', { clientX: 50, clientY: 20 })
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await nextTick()
@@ -1286,5 +1290,122 @@ describe('ScreenshotPreview 操作历史（方案 47 T2）', () => {
     await nextTick()
     expect(historyCount(wrapper)).toBe(1)
     expect(redoCount(wrapper)).toBe(1)
+  })
+})
+
+describe('ScreenshotPreview 缩放手柄（方案 47 T3）', () => {
+  type Box = { from: { x: number; y: number }; to: { x: number; y: number } }
+
+  /** 画矩形（画布 from(20,20)→to(120,80)）并点顶边中点选中；返回画布句柄。 */
+  async function selectRect(wrapper: VueWrapper) {
+    await drawShape(wrapper, '.tool-rect')
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 }) // 顶边 (70,20)：未选中→命中命令体
+    await canvas.trigger('pointerup')
+    await nextTick()
+    expect(selectedIdx(wrapper)).toBe(0)
+    return canvas
+  }
+
+  it('选中后重绘渲染 8 个缩放手柄方块（fillRect×8）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    await drawShape(wrapper, '.tool-rect')
+    const canvas = wrapper.find('canvas')
+
+    fakeCtx.calls.length = 0
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    await nextTick()
+    expect(fakeCtx.calls.filter((c) => c === 'fillRect').length).toBe(8)
+    await canvas.trigger('pointerup')
+  })
+
+  it('se 角手柄拖拽缩放：命中优先于移动（from 对角锚定不动）+ 落定一步可撤销', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = await selectRect(wrapper)
+
+    // se 角 (120,80)=client(60,40)：该点同时命中命令体（角点），须手柄优先→缩放而非平移
+    await canvas.trigger('pointerdown', { clientX: 60, clientY: 40 })
+    await canvas.trigger('pointermove', { clientX: 110, clientY: 90 }) // 画布 (220,180)：sx=2、sy=8/3
+    await canvas.trigger('pointerup', { clientX: 110, clientY: 90 })
+    await nextTick()
+
+    const cmd = commandList(wrapper)[0] as unknown as Box
+    expect(cmd.from).toEqual({ x: 20, y: 20 }) // 若误入移动路径 from 会被平移，缩放语义由此锁定
+    expect(cmd.to.x).toBeCloseTo(220, 6)
+    expect(cmd.to.y).toBeCloseTo(180, 6)
+    expect(historyCount(wrapper)).toBe(2) // add + transform
+
+    await wrapper.find('.btn-undo').trigger('click')
+    const back = commandList(wrapper)[0] as unknown as Box
+    expect(back.to).toEqual({ x: 120, y: 80 })
+
+    await wrapper.find('.btn-redo').trigger('click')
+    expect((commandList(wrapper)[0] as unknown as Box).to.x).toBeCloseTo(220, 6)
+  })
+
+  it('Shift 等比：角手柄双轴取绝对值较大倍率（8/3 而非 2）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = await selectRect(wrapper)
+
+    await canvas.trigger('pointerdown', { clientX: 60, clientY: 40 })
+    await canvas.trigger('pointermove', { clientX: 110, clientY: 90, shiftKey: true })
+    await canvas.trigger('pointerup', { clientX: 110, clientY: 90 })
+    await nextTick()
+
+    const cmd = commandList(wrapper)[0] as unknown as Box
+    expect(cmd.from).toEqual({ x: 20, y: 20 })
+    expect(cmd.to.x).toBeCloseTo(286.667, 2) // 20+100×(8/3)
+    expect(cmd.to.y).toBeCloseTo(180, 6)
+  })
+
+  it('原地按手柄松手不产 transform 步（回位语义：sameCmd 判定）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = await selectRect(wrapper)
+
+    await canvas.trigger('pointerdown', { clientX: 60, clientY: 40 })
+    await canvas.trigger('pointerup', { clientX: 60, clientY: 40 })
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(1) // 仅 add
+    expect((commandList(wrapper)[0] as unknown as Box).to).toEqual({ x: 120, y: 80 })
+  })
+
+  it('缩放中 Escape：取消手柄态不落步（预览位移保留，同移动语义）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = await selectRect(wrapper)
+
+    await canvas.trigger('pointerdown', { clientX: 60, clientY: 40 })
+    await canvas.trigger('pointermove', { clientX: 110, clientY: 90 })
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+
+    expect(historyCount(wrapper)).toBe(1)
+    expect(selectedIdx(wrapper)).toBeNull()
+    expect((commandList(wrapper)[0] as unknown as Box).to.x).toBeCloseTo(220, 6)
+
+    // resizeState 已清：松手不再产步
+    await canvas.trigger('pointerup', { clientX: 110, clientY: 90 })
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(1)
+  })
+
+  it('悬停手柄切换光标（se→nwse / n→ns），离开手柄复位', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = await selectRect(wrapper)
+    const el = canvasOf(wrapper)
+
+    await canvas.trigger('pointermove', { clientX: 60, clientY: 40 }) // se (120,80)
+    expect(el.style.cursor).toBe('nwse-resize')
+
+    await canvas.trigger('pointermove', { clientX: 35, clientY: 10 }) // n (70,20)
+    expect(el.style.cursor).toBe('ns-resize')
+
+    await canvas.trigger('pointermove', { clientX: 200, clientY: 100 }) // 远离所有手柄
+    expect(el.style.cursor).toBe('')
   })
 })
