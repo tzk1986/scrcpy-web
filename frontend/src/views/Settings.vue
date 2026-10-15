@@ -361,7 +361,7 @@ async function checkUpdate() {
     const result = await api.checkScrcpyUpdate()
     updateResult.value = result
     if (result.status === 'unknown') ElMessage.warning(result.error ?? '检查更新失败')
-  } catch (e) {
+  } catch {
     ElMessage.error('检查更新失败')
   } finally {
     checkingUpdate.value = false
