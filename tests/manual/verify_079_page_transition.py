@@ -12,6 +12,8 @@
   A3 录屏页切回 Dashboard：无 .el-loading-mask 可见 且 设备行即时保留（不做等待）
   A4 设置页切回 Dashboard：同 A3
   A5 录屏页/设置页自身渲染回归（列表或卡片存在、无错误弹窗）
+  C1 设备页→设置→返回设备→断开：断开落点必须是 Dashboard（0.7.9 修复验证，
+     断不开错回设置/录屏页即回归；返回设备 back/push 两分支均须成立）
 """
 
 from __future__ import annotations
@@ -108,6 +110,28 @@ def main(argv: list[str] | None = None) -> int:
             back = page.locator("a.back-device")
             href_ok = back.count() == 1 and f"/device/{args.device_ip}%3A5555" in back.get_attribute("href")
             check(f"{name} {path} 返回设备链接", bool(href_ok), f"count={back.count()}")
+
+        # C1 断开链路（用户场景复刻，warm store）：Dashboard 行「连接」进设备页 →
+        # 设置 → 返回设备 → 断开，落点必须 Dashboard 且设备行即时保留。
+        # 注意不可 goto 设备页起步：整页 reload 冷重建 store，断开回 Dashboard 走
+        # 冷拉取无即时行可保留，断言语义错位（首版 C1 即栽在此）。
+        enc = dev.replace(":", "%3A")
+        try:
+            page.goto(base + "/", wait_until="domcontentloaded")
+            page.wait_for_selector(".el-table__row", timeout=15000)
+            page.locator(".el-table__row button:has-text('连接')").first.click()
+            page.wait_for_url(f"**/device/{enc}**", timeout=10000)
+            page.locator(".device-info").wait_for(timeout=15000)
+            page.locator("[data-test='device-settings-btn']").click()
+            page.wait_for_url("**/settings?device=**", timeout=10000)
+            page.locator("a.back-device").click()
+            page.wait_for_url(f"**/device/{enc}**", timeout=10000)
+            page.locator("button:has-text('断开')").first.click()
+            page.wait_for_url(base + "/", timeout=10000)
+            rows = page.locator(".el-table__row").count()
+            check("C1 断开落 Dashboard+列表即时保留", rows >= 1, f"rows={rows}")
+        except Exception as e:  # noqa: BLE001
+            check("C1 断开落 Dashboard+列表即时保留", False, repr(e)[:120])
 
         browser.close()
 
