@@ -67,6 +67,11 @@ def main(argv: list[str] | None = None) -> int:
             check("A2 冷启动出设备行", False, repr(e)[:120])
             rows0 = 0
 
+        # B1 菜单不折叠：「设置」直接可见、无「…」溢出触发器（0.7.9 ellipsis=false）
+        set_item = page.locator(".el-menu-item:has-text('设置')").first
+        check("B1 设置菜单项常驻可见", set_item.is_visible())
+        check("B1b 无溢出折叠触发器", page.locator(".el-sub-menu__icon-more").count() == 0)
+
         for menu_text, path, name in [("录屏", "/recordings", "A3"), ("设置", "/settings", "A4")]:
             # 必须走 SPA 菜单切换（goto 会整页 reload 冷重建 store，破坏 warm 前提）。
             # headless 字体度量下 EP menu ellipsis 可能把溢出项收进「…」弹层（真机正常），
@@ -95,6 +100,14 @@ def main(argv: list[str] | None = None) -> int:
                 vis == 0 and rows >= 1,
                 f"mask_total={masks} visible={vis} rows={rows}",
             )
+
+        # B2 返回设备链接：经 ?device= 进入录屏/设置页时页头出现且指向设备详情
+        dev = args.device_ip + ":5555"
+        for path, name in [("/recordings", "B2a"), ("/settings", "B2b")]:
+            page.goto(f"{base}{path}?device={dev}", wait_until="domcontentloaded")
+            back = page.locator("a.back-device")
+            href_ok = back.count() == 1 and f"/device/{args.device_ip}%3A5555" in back.get_attribute("href")
+            check(f"{name} {path} 返回设备链接", bool(href_ok), f"count={back.count()}")
 
         browser.close()
 
