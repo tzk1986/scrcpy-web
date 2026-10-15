@@ -15,6 +15,8 @@
  *     马赛克（拖拽提交无 color、重绘离屏缩-放 drawImage≥2、预览虚线框、两轴 ≥2px 守卫）
  *   - 剪贴板（T5）：复制按钮/Ctrl+C → ClipboardItem(image/png) 经 clipboard.write 写出，
  *     点击反馈三态 toast——成功提示 / write 拒绝提示失败 / API 缺失提示不支持（不触 toBlob）
+ *   - 操作历史（方案 47 T2）：add/delete/transform/edit-text/clear 五类步骤——移位
+ *     落定一步可撤销、无位移/文案未变不产步、清空一步可撤销整体回放、删除原位插回
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
  *
@@ -200,6 +202,11 @@ function commandList(
 /** 读取组件暴露的 redo 栈长度（双栈语义断言用）。 */
 function redoCount(wrapper: VueWrapper): number {
   return (wrapper.vm as unknown as { getRedoCount: () => number }).getRedoCount()
+}
+
+/** 读取组件暴露的操作历史步数（方案 47 T2 步骤语义断言用）。 */
+function historyCount(wrapper: VueWrapper): number {
+  return (wrapper.vm as unknown as { getHistoryCount: () => number }).getHistoryCount()
 }
 
 /** 读取组件暴露的默认字号比例（滚轮/滑块调参断言用）。 */
@@ -1142,5 +1149,142 @@ describe('ScreenshotPreview 剪贴板（T5）', () => {
     await nextTick()
 
     expect(write).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ScreenshotPreview 操作历史（方案 47 T2）', () => {
+  type Box = { from: { x: number; y: number }; to: { x: number; y: number } }
+
+  it('有位移的拖动落定恰产一步 transform：undo 回 pointerdown 位、redo 回位移态、再 undo 移除命令', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    await drawShape(wrapper, '.tool-rect') // from(20,20) to(120,80)
+    const canvas = wrapper.find('canvas')
+
+    // 上边框 (70,20) 按住拖 +20,+20（client 35,10 → 45,20）
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    await canvas.trigger('pointermove', { clientX: 45, clientY: 20 })
+    await canvas.trigger('pointerup', { clientX: 45, clientY: 20 })
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(2) // add + transform
+    expect((commandList(wrapper)[0] as unknown as Box).from).toEqual({ x: 40, y: 40 })
+
+    await wrapper.find('.btn-undo').trigger('click')
+    expect(commandCount(wrapper)).toBe(1)
+    expect((commandList(wrapper)[0] as unknown as Box).from).toEqual({ x: 20, y: 20 })
+
+    await wrapper.find('.btn-redo').trigger('click')
+    expect((commandList(wrapper)[0] as unknown as Box).from).toEqual({ x: 40, y: 40 })
+
+    await wrapper.find('.btn-undo').trigger('click') // 撤 transform
+    await wrapper.find('.btn-undo').trigger('click') // 撤 add
+    expect(commandCount(wrapper)).toBe(0)
+  })
+
+  it('原地按下松手不产步骤；拖动中途 Escape 取消不落步（命令停在位移位）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    await drawShape(wrapper, '.tool-rect')
+    const canvas = wrapper.find('canvas')
+
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    await canvas.trigger('pointerup')
+    expect(historyCount(wrapper)).toBe(1) // 仅 add
+
+    await canvas.trigger('pointerdown', { clientX: 35, clientY: 10 })
+    await canvas.trigger('pointermove', { clientX: 50, clientY: 20 })
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(1) // Escape 取消：位移保留但不落步（既有语义不变）
+    expect(selectedIdx(wrapper)).toBeNull()
+  })
+
+  it('清空一步可撤销：undo 整体回放、redo 再清空；清空后落新命令清 redo', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = wrapper.find('canvas')
+    await drawShape(wrapper, '.tool-rect')
+    // 第二笔起点避开 rect（起点压上层命令会进入移动而非新绘）
+    await wrapper.find('.tool-pen').trigger('click')
+    await canvas.trigger('pointerdown', { clientX: 200, clientY: 100 })
+    await canvas.trigger('pointermove', { clientX: 260, clientY: 140 })
+    await canvas.trigger('pointerup', { clientX: 260, clientY: 140 })
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(2)
+
+    await wrapper.find('.btn-clear').trigger('click')
+    expect(commandCount(wrapper)).toBe(0)
+    expect(historyCount(wrapper)).toBe(3) // add + add + clear
+
+    await wrapper.find('.btn-undo').trigger('click')
+    expect(commandCount(wrapper)).toBe(2)
+    expect(commandList(wrapper).map((c) => c.kind)).toEqual(['rect', 'pen'])
+
+    await wrapper.find('.btn-redo').trigger('click')
+    expect(commandCount(wrapper)).toBe(0)
+
+    await drawShape(wrapper, '.tool-rect') // 新分支：旧 redo 不可达
+    expect(redoCount(wrapper)).toBe(0)
+    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
+  })
+
+  it('删除命令产 delete 步：undo 原位插回（中间层次序恢复）', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    const canvas = wrapper.find('canvas')
+    await drawShape(wrapper, '.tool-rect')
+    // 椭圆画在远处（避开 rect，二次同起点会命中 rect 进入移动）
+    await wrapper.find('.tool-ellipse').trigger('click')
+    await canvas.trigger('pointerdown', { clientX: 100, clientY: 60 })
+    await canvas.trigger('pointermove', { clientX: 160, clientY: 110 })
+    await canvas.trigger('pointerup', { clientX: 160, clientY: 110 })
+    await nextTick()
+
+    // 画布角点 (20,20)（client 10,10）：rect 角命中 index 0
+    await canvas.trigger('pointerdown', { clientX: 10, clientY: 10 })
+    await canvas.trigger('pointerup')
+    expect(selectedIdx(wrapper)).toBe(0)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1)
+    expect(historyCount(wrapper)).toBe(3)
+
+    await wrapper.find('.btn-undo').trigger('click')
+    expect(commandCount(wrapper)).toBe(2)
+    expect(commandList(wrapper).map((c) => c.kind)).toEqual(['rect', 'ellipse'])
+  })
+
+  it('文字编辑产 edit-text 步：undo 回原文案；文案未变确认不产步、不清 redo', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('告警')
+    await wrapper.find('.text-confirm').trigger('click')
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 50, clientY: 30 })
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(1) // add
+
+    type Txt = { text: string }
+    await canvas.trigger('dblclick', { clientX: 55, clientY: 32 })
+    const input = wrapper.find('input.text-draft')
+    await input.setValue('严重告警')
+    await wrapper.find('.text-confirm').trigger('click')
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(2) // add + edit-text
+    expect((commandList(wrapper)[0] as unknown as Txt).text).toBe('严重告警')
+
+    await wrapper.find('.btn-undo').trigger('click')
+    expect(commandCount(wrapper)).toBe(1)
+    expect((commandList(wrapper)[0] as unknown as Txt).text).toBe('告警')
+    expect(redoCount(wrapper)).toBe(1)
+
+    // 再进编辑、原文案直接确认：不产步且不清 redo（history 仍 1=上一步已移入 redo）
+    await canvas.trigger('dblclick', { clientX: 55, clientY: 32 })
+    await wrapper.find('.text-confirm').trigger('click')
+    await nextTick()
+    expect(historyCount(wrapper)).toBe(1)
+    expect(redoCount(wrapper)).toBe(1)
   })
 })

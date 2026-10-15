@@ -80,8 +80,8 @@
         </el-button>
         <span class="toolbar-sep" aria-hidden="true" />
         <!-- 编辑组（撤销/重做/清空） -->
-        <el-button class="btn-undo" :disabled="commands.length === 0" @click="undo">撤销</el-button>
-        <el-button class="btn-redo" :disabled="redoStack.length === 0" @click="redo">重做</el-button>
+        <el-button class="btn-undo" :disabled="history.length === 0" @click="undo">撤销</el-button>
+        <el-button class="btn-redo" :disabled="redoHistory.length === 0" @click="redo">重做</el-button>
         <el-button class="btn-clear" :disabled="commands.length === 0" @click="clearAll">清空</el-button>
         <span class="toolbar-spacer" />
         <!-- 输出组（复制/保存/导出） -->
@@ -202,15 +202,29 @@ interface DragState {
   points: Point[]
 }
 
+/** 操作历史步骤（方案 47 A2）：cmd/before/after/snapshot 均为深拷贝快照。 */
+type HistoryStep =
+  | { kind: 'add'; cmd: AnnotationCmd }
+  | { kind: 'delete'; cmd: AnnotationCmd; index: number }
+  | { kind: 'transform'; index: number; before: AnnotationCmd; after: AnnotationCmd }
+  | { kind: 'edit-text'; index: number; before: AnnotationCmd; after: AnnotationCmd }
+  | { kind: 'clear'; snapshot: AnnotationCmd[] }
+
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
 const tool = ref<Tool>('pen')
 /** 标注颜色（画笔/箭头/矩形/椭圆/荧光笔/文字/序号共用；马赛克无颜色参数）。 */
 const strokeColor = ref('#ff3b30')
-/** 已提交命令栈。 */
+/** 已提交命令栈（渲染源；history 步骤以深拷贝快照与之隔离，见方案 47 T2）。 */
 const commands = ref<AnnotationCmd[]>([])
-/** 撤销出栈的命令（重做栈；落新命令即清空，redo 出栈回放）。 */
-const redoStack = ref<AnnotationCmd[]>([])
+/**
+ * 操作历史（方案 47 R1）：步骤粒度 = 一次用户操作而非一条命令——
+ * add 新绘 / delete 删除 / transform 移位与缩放落定 / edit-text 双击改文案 / clear 清空。
+ * 步骤内一律存深拷贝快照，undo 反向回放、redo 正向回放。
+ */
+const history = ref<HistoryStep[]>([])
+/** 已撤销步骤的重放分支（落新步即清空，同旧 redoStack 语义）。 */
+const redoHistory = ref<HistoryStep[]>([])
 /** 文字工具：输入框草稿与「确认」后的待放置文字。 */
 const textDraft = ref('')
 const confirmedText = ref('')
@@ -219,8 +233,11 @@ const drag = ref<DragState | null>(null)
 const hoverPoint = ref<Point | null>(null)
 /** 当前选中的命令索引（点击命中 → 可拖动/Delete 删除）。 */
 const selectedIndex = ref<number | null>(null)
-/** 移动中的命令（pointerdown 命中进入；pointermove 实时平移，pointerup 结束）。 */
-const moveState = ref<{ index: number; last: Point } | null>(null)
+/**
+ * 移动中的命令（pointerdown 命中进入；pointermove 实时平移，pointerup 结束）。
+ * before=pointerdown 快照、moved=是否发生过位移——仅位移落定才产 transform 步。
+ */
+const moveState = ref<{ index: number; last: Point; before: AnnotationCmd; moved: boolean } | null>(null)
 /** 双击文字进入的编辑态（confirmText 原地更新该命令，不新增）。 */
 const editingIndex = ref<number | null>(null)
 
@@ -312,7 +329,8 @@ watch(
   (visible) => {
     if (visible) {
       commands.value = []
-      redoStack.value = []
+      history.value = []
+      redoHistory.value = []
       drag.value = null
       moveState.value = null
       selectedIndex.value = null
@@ -488,7 +506,7 @@ function onPointerDown(e: PointerEvent) {
   const hit = canvas ? hitTest(commands.value, point, canvas.width, measureText) : null
   if (hit !== null) {
     selectedIndex.value = hit
-    moveState.value = { index: hit, last: point }
+    moveState.value = { index: hit, last: point, before: snapCmd(commands.value[hit]), moved: false }
     drag.value = null
     redraw()
     return
@@ -542,7 +560,12 @@ function onPointerMove(e: PointerEvent) {
   if (move) {
     const cmd = commands.value[move.index]
     if (cmd) {
-      translateCmd(cmd, point.x - move.last.x, point.y - move.last.y)
+      const dx = point.x - move.last.x
+      const dy = point.y - move.last.y
+      if (dx !== 0 || dy !== 0) {
+        translateCmd(cmd, dx, dy)
+        move.moved = true
+      }
       move.last = point
     }
     redraw()
@@ -561,7 +584,14 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp() {
+  const move = moveState.value
   moveState.value = null
+  if (move?.moved) {
+    const cmd = commands.value[move.index]
+    if (cmd) {
+      commitStep({ kind: 'transform', index: move.index, before: move.before, after: snapCmd(cmd) })
+    }
+  }
   const d = drag.value
   drag.value = null
   if (!d) return
@@ -634,10 +664,36 @@ function onDblclick(e: MouseEvent) {
   redraw()
 }
 
-/** 落新命令：入栈并清空 redo 栈（新分支从当前状态出发，旧 redo 不可达）。 */
+/**
+ * 命令深拷贝快照。手写而不用 structuredClone：ref 深层 reactive 下取出的命令是
+ * Proxy，structuredClone 对 Proxy 抛 DataCloneError（happy-dom/vitest 实证）。
+ */
+function snapCmd(cmd: AnnotationCmd): AnnotationCmd {
+  switch (cmd.kind) {
+    case 'pen':
+    case 'highlight':
+      return { ...cmd, points: cmd.points.map((p) => ({ x: p.x, y: p.y })) }
+    case 'arrow':
+    case 'rect':
+    case 'ellipse':
+    case 'mosaic':
+      return { ...cmd, from: { x: cmd.from.x, y: cmd.from.y }, to: { x: cmd.to.x, y: cmd.to.y } }
+    case 'text':
+    case 'number':
+      return { ...cmd, at: { x: cmd.at.x, y: cmd.at.y } }
+  }
+}
+
+/** 落一个操作步骤：入 history 并清 redoHistory（新分支从当前状态出发，旧重放不可达）。 */
+function commitStep(step: HistoryStep) {
+  history.value.push(step)
+  redoHistory.value = []
+}
+
+/** 落新命令：入渲染栈并记一步 add（快照存深拷贝，与后续原地 mutate 隔离）。 */
 function pushCmd(cmd: AnnotationCmd) {
   commands.value.push(cmd)
-  redoStack.value = []
+  commitStep({ kind: 'add', cmd: snapCmd(cmd) })
 }
 
 /** 栈变化后：越界的选中/编辑索引归零（被移除的命令不再可选）。 */
@@ -646,31 +702,64 @@ function dropDanglingIndexes() {
   if (editingIndex.value !== null && editingIndex.value >= commands.value.length) editingIndex.value = null
 }
 
-/** 撤销：命令栈出栈入 redo 栈并重绘。 */
+/** 撤销：末步反向回放（add→移除；delete→原位插回；transform/edit-text→还原 before；clear→整体回放快照）。 */
 function undo() {
-  const cmd = commands.value.pop()
-  if (!cmd) return
-  redoStack.value.push(cmd)
+  const step = history.value.pop()
+  if (!step) return
+  redoHistory.value.push(step)
+  switch (step.kind) {
+    case 'add':
+      commands.value.pop()
+      break
+    case 'delete':
+      commands.value.splice(step.index, 0, snapCmd(step.cmd))
+      break
+    case 'transform':
+    case 'edit-text':
+      commands.value[step.index] = snapCmd(step.before)
+      break
+    case 'clear':
+      commands.value = step.snapshot.map((c) => snapCmd(c))
+      break
+  }
   drag.value = null
   moveState.value = null
   dropDanglingIndexes()
   redraw()
 }
 
-/** 重做：redo 栈出栈回放并重绘。 */
+/** 重做：步正向回放（与 undo 对称）。 */
 function redo() {
-  const cmd = redoStack.value.pop()
-  if (!cmd) return
-  commands.value.push(cmd)
+  const step = redoHistory.value.pop()
+  if (!step) return
+  history.value.push(step)
+  switch (step.kind) {
+    case 'add':
+      commands.value.push(snapCmd(step.cmd))
+      break
+    case 'delete':
+      commands.value.splice(step.index, 1)
+      break
+    case 'transform':
+    case 'edit-text':
+      commands.value[step.index] = snapCmd(step.after)
+      break
+    case 'clear':
+      commands.value = []
+      break
+  }
   drag.value = null
   moveState.value = null
+  dropDanglingIndexes()
   redraw()
 }
 
-/** 清空：命令栈与 redo 栈双双归零、交互态复位并重绘（回到纯底图）。 */
+/** 清空：记一步 clear（快照全量，可一步撤销）后归零、交互态复位并重绘。 */
 function clearAll() {
+  if (commands.value.length > 0) {
+    commitStep({ kind: 'clear', snapshot: commands.value.map((c) => snapCmd(c)) })
+  }
   commands.value = []
-  redoStack.value = []
   drag.value = null
   moveState.value = null
   selectedIndex.value = null
@@ -678,23 +767,30 @@ function clearAll() {
   redraw()
 }
 
-/** 删除当前选中的命令（splice 出栈；redo 栈清空——分支不再可达）。 */
+/** 删除当前选中的命令：记一步 delete（undo 原位插回）。 */
 function deleteSelected() {
   const idx = selectedIndex.value
   if (idx === null || idx >= commands.value.length) return
-  commands.value.splice(idx, 1)
-  redoStack.value = []
+  const removed = commands.value.splice(idx, 1)[0]
+  commitStep({ kind: 'delete', cmd: snapCmd(removed), index: idx })
   selectedIndex.value = null
   if (editingIndex.value !== null && editingIndex.value >= commands.value.length) editingIndex.value = null
   redraw()
 }
 
-/** 文字工具「确认」：编辑态 → 原地更新该命令文案（无新增）；否则提升草稿为待放置文字。 */
+/**
+ * 文字工具「确认」：编辑态 → 原地更新该命令文案并记一步 edit-text（文案未变不落步）；
+ * 否则提升草稿为待放置文字。
+ */
 function confirmText() {
   const idx = editingIndex.value
   if (idx !== null && idx < commands.value.length) {
     const cmd = commands.value[idx]
-    if (cmd.kind === 'text') cmd.text = textDraft.value
+    if (cmd.kind === 'text' && cmd.text !== textDraft.value) {
+      const before = snapCmd(cmd)
+      cmd.text = textDraft.value
+      commitStep({ kind: 'edit-text', index: idx, before, after: snapCmd(cmd) })
+    }
     confirmedText.value = textDraft.value
     editingIndex.value = null
     redraw()
@@ -862,7 +958,7 @@ function copyToClipboard() {
  * 当前已提交标注数（供父组件判断是否存在未导出的标注；
  * 测试亦用它断言撤销/清空的命令栈重置语义）。
  *
- * getCommands / getRedoCount：命令栈快照与 redo 栈长度；
+ * getCommands / getRedoCount / getHistoryCount：命令栈快照与操作历史/重放步数；
  * getDefaultFontRatio / getDefaultLineRatio：滑块/滚轮调参后的默认比例；
  * getSelectedIndex：当前选中索引（命中选中/移动/删除断言用）。
  *
@@ -871,7 +967,8 @@ function copyToClipboard() {
 defineExpose({
   getAnnotationCount: () => commands.value.length,
   getCommands: () => commands.value,
-  getRedoCount: () => redoStack.value.length,
+  getRedoCount: () => redoHistory.value.length,
+  getHistoryCount: () => history.value.length,
   getDefaultFontRatio: () => fontRatio.value,
   getDefaultLineRatio: () => lineRatio.value,
   getSelectedIndex: () => selectedIndex.value,
