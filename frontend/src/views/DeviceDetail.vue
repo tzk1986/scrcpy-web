@@ -131,10 +131,11 @@ onUnmounted(() => {
   debugStore.closeSession()
 })
 
-/** 断开设备连接，返回列表页。 */
+/** 断开设备连接，返回 Dashboard。不用 history.back()：历史栈上一条
+ *  未必是列表页（如经「查看录屏」/设置 + 返回设备进入），落点须显式。 */
 function disconnect() {
   debugStore.closeSession()
-  window.history.back()
+  router.push('/')
 }
 
 /** 跳转设备文件管理独立页（方案 39 T5）。 */

@@ -5,6 +5,7 @@
  *   - 挂载加载列表：设备列原样 / 旧格式「未知设备（旧版产物）」/ 大小 1 位小数 /
  *     时间本地化 / 行内播放·下载·删除按钮
  *   - ?device= 过滤：仅该设备 + 「仅看」条 + 清除恢复全量；「返回设备」链接
+ *     + 点击智能导航（上一条恰为设备页时 back 不垫栈，否则回落 push）
  *   - 下载 href：recordingFileUrl 编码文件名
  *   - 播放弹层：video src 指向文件端点；webm 导出按钮随支持面启用/禁用
  *   - 删除：二次确认 → api → 重拉；失败 → error toast 且列表不消失
@@ -38,8 +39,10 @@ vi.mock('@/utils/webmExporter', () => exporter)
 const routeMock = vi.hoisted(() => ({
   current: { query: {} as Record<string, string> },
 }))
+const routerMock = vi.hoisted(() => ({ push: vi.fn() }))
 vi.mock('vue-router', () => ({
   useRoute: () => routeMock.current,
+  useRouter: () => routerMock,
 }))
 
 import Recordings from './Recordings.vue'
@@ -125,6 +128,31 @@ describe('Recordings 页', () => {
     const w2 = mountPage()
     await flushPromises()
     expect(w2.find('a.back-device').exists()).toBe(false)
+    w2.unmount()
+  })
+
+  it('返回设备链接点击：上一条历史恰为设备页时 back 不垫栈；否则回落 push', async () => {
+    const backSpy = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    Object.defineProperty(window.history, 'state', {
+      configurable: true,
+      value: { back: '/device/192.168.8.18%3A5555' },
+    })
+    const w = mountPage('192.168.8.18:5555')
+    await flushPromises()
+    await w.find('a.back-device').trigger('click')
+    expect(backSpy).toHaveBeenCalled()
+    expect(routerMock.push).not.toHaveBeenCalled()
+    w.unmount()
+    backSpy.mockRestore()
+
+    Object.defineProperty(window.history, 'state', {
+      configurable: true,
+      value: { back: null },
+    })
+    const w2 = mountPage('192.168.8.18:5555')
+    await flushPromises()
+    await w2.find('a.back-device').trigger('click')
+    expect(routerMock.push).toHaveBeenCalledWith('/device/192.168.8.18%3A5555')
     w2.unmount()
   })
 

@@ -41,8 +41,11 @@ vi.mock('@/services/api', () => ({ api: mockApi }))
 const routeMock = vi.hoisted(() => ({
   current: { query: {} as Record<string, unknown> },
 }))
+/** 返回设备智能导航（不垫栈 back / 回落 push）断言用 */
+const routerPushMock = vi.hoisted(() => vi.fn())
 vi.mock('vue-router', () => ({
   useRoute: () => routeMock.current,
+  useRouter: () => ({ push: routerPushMock }),
 }))
 
 const codecMock = vi.hoisted(() => ({ isH265DecoderSupported: vi.fn() }))
@@ -302,6 +305,31 @@ describe('Settings.vue', () => {
     routeMock.current = { query: {} }
     const w2 = await mountSettings()
     expect(w2.find('a.back-device').exists()).toBe(false)
+    w1.unmount()
+    w2.unmount()
+  })
+
+  it('返回设备链接点击：上一条历史恰为设备页时 back 不垫栈；否则回落 push', async () => {
+    const backSpy = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    Object.defineProperty(window.history, 'state', {
+      configurable: true,
+      value: { back: '/device/d1' },
+    })
+    const w1 = await mountSettings('d1')
+    await w1.find('a.back-device').trigger('click')
+    expect(backSpy).toHaveBeenCalled()
+    expect(routerPushMock).not.toHaveBeenCalled()
+    w1.unmount()
+    backSpy.mockRestore()
+
+    Object.defineProperty(window.history, 'state', {
+      configurable: true,
+      value: { back: null },
+    })
+    const w2 = await mountSettings('d1')
+    await w2.find('a.back-device').trigger('click')
+    expect(routerPushMock).toHaveBeenCalledWith('/device/d1')
+    w2.unmount()
   })
 
   it('挂载拉取设置并回填两个表单组件（后端键名）+ h265 探测透传', async () => {

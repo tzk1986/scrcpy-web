@@ -16,6 +16,7 @@
         v-if="backDeviceId"
         class="back-device"
         :to="`/device/${encodeURIComponent(backDeviceId)}`"
+        @click="onBackDevice"
       >
         <el-button class="btn-back-device" size="small">← 返回设备</el-button>
       </router-link>
@@ -163,7 +164,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import RecordingFieldSet, {
@@ -197,6 +198,20 @@ const route = useRoute()
 const backDeviceId = computed(() =>
   typeof route.query.device === 'string' ? route.query.device : ''
 )
+
+const router = useRouter()
+
+/** 上一条历史恰为目标设备页时用 back（不垫栈，保护断开等依赖 back 落点的页面）；
+ *  直达/菜单带参进入时栈内无该设备页，回落 push。 */
+function onBackDevice(e: MouseEvent) {
+  e.preventDefault()
+  const target = `/device/${encodeURIComponent(backDeviceId.value)}`
+  if (window.history.state?.back === target) {
+    window.history.back()
+  } else {
+    router.push(target)
+  }
+}
 
 const h265Supported = ref(false)
 const saving = ref(false)

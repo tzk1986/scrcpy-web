@@ -19,7 +19,12 @@
     <div class="page-header">
       <h2>录屏</h2>
       <div class="header-actions">
-        <router-link v-if="backDeviceId" class="back-device" :to="`/device/${encodeURIComponent(backDeviceId)}`">
+        <router-link
+          v-if="backDeviceId"
+          class="back-device"
+          :to="`/device/${encodeURIComponent(backDeviceId)}`"
+          @click="onBackDevice"
+        >
           <el-button class="btn-back-device" size="small">← 返回设备</el-button>
         </router-link>
         <el-button class="btn-refresh" @click="load">刷新</el-button>
@@ -72,7 +77,7 @@ export function formatSizeMB(bytes: number): string {
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type RecordingFileItem } from '@/services/api'
 import { exportWebmClip, isWebmRecorderSupported } from '@/utils/webmExporter'
@@ -105,6 +110,20 @@ const playingUrl = computed(() =>
 const backDeviceId = computed(() =>
   typeof route.query.device === 'string' ? route.query.device : ''
 )
+
+const router = useRouter()
+
+/** 上一条历史恰为目标设备页时用 back（不垫栈，保护断开等依赖 back 落点的页面）；
+ *  直达/菜单带参进入时栈内无该设备页，回落 push。 */
+function onBackDevice(e: MouseEvent) {
+  e.preventDefault()
+  const target = `/device/${encodeURIComponent(backDeviceId.value)}`
+  if (window.history.state?.back === target) {
+    window.history.back()
+  } else {
+    router.push(target)
+  }
+}
 
 /** 与后端 _sanitize_device 同规则：非法字符 → `-`（IP:port 查询匹配落盘名 dev 段）。 */
 function sanitizeDeviceId(id: string): string {

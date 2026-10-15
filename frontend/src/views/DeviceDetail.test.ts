@@ -6,7 +6,7 @@
  *   - 挂载：拉取设备信息（分辨率注入 VideoPlayer）、创建调试会话
  *   - getDevice 失败时回退默认分辨率 1080x1920 且不抛错
  *   - DebugPanel 上报停靠位置切换布局方向（column-layout）
- *   - 点击「断开」关闭调试会话并返回上一页
+ *   - 点击「断开」关闭调试会话并显式返回 Dashboard（不依赖历史栈）
  *   - 截图按钮（方案 37 B7 改道）：抓帧结果打开 ScreenshotPreview 预览弹窗（不再直接下载）
  *
  * 说明：VideoPlayer / DebugPanel / ScreenshotPreview 以轻量 stub 替代，避免拖入视频流、
@@ -163,9 +163,8 @@ describe('DeviceDetail', () => {
     expect(wrapper.find('.content').classes()).toContain('column-layout')
   })
 
-  it('点击「断开」关闭调试会话并返回上一页', async () => {
+  it('点击「断开」关闭调试会话并显式返回 Dashboard（不依赖历史栈）', async () => {
     mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
-    const backSpy = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     const wrapper = await mountView()
 
     const disconnectBtn = wrapper.findAll('button').find((b) => b.text().includes('断开'))
@@ -174,7 +173,7 @@ describe('DeviceDetail', () => {
     await flushPromises()
 
     expect(mockApi.closeDebugSession).toHaveBeenCalledWith('s1')
-    expect(backSpy).toHaveBeenCalled()
+    expect(routerPushMock).toHaveBeenCalledWith('/')
 
     wrapper.unmount()
   })
