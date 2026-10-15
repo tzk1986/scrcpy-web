@@ -33,7 +33,13 @@ from typing import Any
 import pytest
 
 from app.application.device_service import ConnectAttempt, ScanResult
-from app.core.exceptions import AdbError, InvalidScanRangeError, PairError, ScanBusyError
+from app.core.exceptions import (
+    AdbError,
+    DeviceNotReadyError,
+    InvalidScanRangeError,
+    PairError,
+    ScanBusyError,
+)
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
 from app.interfaces.http import devices as devices_module
@@ -98,6 +104,7 @@ class FakeDeviceService:
         )
         self.scan_error: Exception | None = None
         self.pair_error: Exception | None = None
+        self.connect_error: Exception | None = None
         self._on_device_connected: list[Any] = []
         self._on_device_disconnected: list[Any] = []
 
@@ -133,6 +140,8 @@ class FakeDeviceService:
 
     async def connect_tcp(self, ip: str, port: int = 5555) -> str:
         self.calls.append(("connect_tcp", ip, port))
+        if self.connect_error is not None:
+            raise self.connect_error
         return self.new_device_id
 
     async def pair_tcp(self, ip: str, port: int, code: str) -> None:
@@ -353,6 +362,19 @@ def test_connect_device_default_port(fake: FakeDeviceService) -> None:
 
     assert response.status_code == 200
     assert fake.calls == [("connect_tcp", "192.168.1.5", 5555)]
+
+
+def test_connect_device_not_ready_passes_400(fake: FakeDeviceService) -> None:
+    """假成功守卫（路线图 15）：DeviceNotReadyError → 400 + 中文指引原样回显。"""
+    fake.connect_error = DeviceNotReadyError.classify("192.168.8.25:5555", "offline")
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/connect", params={"ip": "192.168.8.25"})
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "DEVICE_NOT_READY"
+    assert "offline" in body["error"]["message"]
 
 
 # ---------------------------------------------------------------------------

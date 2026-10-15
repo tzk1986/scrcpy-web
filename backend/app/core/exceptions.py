@@ -122,6 +122,42 @@ class DeviceUnreachableError(OpenScrcpyException):
         super().__init__(f"设备 {host}:{port} 不可达：{reason}", code="DEVICE_UNREACHABLE")
 
 
+class DeviceNotReadyError(OpenScrcpyException):
+    """adb 声称已连接但 transport 实际不可用（路线图 15 假成功守卫）。
+
+    `adb connect` 对已登记地址回 already connected（不尝试重连），旧判定
+    字符串命中即成功；而 offline/unauthorized 行会被设备列表过滤——用户
+    见「连接成功」却无设备。connect_tcp 对 already connected 分支补设备表
+    状态复核，非 device 态经此异常回明确中文指引。
+    """
+
+    OFFLINE_HINT = (
+        "设备 {device} 状态为 offline：TCP 已建立但设备端 adbd 握手异常，"
+        "不会出现在设备列表。请在设备端关闭再打开网络 ADB 调试后重试；"
+        "仍不行请重启设备或在主机执行 adb kill-server 后重连"
+    )
+    UNAUTHORIZED_HINT = (
+        "设备 {device} 等待授权：请在设备屏幕上确认允许调试的弹窗"
+        "（首次连接或未信任本机时会停留在该状态）后重试"
+    )
+    ABSENT_HINT = (
+        "设备 {device} 显示已连接但未出现在设备表中：请先在设备列表"
+        "执行「断开」后重新连接"
+    )
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="DEVICE_NOT_READY")
+
+    @classmethod
+    def classify(cls, device_id: str, state: str | None) -> "DeviceNotReadyError":
+        """设备表状态（None=不在表）→ 分类 DeviceNotReadyError。"""
+        if state == "offline":
+            return cls(cls.OFFLINE_HINT.format(device=device_id))
+        if state == "unauthorized":
+            return cls(cls.UNAUTHORIZED_HINT.format(device=device_id))
+        return cls(cls.ABSENT_HINT.format(device=device_id))
+
+
 class InvalidPairRequestError(OpenScrcpyException):
     """无线调试配对请求参数非法（方案 47 T4）。
 

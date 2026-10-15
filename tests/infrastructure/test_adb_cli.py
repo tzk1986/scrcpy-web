@@ -19,7 +19,12 @@ from ipaddress import ip_network
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.infrastructure.adb.cli import AdbCliDriver
-from app.core.exceptions import AdbError, DeviceUnreachableError, PairError
+from app.core.exceptions import (
+    AdbError,
+    DeviceNotReadyError,
+    DeviceUnreachableError,
+    PairError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -331,9 +336,15 @@ class TestTcpConnection:
 
     @pytest.mark.asyncio
     async def test_connect_tcp_default_timeout_stays_none(self):
-        """缺省不传 timeout → _run 收到 None（回落配置 30s，既有语义不变）。"""
+        """缺省不传 timeout → _run 收到 None（回落配置 30s，既有语义不变）。
+
+        already connected 分支带状态复核（路线图 15），故二次 _run 为 devices。
+        """
         driver = AdbCliDriver()
-        run_mock = AsyncMock(return_value="already connected to 192.168.1.5:5555")
+        run_mock = AsyncMock(side_effect=[
+            "already connected to 192.168.1.5:5555",
+            "List of devices attached\n192.168.1.5:5555\tdevice\n",
+        ])
         with (
             patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
             patch.object(driver, '_run', new=run_mock),
@@ -341,7 +352,50 @@ class TestTcpConnection:
             device_id = await driver.connect_tcp("192.168.1.5", 5555)
 
         assert device_id == "192.168.1.5:5555"
-        run_mock.assert_awaited_once_with("connect", "192.168.1.5:5555", timeout=None)
+        assert run_mock.await_args_list[0].args == ("connect", "192.168.1.5:5555")
+        assert run_mock.await_args_list[0].kwargs == {"timeout": None}
+
+    @pytest.mark.asyncio
+    async def test_connect_tcp_fresh_connected_skips_state_recheck(self):
+        """非 already connected 的新连接成功不做 devices 复核（scan 路径零额外开销）。"""
+        driver = AdbCliDriver()
+        run_mock = AsyncMock(return_value="connected to 192.168.1.5:5555")
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+            patch.object(driver, '_run', new=run_mock),
+        ):
+            device_id = await driver.connect_tcp("192.168.1.5", 5555)
+        assert device_id == "192.168.1.5:5555"
+        run_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("devices_state", "hint"),
+        [
+            pytest.param("offline", "offline", id="offline"),
+            pytest.param("unauthorized", "授权", id="unauthorized"),
+            pytest.param(None, "断开", id="absent"),
+        ],
+    )
+    async def test_connect_tcp_already_connected_bad_state_fails(self, devices_state, hint):
+        """already connected + 设备表状态非 device → 假成功守卫报 DeviceNotReadyError（路线图 15）。"""
+        driver = AdbCliDriver()
+        table = (
+            "List of devices attached\n"
+            + (f"192.168.1.5:5555\t{devices_state}\n" if devices_state else "")
+        )
+        run_mock = AsyncMock(side_effect=[
+            "already connected to 192.168.1.5:5555",
+            table,
+        ])
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+            patch.object(driver, '_run', new=run_mock),
+        ):
+            with pytest.raises(DeviceNotReadyError) as exc:
+                await driver.connect_tcp("192.168.1.5", 5555)
+        assert hint in exc.value.message
+        assert exc.value.code == "DEVICE_NOT_READY"
 
 
 class TestPairTcp:

@@ -31,7 +31,12 @@ import shlex
 from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
-from app.core.exceptions import AdbError, DeviceUnreachableError, PairError
+from app.core.exceptions import (
+    AdbError,
+    DeviceNotReadyError,
+    DeviceUnreachableError,
+    PairError,
+)
 from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.domain.device import DeviceInfo
@@ -703,6 +708,8 @@ class AdbCliDriver:
 
         异常：
             DeviceUnreachableError: TCP 预检不可达时（不进入 adb 子进程）。
+            DeviceNotReadyError: already connected 但设备表状态非 device
+                （offline/unauthorized/不在表，路线图 15 假成功守卫）。
             AdbError: 连接失败时。
         """
         device_id = f"{ip}:{port}"
@@ -713,14 +720,33 @@ class AdbCliDriver:
 
         try:
             output = await self._run("connect", device_id, timeout=timeout)
-            if "connected" in output.lower():
-                logger.info("tcp_connected", device=device_id)
-                return device_id
-            else:
+            lowered = output.lower()
+            if "connected" not in lowered:
                 raise AdbError(f"Failed to connect to {device_id}: {output}")
+            if "already connected" in lowered:
+                # already connected 不尝试重连、不代表 transport 可用；
+                # 设备表复核非 device 态时报错，否则成功提示配空列表（路线图 15）
+                state = (await self._device_states()).get(device_id)
+                if state != "device":
+                    logger.warning(
+                        "tcp_connect_fake_success_blocked", device=device_id, state=state
+                    )
+                    raise DeviceNotReadyError.classify(device_id, state)
+            logger.info("tcp_connected", device=device_id)
+            return device_id
         except AdbError as e:
             logger.error("tcp_connect_failed", ip=ip, port=port, error=str(e))
             raise
+
+    async def _device_states(self) -> dict[str, str]:
+        """`adb devices` → {serial: state}（表头跳过；仅两列及以上的行）。"""
+        output = await self._run("devices")
+        states: dict[str, str] = {}
+        for line in output.split("\n")[1:]:
+            parts = line.split()
+            if len(parts) >= 2:
+                states[parts[0]] = parts[1]
+        return states
 
     async def pair_tcp(self, ip: str, port: int, code: str) -> None:
         """

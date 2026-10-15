@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 设备连接假成功治理（路线图第 15 项）：`adb connect` 对已登记地址回 `already connected`（并不尝试重连、不代表链路可用）旧代码按字符串判成功——若该 transport 实际处于 offline/unauthorized（状态行会被设备列表过滤），用户见「连接成功」提示但列表为空。现 already connected 分支补一次 `adb devices` 状态复核：offline → 提示设备端 adbd 异常并给出重开网络调试/kill-server 指引；unauthorized → 提示在设备端确认授权弹窗；不在表 → 提示先断开再重连（400 DEVICE_NOT_READY 中文文案）。新连接成功路径零额外开销；扫描编排自动将此类地址归入 failed 并带原因
 - 设备页「断开」误回设置/录屏页：断开原用 `history.back()`，经「查看录屏 / 设置 → 返回设备」进入时返回按钮的 `push` 垫栈致落点错误；现断开显式回 Dashboard，录屏/设置页「返回设备」改智能导航（上一条历史恰为目标设备页时 `back` 不垫栈，直达或菜单带参进入则回落 `push`）
 
 ## [0.7.8] - 2026-10-14（验证包，未发布 Release）

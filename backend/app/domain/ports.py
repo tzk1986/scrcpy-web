@@ -441,6 +441,8 @@ class AdbDriver(Protocol):
             timeout: 覆盖 adb connect 命令超时（秒）；None 用配置默认（方案 36 D4）。
 
         异常：
+            DeviceNotReadyError: already connected 但设备表状态非 device
+                （offline/unauthorized/不在表，路线图 15 假成功守卫）。
             AdbError: 连接失败时。
         """
         ...
