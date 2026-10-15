@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-10-15（验证包，未发布 Release）
+
+### Changed
+
+- 页面切换流畅优化：Dashboard 重进静默刷新——从录屏/设置等页面切回时，store 已有设备列表则挂载不再触发 v-loading 遮罩（旧列表即时保留、后台数据到后无感换血，SSE 增量感知机制不变），仅冷启动空列表时显示加载遮罩；「刷新」按钮行为保持（主动刷新照常给加载反馈）
+
 ## [0.7.8] - 2026-10-14（验证包，未发布 Release）
 
 ### Added
