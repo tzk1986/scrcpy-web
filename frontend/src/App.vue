@@ -15,7 +15,8 @@
       <el-header>
         <div class="header-content">
           <h1>OpenScrcpy</h1>
-          <el-menu mode="horizontal" :router="true">
+          <!-- ellipsis=false：菜单项常驻不折叠（后续按钮多了再评估收起） -->
+          <el-menu mode="horizontal" :router="true" :ellipsis="false">
             <el-menu-item index="/">Dashboard</el-menu-item>
             <el-menu-item index="/recordings">录屏</el-menu-item>
             <el-menu-item index="/settings">设置</el-menu-item>
