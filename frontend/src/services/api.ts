@@ -6,7 +6,7 @@
  * 使用 axios 作为 HTTP 客户端，baseURL 为 /api（通过 Vite 代理到后端 8765 端口）。
  *
  * API 分组：
- *   - 设备 API：listDevices, getDevice, installApk, connectDevice, disconnectDevice, scanSubnet
+ *   - 设备 API：listDevices, getDevice, installApk, connectDevice, disconnectDevice, scanSubnet, pairDevice
  *   - 调试 API：createDebugSession, getDebugSession, getLogs, execShell, closeDebugSession
  *
  * 使用方式：
@@ -205,6 +205,19 @@ export const api = {
       timeout: 40000, // 大于后端 adb.timeout(30s)，保证结构化错误先返回
     })
     return res.data as { success: boolean; device_id: string }
+  },
+
+  /**
+   * 无线调试配对（Android 11+，方案 47 T5）。两步式第一步，
+   * 成功后另行 connectDevice（目标为调试主页面端口，非此处配对端口）。
+   * 对应：POST /api/devices/pair?ip=...&port=...&code=...
+   */
+  async pairDevice(ip: string, port: number, code: string) {
+    const res = await client.post('/devices/pair', null, {
+      params: { ip, port, code },
+      timeout: 40000, // 大于后端 adb.timeout(30s)，保证结构化错误先返回
+    })
+    return res.data as { success: boolean; paired: string }
   },
 
   /**

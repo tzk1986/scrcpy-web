@@ -7,7 +7,8 @@
   功能：
     - 显示设备列表（表格形式）：设备 ID、屏幕缩略图、型号、系统版本、分辨率、电量、状态
     - 网段扫描（方案 36）：独立 scan-bar 行输入 CIDR 批量探测并连接
-    - 添加设备按钮：通过 TCP/IP 连接新设备（弹窗输入 IP 和端口）
+    - 添加设备对话框（方案 47 T5 页签）：网络 ADB 传统连接 /
+      无线调试配对（Android 11+）两步式——步骤 1 弹窗配对、步骤 2 调试端口连接
     - 断开按钮：断开设备的 TCP/IP 连接
     - 连接按钮：跳转到设备详情页（/device/:id）
     - 刷新按钮：重新扫描设备；刷新缩略图按钮：强制重拉全表屏幕快照
@@ -19,6 +20,7 @@
 
   子组件关系：
     Dashboard.vue → stores/device.ts → services/api.ts
+    例外：配对步骤 1 直调 services/api.ts.pairDevice（不产生设备状态，无需入 store）
 -->
 <template>
   <div class="dashboard">
@@ -261,7 +263,7 @@
       </el-table-column>
     </el-table>
 
-    <!-- 添加设备对话框 -->
+    <!-- 添加设备对话框（方案 47 T5：页签——传统网络 ADB / 无线调试配对两步式） -->
     <el-dialog
       v-model="dialogVisible"
       title="添加设备"
@@ -269,39 +271,129 @@
       :close-on-click-modal="false"
       @closed="resetDialog"
     >
-      <el-form
-        ref="formRef"
-        :model="form"
-        :rules="formRules"
-        label-width="80px"
-      >
-        <el-form-item label="IP 地址" prop="ip">
-          <el-input
-            v-model="form.ip"
-            placeholder="例如：192.168.1.100"
-            clearable
-            @keyup.enter="handleConnect"
-          />
-        </el-form-item>
-        <el-form-item label="端口" prop="port">
-          <el-input-number
-            v-model="form.port"
-            :min="1"
-            :max="65535"
-            placeholder="5555"
-            style="width: 100%"
-          />
-        </el-form-item>
-        <el-form-item>
-          <div class="form-tip">
-            <p>提示：设备需要先开启无线调试。</p>
-            <p>在设备上执行：<code>adb tcpip 5555</code></p>
+      <el-tabs v-model="activeTab">
+        <el-tab-pane label="网络 ADB（传统）" name="adb">
+          <el-form
+            ref="formRef"
+            :model="form"
+            :rules="formRules"
+            label-width="80px"
+          >
+            <el-form-item label="IP 地址" prop="ip">
+              <el-input
+                v-model="form.ip"
+                placeholder="例如：192.168.1.100"
+                clearable
+                @keyup.enter="handleConnect"
+              />
+            </el-form-item>
+            <el-form-item label="端口" prop="port">
+              <el-input-number
+                v-model="form.port"
+                :min="1"
+                :max="65535"
+                placeholder="5555"
+                style="width: 100%"
+              />
+            </el-form-item>
+            <el-form-item>
+              <div class="form-tip">
+                <p>提示：设备需要先开启无线调试。</p>
+                <p>在设备上执行：<code>adb tcpip 5555</code></p>
+              </div>
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+        <el-tab-pane label="无线调试配对（Android 11+）" name="pair">
+          <div v-if="pairStep === 1" class="pair-step">
+            <el-form
+              ref="pairFormRef"
+              :model="pairForm"
+              :rules="pairRules"
+              label-width="90px"
+            >
+              <el-form-item label="IP 地址" prop="ip">
+                <el-input
+                  v-model="pairForm.ip"
+                  placeholder="配对弹窗显示的 IP"
+                  clearable
+                  @keyup.enter="handlePair"
+                />
+              </el-form-item>
+              <el-form-item label="配对端口" prop="port">
+                <el-input-number
+                  v-model="pairForm.port"
+                  :min="1"
+                  :max="65535"
+                  placeholder="配对弹窗显示的端口"
+                  style="width: 100%"
+                />
+              </el-form-item>
+              <el-form-item label="配对码" prop="code">
+                <el-input
+                  v-model="pairForm.code"
+                  placeholder="6 位配对码"
+                  maxlength="6"
+                  clearable
+                  @keyup.enter="handlePair"
+                />
+              </el-form-item>
+            </el-form>
+            <div class="form-tip">
+              <p>
+                手机「开发者选项 → 无线调试 → 使用配对码配对设备」，
+                输入弹窗显示的 IP、端口与 6 位配对码。
+              </p>
+              <p>配对端口每次弹窗都会变化；配对成功后请用无线调试主页面显示的端口连接。</p>
+            </div>
           </div>
-        </el-form-item>
-      </el-form>
+          <div v-else class="pair-step">
+            <el-form label-width="90px">
+              <el-form-item label="IP 地址">
+                <span class="readonly-ip">{{ pairForm.ip }}</span>
+              </el-form-item>
+              <el-form-item label="调试端口">
+                <el-input-number
+                  v-model="pairConnectPort"
+                  :min="1"
+                  :max="65535"
+                  placeholder="无线调试主页面端口"
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </el-form>
+            <div class="form-tip">
+              <p>输入手机「无线调试」主页面显示的「IP 地址和端口」（与上一步的配对端口不同）。</p>
+              <p>以后重连只需执行本步骤连接即可；Android 16 部分机型重启后需重新配对。</p>
+            </div>
+            <a class="pair-back" @click="pairStep = 1">返回重新配对</a>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleConnect" :loading="connecting">
+        <el-button
+          v-if="activeTab === 'adb'"
+          type="primary"
+          :loading="connecting"
+          @click="handleConnect"
+        >
+          连接
+        </el-button>
+        <el-button
+          v-else-if="pairStep === 1"
+          type="primary"
+          :loading="pairing"
+          @click="handlePair"
+        >
+          配对
+        </el-button>
+        <el-button
+          v-else
+          type="primary"
+          :loading="pairConnecting"
+          @click="handlePairConnect"
+        >
           连接
         </el-button>
       </template>
@@ -314,10 +406,10 @@ import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { FormInstance, FormRules } from 'element-plus'
+import type { FormInstance, FormItemRule, FormRules } from 'element-plus'
 import { useDeviceStore } from '@/stores/device'
 import type { DeviceInfo } from '@/stores/device'
-import type { ScanResult } from '@/services/api'
+import { api, type ScanResult } from '@/services/api'
 
 const store = useDeviceStore()
 const router = useRouter()
@@ -371,17 +463,42 @@ const form = reactive({
   port: 5555,
 })
 
+// IP 格式规则：传统连接与配对页签（方案 47 T5）共用
+const ipRules: FormItemRule[] = [
+  { required: true, message: '请输入 IP 地址', trigger: 'blur' },
+  {
+    pattern: /^(\d{1,3}\.){3}\d{1,3}$/,
+    message: '请输入有效的 IP 地址',
+    trigger: 'blur',
+  },
+]
+
 const formRules: FormRules = {
-  ip: [
-    { required: true, message: '请输入 IP 地址', trigger: 'blur' },
-    {
-      pattern: /^(\d{1,3}\.){3}\d{1,3}$/,
-      message: '请输入有效的 IP 地址',
-      trigger: 'blur',
-    },
-  ],
+  ip: ipRules,
   port: [
     { required: true, message: '请输入端口', trigger: 'blur' },
+  ],
+}
+
+// ===== 无线调试配对（方案 47 T5，两步式） =====
+const activeTab = ref<'adb' | 'pair'>('adb')
+const pairStep = ref<1 | 2>(1)
+const pairing = ref(false)
+const pairConnecting = ref(false)
+const pairFormRef = ref<FormInstance>()
+const pairForm = reactive({
+  ip: '',
+  port: undefined as number | undefined,
+  code: '',
+})
+const pairConnectPort = ref<number | undefined>(undefined)
+
+const pairRules: FormRules = {
+  ip: ipRules,
+  port: [{ required: true, message: '请输入配对弹窗显示的端口', trigger: 'blur' }],
+  code: [
+    { required: true, message: '请输入 6 位配对码', trigger: 'blur' },
+    { pattern: /^\d{6}$/, message: '配对码须为 6 位数字', trigger: 'blur' },
   ],
 }
 
@@ -617,11 +734,18 @@ function showConnectDialog() {
   dialogVisible.value = true
 }
 
-/** 重置对话框表单 */
+/** 重置对话框表单（方案 47 T5：页签/配对状态一并复位，重开不残留） */
 function resetDialog() {
   form.ip = ''
   form.port = 5555
   formRef.value?.resetFields()
+  activeTab.value = 'adb'
+  pairStep.value = 1
+  pairForm.ip = ''
+  pairForm.port = undefined
+  pairForm.code = ''
+  pairConnectPort.value = undefined
+  pairFormRef.value?.resetFields()
 }
 
 /** 提取后端结构化错误（{"error":{"code","message"}}）的消息，回退到 Error.message */
@@ -647,6 +771,44 @@ async function handleConnect() {
     ElMessage.error(`连接失败: ${extractApiError(e, '未知错误')}`)
   } finally {
     connecting.value = false
+  }
+}
+
+/** 配对步骤 1：弹窗 ip:port + 6 位码执行 adb pair（方案 47 T5） */
+async function handlePair() {
+  if (!pairFormRef.value) return
+
+  const valid = await pairFormRef.value.validate().catch(() => false)
+  if (!valid) return
+
+  pairing.value = true
+  try {
+    await api.pairDevice(pairForm.ip, pairForm.port as number, pairForm.code)
+    ElMessage.success('配对成功，请在手机「无线调试」主页面查看连接端口')
+    pairStep.value = 2
+  } catch (e) {
+    ElMessage.error(`配对失败: ${extractApiError(e, '未知错误')}`)
+  } finally {
+    pairing.value = false
+  }
+}
+
+/** 配对步骤 2：用无线调试主页面端口走既有 connect 链路（方案 47 T5） */
+async function handlePairConnect() {
+  if (!pairConnectPort.value) {
+    ElMessage.warning('请输入无线调试主页面显示的端口')
+    return
+  }
+
+  pairConnecting.value = true
+  try {
+    await store.connectDevice(pairForm.ip, pairConnectPort.value)
+    ElMessage.success(`已连接到 ${pairForm.ip}:${pairConnectPort.value}`)
+    dialogVisible.value = false
+  } catch (e) {
+    ElMessage.error(`连接失败: ${extractApiError(e, '未知错误')}`)
+  } finally {
+    pairConnecting.value = false
   }
 }
 
@@ -912,5 +1074,22 @@ async function handleBatchDisconnect() {
   padding: 2px 6px;
   border-radius: 3px;
   font-family: monospace;
+}
+
+/* 方案 47 T5 配对页签：步骤 2 只读 IP + 返回重新配对链接 */
+.pair-step {
+  padding-top: 0.25rem;
+}
+
+.readonly-ip {
+  line-height: 32px;
+}
+
+.pair-back {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  cursor: pointer;
 }
 </style>

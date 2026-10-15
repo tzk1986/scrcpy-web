@@ -6,6 +6,8 @@
  *   - 挂载：拉取设备列表、启动 SSE（EventSource 指向 /api/devices/events）、空态提示、卸载停 SSE
  *   - 重进体验：store 已有设备时静默刷新（不置 loading），冷进入照常置 loading
  *   - 添加设备对话框：打开、填写 IP、点击连接 → connectDevice 调用与成功提示、关闭对话框
+ *   - 无线调试配对（方案 47 T5）：页签两步式——配对成功进步骤 2 连接关闭、
+ *     失败按后端文案回显停留步骤 1、空端口警告不连接、关闭复位页签与表单
  *   - SSE 事件驱动设备列表增删；点击刷新重新拉取
  *   - 网段扫描（方案 36）：参数透传（含仅扫描不连接）、loading 文案切换、结果 alert 回显、失败提示
  *   - 缩略图列（方案 36）：点击加载 → img 渲染（blob URL + title）、失败重试、刷新缩略图强制重拉
@@ -42,6 +44,7 @@ const h = vi.hoisted(() => {
 const mockApi = vi.hoisted(() => ({
   listDevices: vi.fn(),
   connectDevice: vi.fn(),
+  pairDevice: vi.fn(),
   disconnectDevice: vi.fn(),
   getDevice: vi.fn(),
   scanSubnet: vi.fn(),
@@ -176,6 +179,37 @@ const ElPopoverStub = {
   template: '<div class="stub-popover"><slot /><slot name="reference" /></div>',
 }
 
+// 方案 47 T5：el-tabs 轻量替身——provide 当前 modelValue，pane 仅激活者渲染内容
+// （模拟真实懒渲染，避免非激活页签污染既有 ElInput 定位）
+const ElTabsStub = defineComponent({
+  name: 'ElTabs',
+  props: { modelValue: { type: String, default: '' } },
+  emits: ['update:modelValue'],
+  setup(props, { slots }) {
+    provide('elTabsModel', () => props.modelValue)
+    return () => vueH('div', { class: 'stub-tabs' }, slots.default?.())
+  },
+})
+
+const ElTabPaneStub = defineComponent({
+  name: 'ElTabPane',
+  props: { label: { type: String, default: '' }, name: { type: String, default: '' } },
+  setup(props, { slots }) {
+    const model = inject<(() => string) | undefined>('elTabsModel')
+    const active = () => !model || model() === props.name
+    return () => {
+      const children = active()
+        ? [vueH('div', { class: 'stub-tab-label' }, props.label), ...(slots.default?.() ?? [])]
+        : undefined
+      return vueH(
+        'div',
+        { class: ['stub-tab-pane', { 'stub-inactive': !active() }] },
+        children
+      )
+    }
+  },
+})
+
 /** 扫描结果样例：开放 2 台，1 成功 1 connect_failed（方案 36） */
 function scanFixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -231,6 +265,8 @@ async function mountDashboard(options: { pinia?: Pinia } = {}): Promise<VueWrapp
         'el-image': ElImageStub,
         'el-checkbox': ElCheckboxStub,
         'el-popover': ElPopoverStub,
+        'el-tabs': ElTabsStub,
+        'el-tab-pane': ElTabPaneStub,
       },
       directives: { loading: {} },
     },
@@ -245,6 +281,7 @@ beforeEach(() => {
   h.MockEventSource.instances = []
   mockApi.listDevices.mockReset()
   mockApi.connectDevice.mockReset()
+  mockApi.pairDevice.mockReset()
   mockApi.disconnectDevice.mockReset()
   mockApi.scanSubnet.mockReset()
   mockApi.screenshot.mockReset().mockResolvedValue(new Blob(['png']))
@@ -323,6 +360,128 @@ describe('Dashboard', () => {
 
     expect(h.ElMessage.success).toHaveBeenCalled()
     expect(wrapper.find('.stub-dialog').exists()).toBe(false)
+  })
+
+  it('配对页签两步式：配对成功进步骤 2，连接后关闭对话框', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.pairDevice.mockResolvedValue({ success: true, paired: '192.168.1.5:37123' })
+    mockApi.connectDevice.mockResolvedValue({ success: true, device_id: '192.168.1.5:41234' })
+    const wrapper = await mountDashboard()
+
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes('添加设备'))
+    await addBtn!.trigger('click')
+    await nextTick()
+    const dialog = wrapper.find('.stub-dialog')
+
+    // 切到配对页签（stub 经 update:modelValue 驱动 activeTab）
+    dialog.findComponent({ name: 'ElTabs' }).vm.$emit('update:modelValue', 'pair')
+    await nextTick()
+    expect(dialog.text()).toContain('配对端口')
+
+    // 步骤 1：配对页签内三个输入——IP、配对端口（input-number 同桩名）、配对码
+    const step1Inputs = dialog.findAllComponents({ name: 'ElInput' })
+    expect(step1Inputs).toHaveLength(3)
+    step1Inputs[0].vm.$emit('update:modelValue', '192.168.1.5')
+    step1Inputs[1].vm.$emit('update:modelValue', 37123)
+    step1Inputs[2].vm.$emit('update:modelValue', '123456')
+    await nextTick()
+
+    const pairBtn = dialog.findAll('button').find((b) => b.text() === '配对')
+    await pairBtn!.trigger('click')
+    await flushPromises()
+    expect(mockApi.pairDevice).toHaveBeenCalledWith('192.168.1.5', 37123, '123456')
+    expect(h.ElMessage.success).toHaveBeenCalledWith(expect.stringContaining('无线调试'))
+
+    // 步骤 2：只剩调试端口输入（label 不经 stub 渲染，以步骤 2 独有文案判位）；
+    // 空端口点击 → 警告且不连接
+    expect(dialog.text()).toContain('返回重新配对')
+    const step2Inputs = dialog.findAllComponents({ name: 'ElInput' })
+    expect(step2Inputs).toHaveLength(1)
+    const connectBtn = dialog.findAll('button').find((b) => b.text() === '连接')
+    await connectBtn!.trigger('click')
+    await flushPromises()
+    expect(h.ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('端口'))
+    expect(mockApi.connectDevice).not.toHaveBeenCalled()
+
+    // 填端口后连接：走既有 connectDevice 链路并关闭对话框
+    step2Inputs[0].vm.$emit('update:modelValue', 41234)
+    await nextTick()
+    await connectBtn!.trigger('click')
+    await flushPromises()
+    expect(mockApi.connectDevice).toHaveBeenCalledWith('192.168.1.5', 41234)
+    await flushPromises()
+    expect(wrapper.find('.stub-dialog').exists()).toBe(false)
+  })
+
+  it('配对失败：回显后端分类文案且停留步骤 1', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.pairDevice.mockRejectedValue({
+      response: {
+        data: { error: { code: 'PAIR_FAILED', message: '配对失败：配对码不正确或已过期，请核对手机弹窗显示的 6 位配对码后重试' } },
+      },
+    })
+    const wrapper = await mountDashboard()
+
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes('添加设备'))
+    await addBtn!.trigger('click')
+    await nextTick()
+    const dialog = wrapper.find('.stub-dialog')
+    dialog.findComponent({ name: 'ElTabs' }).vm.$emit('update:modelValue', 'pair')
+    await nextTick()
+
+    const inputs = dialog.findAllComponents({ name: 'ElInput' })
+    inputs[0].vm.$emit('update:modelValue', '192.168.1.5')
+    inputs[1].vm.$emit('update:modelValue', 37123)
+    inputs[2].vm.$emit('update:modelValue', '000000')
+    await nextTick()
+
+    const pairBtn = dialog.findAll('button').find((b) => b.text() === '配对')
+    await pairBtn!.trigger('click')
+    await flushPromises()
+
+    expect(h.ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('配对码不正确或已过期'))
+    // 仍停留步骤 1（未出现步骤 2 独有的「返回重新配对」）
+    expect(dialog.text()).toContain('配对码')
+    expect(dialog.text()).not.toContain('返回重新配对')
+  })
+
+  it('对话框关闭复位：重开回网络 ADB 页签且配对表单清空', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.pairDevice.mockResolvedValue({ success: true, paired: '192.168.1.5:37123' })
+    const wrapper = await mountDashboard()
+
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes('添加设备'))
+    await addBtn!.trigger('click')
+    await nextTick()
+    let dialog = wrapper.find('.stub-dialog')
+    dialog.findComponent({ name: 'ElTabs' }).vm.$emit('update:modelValue', 'pair')
+    await nextTick()
+    const inputs = dialog.findAllComponents({ name: 'ElInput' })
+    inputs[0].vm.$emit('update:modelValue', '192.168.1.5')
+    inputs[1].vm.$emit('update:modelValue', 37123)
+    inputs[2].vm.$emit('update:modelValue', '123456')
+    await nextTick()
+    const pairBtn = dialog.findAll('button').find((b) => b.text() === '配对')
+    await pairBtn!.trigger('click')
+    await flushPromises()
+    expect(dialog.text()).toContain('返回重新配对') // 已到步骤 2
+
+    // 模拟真实 el-dialog 关闭动画后的 closed 事件 → resetDialog
+    dialog.findComponent({ name: 'ElDialog' }).vm.$emit('closed')
+    await nextTick()
+
+    // 重开：默认回网络 ADB 页签；切到配对页签为清空后的步骤 1
+    await addBtn!.trigger('click')
+    await nextTick()
+    dialog = wrapper.find('.stub-dialog')
+    expect(dialog.text()).toContain('adb tcpip 5555')
+    dialog.findComponent({ name: 'ElTabs' }).vm.$emit('update:modelValue', 'pair')
+    await nextTick()
+    expect(dialog.text()).toContain('6 位配对码')
+    expect(dialog.text()).not.toContain('返回重新配对')
+    const reopened = dialog.findAllComponents({ name: 'ElInput' })
+    expect((reopened[0].element as HTMLInputElement).value).toBe('')
+    expect((reopened[2].element as HTMLInputElement).value).toBe('')
   })
 
   it('SSE 事件实时增删设备，点击刷新重新拉取列表', async () => {
