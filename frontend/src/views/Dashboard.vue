@@ -391,7 +391,9 @@ onMounted(async () => {
   restoreScanRecord()
   // SSE 订阅先就位（方案 35 D6）：列表刷新慢不推迟事件订阅
   store.startSSE()
-  await store.fetchDevices()
+  // 重进静默刷新：store 已有列表时不置 v-loading 遮罩（旧列表即时保留、数据到后换血），
+  // 仅冷进入才显示加载遮罩
+  await store.fetchDevices({ silent: store.devices.length > 0 })
 })
 
 onUnmounted(() => {

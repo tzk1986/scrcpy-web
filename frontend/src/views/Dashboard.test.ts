@@ -4,6 +4,7 @@
  *
  * 覆盖：
  *   - 挂载：拉取设备列表、启动 SSE（EventSource 指向 /api/devices/events）、空态提示、卸载停 SSE
+ *   - 重进体验：store 已有设备时静默刷新（不置 loading），冷进入照常置 loading
  *   - 添加设备对话框：打开、填写 IP、点击连接 → connectDevice 调用与成功提示、关闭对话框
  *   - SSE 事件驱动设备列表增删；点击刷新重新拉取
  *   - 网段扫描（方案 36）：参数透传（含仅扫描不连接）、loading 文案切换、结果 alert 回显、失败提示
@@ -198,7 +199,7 @@ async function checkRowCheckbox(input: DOMWrapper<Element>) {
   await input.trigger('change')
 }
 
-async function mountDashboard(): Promise<VueWrapper> {
+async function mountDashboard(options: { pinia?: Pinia } = {}): Promise<VueWrapper> {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -209,7 +210,7 @@ async function mountDashboard(): Promise<VueWrapper> {
   await router.push('/')
   await router.isReady()
 
-  pinia = createPinia()
+  pinia = options.pinia ?? createPinia()
   setActivePinia(pinia)
 
   const wrapper = shallowMount(Dashboard, {
@@ -352,6 +353,31 @@ describe('Dashboard', () => {
     const wrapper = await mountDashboard()
 
     expect(h.MockEventSource.instances).toHaveLength(1)
+
+    wrapper.unmount()
+  })
+
+  it('重进 Dashboard：store 已有设备时静默刷新，不置 loading 遮罩', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA])
+    const first = await mountDashboard()
+    const store = useDeviceStore()
+    first.unmount()
+    expect(store.devices.map((d) => d.id)).toEqual(['dev-a'])
+
+    // 二次挂载复用同一 pinia（模拟从录屏/设置切回），列表请求挂起观察 loading
+    mockApi.listDevices.mockImplementation(() => new Promise(() => {}))
+    const second = await mountDashboard({ pinia })
+    expect(store.loading).toBe(false)
+    expect(store.devices.map((d) => d.id)).toEqual(['dev-a'])
+    second.unmount()
+  })
+
+  it('空 store 冷进入：挂载仍非静默（置 loading 遮罩）', async () => {
+    mockApi.listDevices.mockImplementation(() => new Promise(() => {}))
+    const wrapper = await mountDashboard()
+    const store = useDeviceStore()
+
+    expect(store.loading).toBe(true)
 
     wrapper.unmount()
   })
