@@ -60,7 +60,7 @@ describe('annotationModel 比例换算', () => {
 describe('hitTest / cmdBBox / translateCmd', () => {
   const measure80 = () => 80
 
-  it('矩形边框命中、内部不命中', () => {
+  it('矩形边框与内部均命中（方案 49：内部可选中拖动）', () => {
     const rect: RectCmd = {
       kind: 'rect',
       from: { x: 100, y: 100 },
@@ -69,7 +69,8 @@ describe('hitTest / cmdBBox / translateCmd', () => {
       lineWidth: 0.0035,
     }
     expect(hitTest([rect], { x: 200, y: 100 }, 800, measure80)).toBe(0) // 上边框上
-    expect(hitTest([rect], { x: 200, y: 150 }, 800, measure80)).toBeNull() // 内部
+    expect(hitTest([rect], { x: 200, y: 150 }, 800, measure80)).toBe(0) // 中心（内部）
+    expect(hitTest([rect], { x: 400, y: 150 }, 800, measure80)).toBeNull() // 外部仍不命中
   })
 
   it('文字包围盒命中（宽度经 measure）', () => {
@@ -90,6 +91,20 @@ describe('hitTest / cmdBBox / translateCmd', () => {
     const top: RectCmd = { ...bottom, color: '#0f0' }
     expect(hitTest([bottom, top], { x: 200, y: 100 }, 800, measure80)).toBe(1)
     expect(hitTest([top, bottom], { x: 200, y: 100 }, 800, measure80)).toBe(1)
+  })
+
+  it('矩形与文字重叠：上层优先命中（跨类型，方案 49）', () => {
+    const rect: RectCmd = {
+      kind: 'rect',
+      from: { x: 100, y: 100 },
+      to: { x: 300, y: 200 },
+      color: '#f00',
+      lineWidth: 0.0035,
+    }
+    // text 盒 x∈[100,180] y∈[150,200]（measure80），中心点 (140,170) 同时落入 rect 内部
+    const text: TextCmd = { kind: 'text', at: { x: 100, y: 190 }, text: '告警', color: '#00f', fontSize: 0.05 }
+    expect(hitTest([rect, text], { x: 140, y: 170 }, 800, measure80)).toBe(1) // 文字在上 → 文字先拖
+    expect(hitTest([text, rect], { x: 140, y: 170 }, 800, measure80)).toBe(1) // 矩形在上 → 矩形先拖
   })
 
   it('translateCmd 平移各类型（原地修改）', () => {
@@ -148,7 +163,7 @@ describe('hitTest / cmdBBox / translateCmd', () => {
     expect(hitTest([num], { x: 200, y: 100 }, 800, measure80)).toBeNull()
   })
 
-  it('椭圆边框命中、内部不命中', () => {
+  it('椭圆边框与内部均命中（方案 49）', () => {
     const ellipse: AnnotationCmd = {
       kind: 'ellipse',
       from: { x: 100, y: 100 },
@@ -158,7 +173,7 @@ describe('hitTest / cmdBBox / translateCmd', () => {
     }
     expect(hitTest([ellipse], { x: 200, y: 100 }, 800, measure80)).toBe(0) // 顶点
     expect(hitTest([ellipse], { x: 300, y: 150 }, 800, measure80)).toBe(0) // 右侧点
-    expect(hitTest([ellipse], { x: 200, y: 150 }, 800, measure80)).toBeNull() // 内部
+    expect(hitTest([ellipse], { x: 200, y: 150 }, 800, measure80)).toBe(0) // 中心（内部）
     expect(hitTest([ellipse], { x: 420, y: 150 }, 800, measure80)).toBeNull() // 远外
   })
 

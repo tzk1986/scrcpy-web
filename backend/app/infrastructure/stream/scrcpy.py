@@ -38,10 +38,12 @@ scrcpy-server 视频编码器
 """
 
 import asyncio
+import re
 import time
 from typing import Any, AsyncIterator, Callable
 
 from app.core.config import settings
+from app.core.exceptions import ScrcpyOccupiedError
 from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.domain.ports import EncoderOpts
@@ -106,6 +108,7 @@ class ScrcpyEncoder:
         self._local_port = 27183
         self._socket_name: str = "scrcpy"  # 固定 socket 名称
         self._data_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=100)
+        self._remote_pids: list[str] = []  # 本会话设备端进程 PID（方案 48 D2，stop 用）
         self._awaiting_keyframe = False  # 反压丢包后等待 IDR（断链 P 帧不入队）
         self._last_idr_request_at = 0.0  # 反压 IDR 请求节流（1s 冷却）
 
@@ -155,6 +158,10 @@ class ScrcpyEncoder:
         )
 
         self._device_id = device_id
+
+        # 方案 48：起流前设备端残留 scrcpy 会话检测（命中 → 中文阻断文案；
+        # 检测能力缺失降级放行）
+        await self._detect_stray_server(device_id)
 
         # 基于 device_id 计算唯一端口
         port_offset = hash(device_id) % 100
@@ -354,6 +361,10 @@ class ScrcpyEncoder:
             raise RuntimeError(f"Failed to connect to scrcpy-server: {e}")
 
         logger.info("connected_to_scrcpy_server", device=device_id)
+
+        # 方案 48 D2：枚举本会话设备端 PID（检测已保证起流前设备干净，
+        # 此处命中均属本会话），供 stop() 设备侧终止、从源头防新增残留
+        self._remote_pids = await self._enumerate_remote_pids(device_id)
 
         # 9. 获取设备分辨率
         # 12B 头协议：分辨率由流内 session 包提供（read_socket 中解析），
@@ -826,6 +837,91 @@ class ScrcpyEncoder:
         except Exception as e:
             logger.error("fallback_adb_input_failed", device=self._device_id, error=str(e))
 
+    # 设备侧残留检测命令：[.] 防 grep/sh 自身命令行字面自匹配，
+    # [0-9]* 排除 /proc/self 等伪目录（方案 48 实证，旧 toybox ps 不可用）
+    _STRAY_GREP_CMD = "grep -lE 'scrcpy[.]Server' /proc/[0-9]*/cmdline 2>/dev/null"
+
+    async def _detect_stray_server(self, device_id: str) -> None:
+        """起流前检测设备端在跑的 scrcpy-server 残留（方案 48 D1=A）。
+
+        命中抛 ScrcpyOccupiedError（读 cmdline 做参数指纹归因，D3）；grep
+        不存在（rc>1）或 spawn 异常 → debug 降级放行，检测能力缺失不阻断
+        正常起流。旧 toybox ps 的 NAME 列仅显示 app_process 无 scrcpy 字样，
+        故走 /proc/<pid>/cmdline。
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "shell", self._STRAY_GREP_CMD,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception as e:
+            logger.debug("stray_server_detect_error", device=device_id, error=str(e))
+            return
+        stdout = out.decode(errors="replace").strip()
+        if proc.returncode == 0 and stdout:
+            pid_match = re.search(r"/proc/(\d+)/", stdout)
+            cmdline = (
+                await self._read_remote_cmdline(device_id, pid_match.group(1))
+                if pid_match
+                else None
+            )
+            raise ScrcpyOccupiedError.classify(device_id, cmdline)
+        if proc.returncode not in (0, 1):
+            logger.debug(
+                "stray_server_detect_unavailable",
+                device=device_id,
+                returncode=proc.returncode,
+                stderr=err.decode(errors="replace").strip(),
+            )
+
+    async def _read_remote_cmdline(self, device_id: str, pid: str) -> str | None:
+        """读设备侧 /proc/<pid>/cmdline（\\0 换空格）；失败回 None（归因降级）。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "shell", f"cat /proc/{pid}/cmdline",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception:
+            return None
+        if proc.returncode != 0 or not out:
+            return None
+        return out.decode(errors="replace").replace("\x00", " ")
+
+    async def _enumerate_remote_pids(self, device_id: str) -> list[str]:
+        """枚举设备端在跑 scrcpy 进程 PID（含 sh 包装，方案 48 D2）；异常回空。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "shell", self._STRAY_GREP_CMD,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception as e:
+            logger.debug("remote_pids_enumerate_error", device=device_id, error=str(e))
+            return []
+        return re.findall(r"/proc/(\d+)/", out.decode(errors="replace"))
+
+    async def _kill_remote_pids(self, device_id: str, pids: list[str]) -> None:
+        """设备侧 kill 本会话残留进程（PID 均来自数字正则提取，无注入面）。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "shell", f"kill -9 {' '.join(pids)}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+            logger.debug("remote_pids_killed", device=device_id, pids=pids)
+        except Exception as e:
+            logger.debug("remote_pids_kill_failed", device=device_id, error=str(e))
+
     async def stop(self) -> None:
         """停止编码并释放资源。"""
         logger.info("stopping_scrcpy_encoder", device=self._device_id)
@@ -850,6 +946,12 @@ class ScrcpyEncoder:
                 pass
             self._writer = None
             self._reader = None
+
+        # 方案 48 D2：先终止本会话设备端进程（原实现仅杀本地 adb 子进程，
+        # 设备端 app_process 不保证随退 → 残留根因）
+        if self._device_id and self._remote_pids:
+            await self._kill_remote_pids(self._device_id, self._remote_pids)
+        self._remote_pids = []
 
         # 终止 server 进程
         if self.process:

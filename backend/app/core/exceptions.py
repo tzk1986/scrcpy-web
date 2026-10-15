@@ -158,6 +158,38 @@ class DeviceNotReadyError(OpenScrcpyException):
         return cls(cls.ABSENT_HINT.format(device=device_id))
 
 
+class ScrcpyOccupiedError(OpenScrcpyException):
+    """设备端存在在跑的 scrcpy 会话，起流前被拦截（方案 48 D1=A 仅提示阻断）。
+
+    残留两类来源：本软件上次会话异常退出（stop 仅杀本地 adb 子进程，设备端
+    不保证随退）或其他工具/客户端的在跑会话。设备侧无法确证连接来源，
+    以启动参数指纹比对做概率性归因（D3）：命中本软件特征串 → 残留文案；
+    否则 → 其他工具文案（亦覆盖归因失败的兜底场景）。
+    """
+
+    OWN_RESIDUAL_HINT = (
+        "设备 {device} 上检测到已在运行的 scrcpy 会话（启动参数与本软件一致），"
+        "判定为上次会话异常退出的残留进程：请重启设备清除残留后重试；"
+        "使用 scrcpy 桌面版等其他工具关闭该会话后重试亦可"
+    )
+    OTHER_SESSION_HINT = (
+        "设备 {device} 上检测到已在运行的 scrcpy 会话：可能是其他工具"
+        "（如 scrcpy 桌面版或其他电脑）正在使用，也可能是本软件上次会话"
+        "异常退出残留。请关闭占用程序后重试；无法关闭时重启设备可清除"
+    )
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="SCRCPY_SESSION_OCCUPIED")
+
+    @classmethod
+    def classify(cls, device_id: str, cmdline: str | None) -> "ScrcpyOccupiedError":
+        """残留进程 cmdline（读失败为 None）→ 参数指纹归因分类。"""
+        markers = ("max_size=0", "tunnel_forward=true", "audio=false", "clipboard_autosync=false")
+        if cmdline and all(m in cmdline for m in markers):
+            return cls(cls.OWN_RESIDUAL_HINT.format(device=device_id))
+        return cls(cls.OTHER_SESSION_HINT.format(device=device_id))
+
+
 class InvalidPairRequestError(OpenScrcpyException):
     """无线调试配对请求参数非法（方案 47 T4）。
 

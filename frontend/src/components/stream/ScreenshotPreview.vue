@@ -82,9 +82,8 @@
           马赛克
         </el-button>
         <span class="toolbar-sep" aria-hidden="true" />
-        <!-- 编辑组（撤销/重做/清空） -->
+        <!-- 编辑组（撤销/清空）：重做仅保留 Ctrl+Shift+Z 快捷键（方案 49 案 A——按钮低价值常灰） -->
         <el-button class="btn-undo" :disabled="history.length === 0" @click="undo">撤销</el-button>
-        <el-button class="btn-redo" :disabled="redoHistory.length === 0" @click="redo">重做</el-button>
         <el-button class="btn-clear" :disabled="commands.length === 0" @click="clearAll">清空</el-button>
         <span class="toolbar-spacer" />
         <!-- 输出组（复制/保存/导出） -->

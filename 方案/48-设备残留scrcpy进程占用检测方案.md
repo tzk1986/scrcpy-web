@@ -1,8 +1,9 @@
 # 方案 48：起流前设备残留 scrcpy 进程占用检测
 
-> **状态**：**立项，调研完成，待 review 拍板**（用户 2026-10-15 指示：
-> 「占用检测方案：起流前 ps 扫残留 scrcpy 进程，既能提示"他人会话"也能提示
-> "自己上次异常残留"」）。
+> **状态**：**已拍板（D1=A / D2=治理 / D3=纳入）并实施完成**（2026-10-15，
+> 见 §6.1 实施记录）——用户 2026-10-15 指示：「占用检测方案：起流前 ps 扫
+> 残留 scrcpy 进程，既能提示"他人会话"也能提示"自己上次异常残留"」；
+> 拍板「D1 使用 A，D2 治理，D3 也做」。
 > **约束**：零新依赖；master 直做；门禁全量口径（ruff + mypy strict +
 > pytest cov≥80 + vitest / vue-tsc + `npx eslint .` 全量）；存量 API 只增不改；
 > 前端展示复用既有 `extractApiError` 回显通道（目标零前端改动）。
@@ -120,15 +121,37 @@ hint 模板（`.format(device=...)`）：
 - 本检测面向"设备端残留"；本机多实例后端并发起流（单开模式方案 23 已约束）
   不在范围。
 
-## 六、任务分解（拍板后）
+## 六、任务分解
 
-- **T1** 检测原语 + 异常类 + start() 接入 + hint 模板（含 D3 归因）+
+- **T1** ✅ 检测原语 + 异常类 + start() 接入 + hint 模板（含 D3 归因）+
   单测/集成测试 + CHANGELOG。
-- **T2**（若 D1=B）cleanup 端点 + AdbDriver kill 原语 + 前端确认弹窗。
-- **回写**：进度追踪、路线图第 16 项登记、本方案状态行。
+- **T2** ✅（按 D2 拍板调整为 stop 治理，非 cleanup 端点）本会话设备端 PID
+  枚举 + stop() 设备侧 `kill -9`。
+- **回写** ✅：进度追踪第九十次、路线图第 16 项状态、CHANGELOG 0.7.9。
+
+### 6.1 实施记录（2026-10-15）
+
+- 交付：`ScrcpyOccupiedError`（core/exceptions.py，classify 按四特征串
+  `max_size=0/tunnel_forward=true/audio=false/clipboard_autosync=false`
+  指纹归因 OWN/OTHER 两文案）；`ScrcpyEncoder._detect_stray_server` +
+  `_read_remote_cmdline` + `_enumerate_remote_pids` + `_kill_remote_pids`
+  （infrastructure/stream/scrcpy.py，start 前置检测、连 socket 后枚举 PID、
+  stop 先设备侧 kill 再杀本地）；`video.py` WS 主循环新增
+  `except OpenScrcpyException` 分支——领域异常 message 原样透传（其余维持
+  37 A4 脱敏）。
+- 验证：单测 `tests/infrastructure/test_scrcpy_occupancy.py` 10 例 +
+  `test_video.py` 透传例；**真机活体全链**（.25 受控残留）——阴性（干净设备）
+  放行、阳性（同指纹受控 Server）HIT + OWN 归因文案、枚举 PID、kill 后复测
+  转干净；门禁后端 1246 passed / cov 93.60%、ruff/mypy strict 全绿。
+- 口径调整（Ruling）：D1=A 无 cleanup 端点，故「前端零改动」达成——提示经
+  WS error 通道透传（起流是 WS 路径，非 HTTP 400；方案 §3.1 的 400 表述
+  以 WS `{"type":"error","message":...}` 落地）。
 
 ## 更新记录
 
 - 2026-10-15：立项。完成 .25 真机取证（ps 局限、/proc cmdline 原语、
   活体残留样本与参数指纹、rotationwatcher 不误报）与起流/停止代码调研；
   设计方案与拍板点 D1-D3，待 review。
+- 2026-10-15（同日二更）：用户拍板 D1=A/D2=治理/D3=纳入；T1+T2 实施完成，
+  单测 10+1 例全绿 + .25 真机受控残留全链验证（命中归因/枚举/kill/复测）；
+  门禁全绿。

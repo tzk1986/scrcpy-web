@@ -47,6 +47,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 
 from app.application.stream_service import StreamService
+from app.core.exceptions import OpenScrcpyException
 from app.deps import get_stream_service
 from app.scrcpy.h264_parser import H264Parser, scan_packet_nalus
 from app.scrcpy.au_aggregator import aggregate_aus
@@ -311,6 +312,14 @@ async def video_stream(
 
     except WebSocketDisconnect:
         logger.info("video_websocket_disconnected", device=device_id)
+    except OpenScrcpyException as e:
+        # 方案 48：领域异常的 message 即面向用户的中文指引（占用/就绪类），
+        # 原样透传；其余内部异常维持方案 37 A4 脱敏口径
+        logger.warning("video_stream_domain_error", device=device_id, code=e.code, error=e.message)
+        try:
+            await websocket.send_json({"type": "error", "message": e.message})
+        except Exception:
+            pass
     except Exception as e:
         logger.error("video_stream_error", device=device_id, error=str(e))
         try:

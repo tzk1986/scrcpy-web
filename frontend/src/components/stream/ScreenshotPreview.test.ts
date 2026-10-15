@@ -590,7 +590,8 @@ describe('ScreenshotPreview 参数化与双栈', () => {
     expect(redoCount(wrapper)).toBe(1)
 
     fakeCtx.calls.length = 0
-    await wrapper.find('.btn-redo').trigger('click')
+    // 方案 49：重做按钮移除，经 Ctrl+Shift+Z 快捷键触发
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true }))
     await nextTick()
 
     expect(commandCount(wrapper)).toBe(1)
@@ -611,25 +612,30 @@ describe('ScreenshotPreview 参数化与双栈', () => {
 
     expect(commandCount(wrapper)).toBe(1)
     expect(redoCount(wrapper)).toBe(0)
-    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
+    // 方案 49 案 A：工具栏不再提供重做按钮（快捷键兜底）
+    expect(wrapper.find('.btn-redo').exists()).toBe(false)
   })
 })
 
 describe('ScreenshotPreview 参数组与快捷键', () => {
-  it('重做按钮：无 redo 时置灰，撤销后可点且恢复命令', async () => {
+  it('重做仅快捷键（方案 49 案 A）：无 redo 时空操作，撤销后 Ctrl+Shift+Z 恢复命令', async () => {
     const wrapper = await mountAndSettle()
     mockCanvasRect(wrapper)
 
-    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.btn-redo').exists()).toBe(false)
+
+    const redoKey = () =>
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true }))
 
     await drawShape(wrapper, '.tool-pen')
-    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
+    redoKey()
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1) // redo 栈空：快捷键不改变状态
 
     await wrapper.find('.btn-undo').trigger('click')
     await nextTick()
-    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeUndefined()
-
-    await wrapper.find('.btn-redo').trigger('click')
+    expect(commandCount(wrapper)).toBe(0)
+    redoKey()
     await nextTick()
     expect(commandCount(wrapper)).toBe(1)
   })
@@ -1176,7 +1182,7 @@ describe('ScreenshotPreview 操作历史（方案 47 T2）', () => {
     expect(commandCount(wrapper)).toBe(1)
     expect((commandList(wrapper)[0] as unknown as Box).from).toEqual({ x: 20, y: 20 })
 
-    await wrapper.find('.btn-redo').trigger('click')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true }))
     expect((commandList(wrapper)[0] as unknown as Box).from).toEqual({ x: 40, y: 40 })
 
     await wrapper.find('.btn-undo').trigger('click') // 撤 transform
@@ -1224,12 +1230,11 @@ describe('ScreenshotPreview 操作历史（方案 47 T2）', () => {
     expect(commandCount(wrapper)).toBe(2)
     expect(commandList(wrapper).map((c) => c.kind)).toEqual(['rect', 'pen'])
 
-    await wrapper.find('.btn-redo').trigger('click')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true }))
     expect(commandCount(wrapper)).toBe(0)
 
     await drawShape(wrapper, '.tool-rect') // 新分支：旧 redo 不可达
     expect(redoCount(wrapper)).toBe(0)
-    expect(wrapper.find('.btn-redo').attributes('disabled')).toBeDefined()
   })
 
   it('删除命令产 delete 步：undo 原位插回（中间层次序恢复）', async () => {
@@ -1341,7 +1346,7 @@ describe('ScreenshotPreview 缩放手柄（方案 47 T3）', () => {
     const back = commandList(wrapper)[0] as unknown as Box
     expect(back.to).toEqual({ x: 120, y: 80 })
 
-    await wrapper.find('.btn-redo').trigger('click')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true }))
     expect((commandList(wrapper)[0] as unknown as Box).to.x).toBeCloseTo(220, 6)
   })
 

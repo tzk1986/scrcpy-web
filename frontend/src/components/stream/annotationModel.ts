@@ -80,21 +80,25 @@ function hitThreshold(lineWidth: number, canvasWidth: number): number {
   return Math.max(8, linePx(lineWidth, canvasWidth) * 2)
 }
 
-/** 点是否在矩形边框带内（内部不算——保证新图形可画在旧图形内）。 */
-function pointRectBorderDist(p: Point, left: number, top: number, right: number, bottom: number): number {
-  if (p.x > left && p.x < right && p.y > top && p.y < bottom) return Number.POSITIVE_INFINITY
+/**
+ * 点到矩形区域的距离：内部为 0（命中，方案 49 可选中拖动），外部取最近边框距。
+ * 反转方案 43「内部不算——保证新图形可画在旧图形内」的取舍：按用户诉求
+ * 拖动优先，代价是起笔点落在旧图形内部时选中旧图形而非起画。
+ */
+function pointRectDist(p: Point, left: number, top: number, right: number, bottom: number): number {
+  if (p.x > left && p.x < right && p.y > top && p.y < bottom) return 0
   const dx = Math.max(left - p.x, p.x - right, 0)
   const dy = Math.max(top - p.y, p.y - bottom, 0)
   return Math.hypot(dx, dy)
 }
 
-/** 椭圆边框近似距：按归一化半径与方向半径缩放（内部不算）。 */
-function pointEllipseBorderDist(p: Point, cx: number, cy: number, rx: number, ry: number): number {
+/** 点到椭圆区域的距离：内部为 0（命中，方案 49），外部按归一化半径与方向半径缩放近似边框距。 */
+function pointEllipseDist(p: Point, cx: number, cy: number, rx: number, ry: number): number {
   if (rx < 0.5 || ry < 0.5) return Number.POSITIVE_INFINITY
   const nx = (p.x - cx) / rx
   const ny = (p.y - cy) / ry
   const norm = Math.hypot(nx, ny)
-  if (norm < 1) return Number.POSITIVE_INFINITY
+  if (norm < 1) return 0
   const dirRadius = norm / Math.hypot(nx / rx, ny / ry)
   return (norm - 1) * dirRadius
 }
@@ -140,7 +144,7 @@ export function cmdBBox(cmd: AnnotationCmd, canvasWidth: number, measure: (text:
  * 命中检测（近似命中，供选中/移动/双击编辑定位命令）：
  *   - pen/highlight：点到折线各段距离 ≤ max(8, linePx*2)
  *   - arrow：点到线段距离 ≤ 同阈值
- *   - rect/ellipse：点到边框距离 ≤ 阈值（内部不算——保证新图形可画在旧图形内）
+ *   - rect/ellipse：点在内部或距边框 ≤ 阈值（方案 49：内部命中可选中拖动）
  *   - mosaic：点在包围盒内
  *   - text：文字盒内（宽经 measure）
  *   - number：点距圆心 ≤ radius + 阈值
@@ -174,7 +178,7 @@ export function hitTest(
       case 'rect': {
         const threshold = hitThreshold(cmd.lineWidth, canvasWidth)
         hit =
-          pointRectBorderDist(
+          pointRectDist(
             point,
             Math.min(cmd.from.x, cmd.to.x),
             Math.min(cmd.from.y, cmd.to.y),
@@ -189,7 +193,7 @@ export function hitTest(
         const cy = (cmd.from.y + cmd.to.y) / 2
         const rx = Math.abs(cmd.to.x - cmd.from.x) / 2
         const ry = Math.abs(cmd.to.y - cmd.from.y) / 2
-        hit = pointEllipseBorderDist(point, cx, cy, rx, ry) <= threshold
+        hit = pointEllipseDist(point, cx, cy, rx, ry) <= threshold
         break
       }
       case 'mosaic': {

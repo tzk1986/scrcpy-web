@@ -41,6 +41,7 @@ from fastapi import FastAPI, WebSocketDisconnect
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
+from app.core.exceptions import ScrcpyOccupiedError
 from app.deps import get_stream_service
 from app.interfaces.ws import video as video_module
 from app.interfaces.ws.video import video_stream
@@ -828,6 +829,24 @@ def test_stream_error_notifies_client_and_stops_stream(video_client):
         # 方案 37 A4：错误文案脱敏——内部异常文本不外泄，通用文案回执
         assert error["message"] == "internal error"
         assert "编码器崩溃" not in error["message"]
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
+
+
+def test_domain_error_message_passes_through(video_client):
+    """方案 48：OpenScrcpyException 的用户文案（占用指引）原样透传，不脱敏。"""
+    hint = "设备 192.168.8.25:5555 上检测到已在运行的 scrcpy 会话，疑似上次会话残留"
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=FakeEncoder(),
+        error_after=1,
+        error=ScrcpyOccupiedError(hint),
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(0, IDR_0)
+        error = recv_json(session)
+        assert error["type"] == "error"
+        assert error["message"] == hint
     assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
