@@ -332,6 +332,19 @@ class DeviceService:
         await self.repo.save(info)
         return device_id
 
+    async def pair_tcp(self, ip: str, port: int, code: str) -> None:
+        """
+        无线调试配对（Android 11+，方案 47 T4），直通 adb 原语。
+
+        不建 transport、不留设备记录：配对只写入密钥，成功后的连接
+        仍走现有 connect_tcp（目标为设备显示的调试端口，非配对端口）。
+
+        异常：
+            DeviceUnreachableError: TCP 预检不可达时。
+            PairError: 配对失败，message 为分类中文文案。
+        """
+        await self.adb.pair_tcp(ip, port, code)
+
     async def scan_and_connect(
         self, label: str, targets: list[str], connect: bool = True, port: int = 5555
     ) -> ScanResult:

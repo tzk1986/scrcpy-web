@@ -16,6 +16,8 @@
     ├── InvalidIdentifierError   — 外部标识符（设备 ID/包名）格式非法（400，方案 37 A5）
     ├── AdbError                 — ADB 子进程返回非零退出码（400）
     ├── DeviceUnreachableError   — TCP 可达性预检失败（400，connect/disconnect 前置）
+    ├── InvalidPairRequestError  — 无线调试配对请求参数非法（400，方案 47 T4）
+    ├── PairError                — adb 无线调试配对失败，message 为分类中文文案（400，方案 47 T4）
     ├── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）
     ├── SettingsStoreError       — 用户设置存储 user.yaml 读写失败（500，方案 45 T2）
     ├── RecordingDisabledError   — 录制总开关关闭时请求开启（400）
@@ -118,6 +120,41 @@ class DeviceUnreachableError(OpenScrcpyException):
 
     def __init__(self, host: str, port: int, reason: str):
         super().__init__(f"设备 {host}:{port} 不可达：{reason}", code="DEVICE_UNREACHABLE")
+
+
+class InvalidPairRequestError(OpenScrcpyException):
+    """无线调试配对请求参数非法（方案 47 T4）。
+
+    走 400 结构化错误而非裸 ValueError（后者落 generic 处理器得 500）；
+    消息只回显字段名、不回显原值（InvalidIdentifierError 防反射面范式）。
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(f"Invalid pair request field: {field}", code="INVALID_PAIR_REQUEST")
+
+
+class PairError(OpenScrcpyException):
+    """adb 无线调试配对失败（方案 47 T4），message 为分类中文文案。"""
+
+    CODE_WRONG_HINT = "配对失败：配对码不正确或已过期，请核对手机弹窗显示的 6 位配对码后重试"
+    OLD_ADB_HINT = "配对失败：当前 ADB 不支持 pair 命令，请将 platform-tools 升级到 31 及以上（Android 11+ 无线调试配对需要）"
+    GENERIC_HINT = (
+        "配对失败：请确认手机「使用配对码配对设备」弹窗仍保持打开，"
+        "且输入的是弹窗显示的配对端口（弹窗超时或端口变化后需重新发起配对）"
+    )
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="PAIR_FAILED")
+
+    @classmethod
+    def classify(cls, detail: str) -> "PairError":
+        """adb pair 失败文本 → 分类 PairError（stderr/stdout 两形态共用）。"""
+        low = detail.lower()
+        if "command 'pair' not found" in low or "unknown command" in low:
+            return cls(cls.OLD_ADB_HINT)
+        if "pairing code" in low or "wrong pairing" in low or "invalid pairing" in low:
+            return cls(cls.CODE_WRONG_HINT)
+        return cls(cls.GENERIC_HINT)
 
 
 class ConfigReloadError(OpenScrcpyException):

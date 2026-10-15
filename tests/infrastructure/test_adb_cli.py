@@ -19,7 +19,7 @@ from ipaddress import ip_network
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.infrastructure.adb.cli import AdbCliDriver
-from app.core.exceptions import AdbError, DeviceUnreachableError
+from app.core.exceptions import AdbError, DeviceUnreachableError, PairError
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +342,81 @@ class TestTcpConnection:
 
         assert device_id == "192.168.1.5:5555"
         run_mock.assert_awaited_once_with("connect", "192.168.1.5:5555", timeout=None)
+
+
+class TestPairTcp:
+    """测试无线调试配对（adb pair，方案 47 T4）"""
+
+    @pytest.mark.asyncio
+    async def test_pair_tcp_success(self):
+        driver = AdbCliDriver()
+        run_mock = AsyncMock(return_value="Successfully paired to 192.168.1.5:37123 [guid=abc]")
+        probe = AsyncMock(return_value=None)
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp', new=probe),
+            patch.object(driver, '_run', new=run_mock),
+        ):
+            await driver.pair_tcp("192.168.1.5", 37123, "123456")
+        probe.assert_awaited_once()
+        run_mock.assert_awaited_once_with("pair", "192.168.1.5:37123", "123456")
+
+    @pytest.mark.asyncio
+    async def test_pair_tcp_unreachable_skips_adb(self):
+        """预检不可达快速失败，不进入 adb 子进程（与 connect 同语义）"""
+        driver = AdbCliDriver()
+        run_mock = AsyncMock()
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp',
+                  new=AsyncMock(side_effect=DeviceUnreachableError("192.168.1.5", 37123, "连接被拒绝"))),
+            patch.object(driver, '_run', new=run_mock),
+        ):
+            with pytest.raises(DeviceUnreachableError):
+                await driver.pair_tcp("192.168.1.5", 37123, "123456")
+        run_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pair_tcp_old_adb_maps_platform_tools_hint(self):
+        """adb 过旧（unknown command pair）→ 文案含 platform-tools 升级指引"""
+        driver = AdbCliDriver()
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+            patch.object(driver, '_run',
+                         new=AsyncMock(side_effect=AdbError("ADB command failed: adb.exe: unknown command pair"))),
+        ):
+            with pytest.raises(PairError) as exc:
+                await driver.pair_tcp("192.168.1.5", 37123, "123456")
+        assert "platform-tools" in exc.value.message
+
+    @pytest.mark.asyncio
+    async def test_pair_tcp_wrong_code_maps_code_hint_both_forms(self):
+        """配对码错误两类形态（stderr 异常/stdout 文本）都归入"配对码"文案"""
+        driver = AdbCliDriver()
+        stderr_form = AdbError(
+            "ADB command failed: Pairing failed. Please make sure you have entered a valid pairing code")
+        for is_exception, detail in ((True, stderr_form), (False, "Pairing failed: invalid pairing code")):
+            run_mock = (AsyncMock(side_effect=detail) if is_exception
+                        else AsyncMock(return_value=detail))
+            with (
+                patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+                patch.object(driver, '_run', new=run_mock),
+            ):
+                with pytest.raises(PairError) as exc:
+                    await driver.pair_tcp("192.168.1.5", 37123, "000000")
+            assert "配对码" in exc.value.message
+
+    @pytest.mark.asyncio
+    async def test_pair_tcp_generic_fallback(self):
+        """其他失败（拒绝连接等）→ 弹窗/端口最新性兜底文案，code=PAIR_FAILED"""
+        driver = AdbCliDriver()
+        with (
+            patch('app.infrastructure.adb.cli.probe_tcp', new=AsyncMock(return_value=None)),
+            patch.object(driver, '_run',
+                         new=AsyncMock(side_effect=AdbError("ADB command failed: connection refused"))),
+        ):
+            with pytest.raises(PairError) as exc:
+                await driver.pair_tcp("192.168.1.5", 37123, "123456")
+        assert exc.value.code == "PAIR_FAILED"
+        assert "弹窗" in exc.value.message
 
 
 class TestScanHosts:

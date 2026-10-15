@@ -31,7 +31,7 @@ import shlex
 from typing import AsyncIterator, Callable, cast
 
 from app.core.config import settings
-from app.core.exceptions import AdbError, DeviceUnreachableError
+from app.core.exceptions import AdbError, DeviceUnreachableError, PairError
 from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.domain.device import DeviceInfo
@@ -721,6 +721,42 @@ class AdbCliDriver:
         except AdbError as e:
             logger.error("tcp_connect_failed", ip=ip, port=port, error=str(e))
             raise
+
+    async def pair_tcp(self, ip: str, port: int, code: str) -> None:
+        """
+        无线调试配对（Android 11+，方案 47 T4）。
+
+        两步式的第一步：对手机上「使用配对码配对设备」弹窗显示的
+        host:port + 6 位配对码执行 adb pair。成功后需再用 adb connect
+        连接设备显示的调试端口（复用现有 connect_tcp）。
+
+        参数：
+            ip: 设备 IP。
+            port: 弹窗显示的配对端口（非 5555，随弹窗变化）。
+            code: 6 位配对码（字符串保留前导零）。
+
+        异常：
+            DeviceUnreachableError: TCP 预检不可达时（不创建子进程）。
+            PairError: 配对失败，message 为分类中文文案。
+        """
+        target = f"{ip}:{port}"
+        logger.info("pairing_tcp", ip=ip, port=port)
+
+        # 预检：不可达快速失败，语义与 connect_tcp 一致
+        await probe_tcp(ip, port, settings().adb.probe_timeout)
+
+        # _run 失败时 AdbError 文本含 stderr、成功 stdout 即配对输出；
+        # 两形态统一喂 classify，避免在 except 内再造分支。
+        detail = ""
+        try:
+            detail = await self._run("pair", target, code)
+        except AdbError as e:
+            detail = str(e)
+
+        if "successfully paired" in detail.lower():
+            logger.info("tcp_paired", target=target)
+            return
+        raise PairError.classify(detail)
 
     async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         """

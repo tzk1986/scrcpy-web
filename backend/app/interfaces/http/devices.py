@@ -12,6 +12,7 @@
     POST   /api/devices/batch/install       — 批量安装 APK
     GET    /api/devices/{device_id}/screenshot — 截图
     POST   /api/devices/connect             — 通过 TCP/IP 连接设备
+    POST   /api/devices/pair                — 无线调试配对（Android 11+，方案 47 T4）
     POST   /api/devices/scan                — 网段扫描并批量连接（方案 36）
     POST   /api/devices/{device_id}/disconnect — 断开 TCP/IP 连接
     GET    /api/devices/events              — 设备变化事件流（SSE）
@@ -21,6 +22,7 @@
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
 from typing import Any, Literal
@@ -29,7 +31,12 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response, StreamingResponse
 
 from app.application.device_service import DeviceService, ScanResult
-from app.core.exceptions import AdbError, DeviceNotFoundError, InvalidScanRangeError
+from app.core.exceptions import (
+    AdbError,
+    DeviceNotFoundError,
+    InvalidPairRequestError,
+    InvalidScanRangeError,
+)
 from app.core.launcher import is_shutdown_requested
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
@@ -353,6 +360,51 @@ async def connect_device(
     """
     device_id = await service.connect_tcp(ip, port)
     return {"success": True, "device_id": device_id}
+
+
+# 配对码校验：仅 ASCII 6 位数字（re.ASCII 防 \d 匹配全角数字，方案 47 T4）
+_PAIR_CODE_RE = re.compile(r"\d{6}", re.ASCII)
+
+
+@router.post("/pair")
+async def pair_device(
+    ip: str,
+    port: int,
+    code: str,
+    service: DeviceService = Depends(get_device_service),
+) -> dict[str, Any]:
+    """
+    无线调试配对（Android 11+，方案 47 T4）。
+
+    两步式第一步：对手机「使用配对码配对设备」弹窗显示的 ip:port + 6 位
+    配对码执行 adb pair；成功后需用设备显示的调试端口另行 connect
+    （复用 /connect）。校验在端点层完成，非法参数走 400 结构化错误。
+
+    参数：
+        ip: 弹窗显示的配对主机 IP（仅 IPv4）。
+        port: 弹窗显示的配对端口（1-65535，随弹窗变化，无默认值）。
+        code: 6 位配对码（字符串，保留前导零）。
+
+    返回：
+        {"success": True, "paired": "ip:port"}。
+
+    异常：
+        InvalidPairRequestError: 参数非法（400，不回显原值）。
+        DeviceUnreachableError: 配对端口不可达（400）。
+        PairError: 配对失败（400，分类中文文案）。
+    """
+    try:
+        addr = ip_address(ip)
+    except ValueError:
+        raise InvalidPairRequestError("ip")
+    if not isinstance(addr, IPv4Address):
+        raise InvalidPairRequestError("ip")
+    if not 1 <= port <= 65535:
+        raise InvalidPairRequestError("port")
+    if not _PAIR_CODE_RE.fullmatch(code):
+        raise InvalidPairRequestError("code")
+    await service.pair_tcp(ip, port, code)
+    return {"success": True, "paired": f"{ip}:{port}"}
 
 
 @router.post("/{device_id}/disconnect")

@@ -9,6 +9,7 @@
     - POST /api/devices/batch/install          批量安装（字面路径不被 {device_id} 吞掉）
     - GET  /api/devices/{id}/screenshot        截图二进制 + Content-Type
     - POST /api/devices/connect                ip/port 透传 + 默认端口
+    - POST /api/devices/pair                   无线调试配对（方案 47 T4：参数校验 400 / 失败分类）
     - POST /api/devices/scan                   CIDR 校验（422）/ 互斥（409）/ 序列化（方案 36）
     - POST /api/devices/{id}/disconnect        "ip:port" 解析 / 无冒号不过滤
     - GET  /api/devices/events                 SSE 响应头、事件负载、断连回调清理
@@ -32,7 +33,7 @@ from typing import Any
 import pytest
 
 from app.application.device_service import ConnectAttempt, ScanResult
-from app.core.exceptions import AdbError, InvalidScanRangeError, ScanBusyError
+from app.core.exceptions import AdbError, InvalidScanRangeError, PairError, ScanBusyError
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
 from app.interfaces.http import devices as devices_module
@@ -96,6 +97,7 @@ class FakeDeviceService:
             truncated=False,
         )
         self.scan_error: Exception | None = None
+        self.pair_error: Exception | None = None
         self._on_device_connected: list[Any] = []
         self._on_device_disconnected: list[Any] = []
 
@@ -132,6 +134,11 @@ class FakeDeviceService:
     async def connect_tcp(self, ip: str, port: int = 5555) -> str:
         self.calls.append(("connect_tcp", ip, port))
         return self.new_device_id
+
+    async def pair_tcp(self, ip: str, port: int, code: str) -> None:
+        self.calls.append(("pair_tcp", ip, port, code))
+        if self.pair_error is not None:
+            raise self.pair_error
 
     async def scan_and_connect(
         self, label: str, targets: list[str], connect: bool = True, port: int = 5555
@@ -346,6 +353,74 @@ def test_connect_device_default_port(fake: FakeDeviceService) -> None:
 
     assert response.status_code == 200
     assert fake.calls == [("connect_tcp", "192.168.1.5", 5555)]
+
+
+# ---------------------------------------------------------------------------
+# 无线调试配对（方案 47 T4）
+# ---------------------------------------------------------------------------
+
+def test_pair_device_success(fake: FakeDeviceService) -> None:
+    """合法参数 → service.pair_tcp 透传，回显 paired 目标。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/pair", params={"ip": "192.168.1.5", "port": 37123, "code": "123456"}
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "paired": "192.168.1.5:37123"}
+    assert fake.calls == [("pair_tcp", "192.168.1.5", 37123, "123456")]
+
+
+def test_pair_device_leading_zero_code_preserved(fake: FakeDeviceService) -> None:
+    """code 以字符串接参：前导零不得丢（Review Focus 1）。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/pair", params={"ip": "192.168.1.5", "port": 37123, "code": "012345"}
+        )
+
+    assert response.status_code == 200
+    assert fake.calls == [("pair_tcp", "192.168.1.5", 37123, "012345")]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"ip": "192.168.1.5", "port": 37123, "code": "12345"},  # 不足 6 位
+        {"ip": "192.168.1.5", "port": 37123, "code": "1234567"},  # 超过 6 位
+        {"ip": "192.168.1.5", "port": 37123, "code": "abc123"},  # 非数字
+        {"ip": "192.168.1.5", "port": 37123, "code": "１２３４５６"},  # 全角数字不受理
+        {"ip": "not-an-ip", "port": 37123, "code": "123456"},  # 非法 IP
+        {"ip": "::1", "port": 37123, "code": "123456"},  # 仅受理 IPv4
+        {"ip": "192.168.1.5", "port": 0, "code": "123456"},  # 端口越下界
+        {"ip": "192.168.1.5", "port": 70000, "code": "123456"},  # 端口越上界
+    ],
+)
+def test_pair_device_invalid_request_400(fake: FakeDeviceService, params: dict[str, Any]) -> None:
+    """参数校验失败 → 400 INVALID_PAIR_REQUEST（非 500 兜底），不触达 service。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/pair", params=params)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_PAIR_REQUEST"
+    assert fake.calls == []
+
+
+def test_pair_device_failure_maps_structured_400(fake: FakeDeviceService) -> None:
+    """service 抛 PairError → 400 PAIR_FAILED 结构化中文文案。"""
+    fake.pair_error = PairError("配对失败：配对码错误或已过期")
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/pair", params={"ip": "192.168.1.5", "port": 37123, "code": "123456"}
+        )
+
+    assert response.status_code == 400
+    body = response.json()["error"]
+    assert body["code"] == "PAIR_FAILED"
+    assert body["message"] == "配对失败：配对码错误或已过期"
 
 
 def test_disconnect_device_with_port(fake: FakeDeviceService) -> None:

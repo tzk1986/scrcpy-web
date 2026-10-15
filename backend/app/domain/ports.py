@@ -445,6 +445,16 @@ class AdbDriver(Protocol):
         """
         ...
 
+    async def pair_tcp(self, ip: str, port: int, code: str) -> None:
+        """
+        无线调试配对（Android 11+，方案 47 T4），不建 transport、不留设备记录。
+
+        异常：
+            DeviceUnreachableError: TCP 预检不可达时（不创建子进程）。
+            PairError: 配对失败，message 为分类中文文案。
+        """
+        ...
+
     async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         """断开 TCP/IP 连接（失败仅记警告，不抛出）。"""
         ...
