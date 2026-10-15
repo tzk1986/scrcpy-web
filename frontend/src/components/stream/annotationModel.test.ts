@@ -7,17 +7,24 @@
  *   - 下限钳制：超高分辨率下极小比例不消失（线 ≥1px、字号 ≥8px）
  *   - nextNumberIndex：现有 number 命令最大序号 +1（删除中间不重号）
  *   - drawCmd 渲染（T4）：ellipse/highlight/number/mosaic 全类型（fake ctx 记录式断言）
+ *   - 缩放（方案 47 T1）：resizeHandles 8 手柄 / hitHandle 命中 / transformCmd 仿射联动
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   FONT_RATIO_DEFAULT,
+  FONT_RATIO_MAX,
   LINE_RATIO_DEFAULT,
+  LINE_RATIO_MAX,
+  LINE_RATIO_MIN,
   cmdBBox,
   drawCmd,
   fontPx,
+  hitHandle,
   hitTest,
   linePx,
   nextNumberIndex,
+  resizeHandles,
+  transformCmd,
   translateCmd,
 } from './annotationModel'
 import type {
@@ -313,5 +320,150 @@ describe('drawCmd 渲染路径（T4 新工具）', () => {
     drawCmd(asCtx, thick, 800, base) // block = 9.6
     const thickWidth = offscreens[0].width
     expect(thickWidth).toBeLessThan(thinWidth)
+  })
+})
+
+describe('resizeHandles / hitHandle（方案 47 T1）', () => {
+  const bbox = { x: 100, y: 100, width: 200, height: 100 }
+
+  it('8 手柄：四角 + 四边中点，角先边后（命中优先序）', () => {
+    const hs = resizeHandles(bbox)
+    expect(hs.map((h) => h.id)).toEqual(['nw', 'ne', 'sw', 'se', 'n', 's', 'w', 'e'])
+    const pos = Object.fromEntries(hs.map((h) => [h.id, { x: h.x, y: h.y }]))
+    expect(pos.nw).toEqual({ x: 100, y: 100 })
+    expect(pos.ne).toEqual({ x: 300, y: 100 })
+    expect(pos.sw).toEqual({ x: 100, y: 200 })
+    expect(pos.se).toEqual({ x: 300, y: 200 })
+    expect(pos.n).toEqual({ x: 200, y: 100 })
+    expect(pos.s).toEqual({ x: 200, y: 200 })
+    expect(pos.w).toEqual({ x: 100, y: 150 })
+    expect(pos.e).toEqual({ x: 300, y: 150 })
+  })
+
+  it('命中半径 max(6, 图宽×0.006)：区内返 id、区外 null', () => {
+    const hs = resizeHandles(bbox)
+    // 800 宽 → r=6：距 nw (3,3)≈4.24 命中；距 n 5px 命中
+    expect(hitHandle({ x: 103, y: 103 }, hs, 800)).toBe('nw')
+    expect(hitHandle({ x: 200, y: 105 }, hs, 800)).toBe('n')
+    expect(hitHandle({ x: 150, y: 150 }, hs, 800)).toBeNull()
+    // 2000 宽 → r=12：11px 命中、13px 不中
+    expect(hitHandle({ x: 111, y: 100 }, hs, 2000)).toBe('nw')
+    expect(hitHandle({ x: 113, y: 100 }, hs, 2000)).toBeNull()
+  })
+
+  it('退化包围盒（零尺寸）各手柄重合：按序返回首个 nw', () => {
+    const hs = resizeHandles({ x: 50, y: 50, width: 0, height: 0 })
+    expect(hitHandle({ x: 50, y: 50 }, hs, 800)).toBe('nw')
+  })
+})
+
+describe('transformCmd（方案 47 T1：锚点仿射 + 参数联动）', () => {
+  const anchor0 = { x: 0, y: 0 }
+
+  it('rect：几何以 anchor 不动点缩放；lineWidth 随两向均值联动', () => {
+    const rect: RectCmd = {
+      kind: 'rect',
+      from: { x: 100, y: 100 },
+      to: { x: 200, y: 200 },
+      color: '#f00',
+      lineWidth: 0.0035,
+    }
+    transformCmd(rect, 2, 2, anchor0)
+    expect(rect.from).toEqual({ x: 200, y: 200 })
+    expect(rect.to).toEqual({ x: 400, y: 400 })
+    expect(rect.lineWidth).toBeCloseTo(0.007, 10)
+  })
+
+  it('有向倍率：负值几何自然翻转，参数取 |s| 不受符号影响', () => {
+    const rect: RectCmd = {
+      kind: 'rect',
+      from: { x: 100, y: 100 },
+      to: { x: 200, y: 200 },
+      color: '#f00',
+      lineWidth: 0.0035,
+    }
+    transformCmd(rect, -1, -1, { x: 100, y: 100 })
+    expect(rect.to).toEqual({ x: 0, y: 0 })
+    expect(rect.from).toEqual({ x: 100, y: 100 })
+    expect(rect.lineWidth).toBeCloseTo(0.0035, 10)
+  })
+
+  it('倍率下限 0.02：sx 拖到 0 仍保留 2% extent 不压扁为 0', () => {
+    const rect: RectCmd = {
+      kind: 'rect',
+      from: { x: 100, y: 100 },
+      to: { x: 200, y: 200 },
+      color: '#f00',
+      lineWidth: 0.0035,
+    }
+    transformCmd(rect, 0, 1, { x: 100, y: 100 })
+    expect(rect.to.x).toBeCloseTo(102, 6)
+    expect(rect.to.y).toBe(200)
+  })
+
+  it('pen/highlight 逐点仿射', () => {
+    const pen: PenCmd = {
+      kind: 'pen',
+      points: [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+      ],
+      color: '#f00',
+      lineWidth: 0.0035,
+    }
+    transformCmd(pen, 2, 0.5, anchor0)
+    expect(pen.points).toEqual([
+      { x: 0, y: 0 },
+      { x: 20, y: 5 },
+    ])
+  })
+
+  it('text：at 仿射、fontSize 随 min(|sx|,|sy|)（防文字过大出框）', () => {
+    const text: TextCmd = { kind: 'text', at: { x: 100, y: 100 }, text: 'x', color: '#f00', fontSize: 0.05 }
+    transformCmd(text, 3, 0.5, anchor0)
+    expect(text.at).toEqual({ x: 300, y: 50 })
+    expect(text.fontSize).toBeCloseTo(0.025, 10)
+  })
+
+  it('number：同 text 联动且 index/color 不动', () => {
+    const num: NumberCmd = { kind: 'number', at: { x: 10, y: 20 }, index: 7, color: '#0f0', fontSize: 0.05 }
+    transformCmd(num, 2, 2, anchor0)
+    expect(num.at).toEqual({ x: 20, y: 40 })
+    expect(num.fontSize).toBeCloseTo(0.1, 10)
+    expect(num.index).toBe(7)
+    expect(num.color).toBe('#0f0')
+  })
+
+  it('mosaic：仅几何 from/to，lineWidth（块尺寸）随均值联动', () => {
+    const mosaic: MosaicCmd = { kind: 'mosaic', from: { x: 10, y: 10 }, to: { x: 110, y: 110 }, lineWidth: 0.0035 }
+    transformCmd(mosaic, 2, 1, anchor0)
+    expect(mosaic.to).toEqual({ x: 220, y: 110 })
+    expect(mosaic.lineWidth).toBeCloseTo(0.0035 * 1.5, 10)
+  })
+
+  it('参数 clamp 回区间：放大不出 MAX、压扁不出 MIN', () => {
+    const text: TextCmd = { kind: 'text', at: { x: 0, y: 0 }, text: 'x', color: '#f00', fontSize: FONT_RATIO_MAX }
+    transformCmd(text, 10, 10, anchor0)
+    expect(text.fontSize).toBe(FONT_RATIO_MAX)
+    const pen: PenCmd = { kind: 'pen', points: [{ x: 10, y: 10 }], color: '#f00', lineWidth: LINE_RATIO_MIN }
+    transformCmd(pen, 0.02, 0.02, anchor0)
+    expect(pen.lineWidth).toBe(LINE_RATIO_MIN)
+    const pen2: PenCmd = { kind: 'pen', points: [{ x: 10, y: 10 }], color: '#f00', lineWidth: LINE_RATIO_MAX }
+    transformCmd(pen2, 100, 100, anchor0)
+    expect(pen2.lineWidth).toBe(LINE_RATIO_MAX)
+  })
+
+  it('非有限倍率兜底为 1（几何不受污染 NaN）', () => {
+    const rect: RectCmd = {
+      kind: 'rect',
+      from: { x: 100, y: 100 },
+      to: { x: 200, y: 200 },
+      color: '#f00',
+      lineWidth: 0.0035,
+    }
+    transformCmd(rect, Number.NaN, 1, { x: 50, y: 50 })
+    expect(rect.from).toEqual({ x: 100, y: 100 })
+    expect(rect.to).toEqual({ x: 200, y: 200 })
+    expect(rect.lineWidth).toBeCloseTo(0.0035, 10)
   })
 })

@@ -1,8 +1,9 @@
 /**
- * 标注命令模型（方案 43 T1；T4 迁入 drawCmd 全类型渲染）
- * =====================================================
+ * 标注命令模型（方案 43 T1；T4 迁入 drawCmd 全类型渲染；方案 47 T1 追加缩放层）
+ * =========================================================================
  *
- * 纯函数模块：类型 / 常量 / 比例换算 / 序号分配 / 命中 / 包围盒 / 平移 / 绘制。
+ * 纯函数模块：类型 / 常量 / 比例换算 / 序号分配 / 命中 / 包围盒 / 平移 / 绘制 /
+ * 缩放手柄与仿射（方案 47 T1）。
  * 字号（fontSize）与线宽（lineWidth）一律以「相对图宽比例」存储（如 0.045 / 0.0035），
  * 渲染时经 linePx/fontPx ×canvasWidth 换算为像素——显示与导出同源，
  * 保证文字/线宽在任意分辨率下观感一致（修复 20px 硬编码根因）。
@@ -239,6 +240,94 @@ export function translateCmd(cmd: AnnotationCmd, dx: number, dy: number): void {
       cmd.at.x += dx
       cmd.at.y += dy
       break
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 拖拽缩放（方案 47 T1）：手柄布局 / 手柄命中 / 单命令锚点仿射
+ * ------------------------------------------------------------------------- */
+
+export type ResizeHandleId = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e'
+export interface ResizeHandle {
+  id: ResizeHandleId
+  x: number
+  y: number
+}
+
+/** 有向倍率绝对值下限（防压扁为 0/除零；拖过近锚点仍保留 2% extent）。 */
+export const RESIZE_MIN_SCALE = 0.02
+
+/** 选中命令的 8 个缩放手柄（四角在前、边中点在后——hitHandle 同序即角优先）。 */
+export function resizeHandles(bbox: BBox): ResizeHandle[] {
+  const { x, y, width: w, height: h } = bbox
+  return [
+    { id: 'nw', x, y },
+    { id: 'ne', x: x + w, y },
+    { id: 'sw', x, y: y + h },
+    { id: 'se', x: x + w, y: y + h },
+    { id: 'n', x: x + w / 2, y },
+    { id: 's', x: x + w / 2, y: y + h },
+    { id: 'w', x, y: y + h / 2 },
+    { id: 'e', x: x + w, y: y + h / 2 },
+  ]
+}
+
+/** 点命中手柄（半径 max(6, 图宽×0.006)，按序首个命中）；未命中 null。 */
+export function hitHandle(point: Point, handles: ResizeHandle[], canvasWidth: number): ResizeHandleId | null {
+  const r = Math.max(6, canvasWidth * 0.006)
+  for (const h of handles) {
+    if (Math.hypot(point.x - h.x, point.y - h.y) <= r) return h.id
+  }
+  return null
+}
+
+/** 有向倍率钳制：保号（允许翻转）、绝对值下限 RESIZE_MIN_SCALE；非有限兜底 1。 */
+function clampScale(s: number): number {
+  if (!Number.isFinite(s)) return 1
+  const sign = s < 0 ? -1 : 1
+  return sign * Math.max(Math.abs(s), RESIZE_MIN_SCALE)
+}
+
+function clampRatio(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v))
+}
+
+/**
+ * 以 anchor 为不动点对单命令做仿射缩放（原地修改，translateCmd 同风格）。
+ * sx/sy 有向倍率（负 → 几何自然翻转，from/to 交叉）；参数联动取 |s|：
+ * fontSize ×min(|sx|,|sy|)（防文字过大出框）、lineWidth ×(|sx|+|sy|)/2，
+ * clamp 回比例区间。bbox 由调用方经 cmdBBox 重算，下一帧手柄自然更新。
+ */
+export function transformCmd(cmd: AnnotationCmd, sx: number, sy: number, anchor: Point): void {
+  const kx = clampScale(sx)
+  const ky = clampScale(sy)
+  const map = (p: Point): void => {
+    p.x = anchor.x + (p.x - anchor.x) * kx
+    p.y = anchor.y + (p.y - anchor.y) * ky
+  }
+  switch (cmd.kind) {
+    case 'pen':
+    case 'highlight':
+      for (const p of cmd.points) map(p)
+      break
+    case 'arrow':
+    case 'rect':
+    case 'ellipse':
+    case 'mosaic':
+      map(cmd.from)
+      map(cmd.to)
+      break
+    case 'text':
+    case 'number':
+      map(cmd.at)
+      break
+  }
+  const ax = Math.abs(kx)
+  const ay = Math.abs(ky)
+  if (cmd.kind === 'text' || cmd.kind === 'number') {
+    cmd.fontSize = clampRatio(cmd.fontSize * Math.min(ax, ay), FONT_RATIO_MIN, FONT_RATIO_MAX)
+  } else {
+    cmd.lineWidth = clampRatio(cmd.lineWidth * ((ax + ay) / 2), LINE_RATIO_MIN, LINE_RATIO_MAX)
   }
 }
 
