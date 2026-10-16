@@ -782,6 +782,26 @@ async def test_events_stream_payload_and_cancel_cleanup(fake: FakeDeviceService)
     with pytest.raises(asyncio.CancelledError):
         await stream.athrow(asyncio.CancelledError())
     assert fake._on_device_connected == []
+
+
+async def test_events_connected_alias_or_fallback(
+    fake: FakeDeviceService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SSE 双源兜底两分支：对象 alias 空取 device_alias helper；非空对象优先（方案 50 T1）。"""
+    monkeypatch.setattr(devices_module, "device_alias", lambda device_id: f"设置-{device_id}")
+    response = await devices_module.device_events(fake)  # type: ignore[arg-type]
+    stream = response.body_iterator
+
+    await fake._on_device_connected[0](make_device())  # 默认 alias=""
+    payload = json.loads((await stream.__anext__()).removeprefix("data: ").strip())
+    assert payload["device"]["alias"] == f"设置-{DEV}"
+
+    await fake._on_device_connected[0](make_device(alias="对象名"))
+    payload = json.loads((await stream.__anext__()).removeprefix("data: ").strip())
+    assert payload["device"]["alias"] == "对象名"
+
+    await stream.aclose()
+    assert fake._on_device_connected == []
     assert fake._on_device_disconnected == []
 
 

@@ -402,6 +402,19 @@ async def test_device_repo_crud(tmp_path):
     await repo.delete(wifi.id)  # 删除不存在的设备：静默返回
 
 
+async def test_device_repo_alias_not_persisted(tmp_path):
+    """方案 50 D1：alias 是瞬态展示字段，save 显式 9 列不落库，读回回落默认空串。"""
+    db = str(tmp_path / "devices_alias.sqlite")
+    repo = SqliteDeviceRepository(db)
+    await repo.init_db()
+    dev = DeviceInfo(id="d1", model="m", os_version="1", resolution=(1, 2),
+                     battery=50, status="online", alias="主力机")
+    await repo.save(dev)
+    got = await repo.get("d1")
+    assert got is not None
+    assert got.alias == ""  # 别名持久化只走 user.yaml，不进 SQLite 快照
+
+
 async def test_device_repo_close_releases_shared_pool(tmp_path):
     db = str(tmp_path / "devices_close.sqlite")
     repo = SqliteDeviceRepository(db)
