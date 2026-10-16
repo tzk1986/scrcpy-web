@@ -1,17 +1,19 @@
 """
-截图 PNG 旋转补偿（方案 38 B4）
+截图 PNG 旋转补偿
 ============================
 
 层：应用层（纯函数）。
 
-screencap 输出物理 framebuffer 方向，不随 Android 显示 rotation 旋转；
-rotation（Surface 值 0-3）> 0 时对 PNG 做同向补偿，使截图与视频流一致。
+仅补偿 rotation=2（180°）：
 
-补偿方向＝按 rotation 顺时针 r×90°（映射到 PIL 逆时针转置常量）：
-    1 → ROTATE_270（逆时针 270 ≡ 顺时针 90）
-    2 → ROTATE_180（180° 已真机验证于 .24；方向自反无歧义）
-    3 → ROTATE_90（逆时针 90 ≡ 顺时针 270）
-90/270 尚无真机样本，方向属已知限制（方案 38 §七）。
+设备端 `screencap -p` 输出的是逻辑方向图像而非物理 framebuffer——.22
+（rotation=1，竖屏面板横屏使用）实测原生输出已是 1280×800 横屏正立，
+服务端再旋转 90° 反而过补偿出竖图（方案 38 B4 「输出物理方向」假设被
+活体样本证伪）。h264 视频流帧天然正立、截图 raw 链前端仅对 rotation=2
+做 180° 补偿，两条链对 90/270 均不旋转——PNG 链与其对齐（三链一致）。
+
+rotation=2 时 framebuffer 整体倒置，180° 补偿方向自反无歧义
+（已真机验证于 .24）；0/1/3 一律字节级原样透传。
 """
 
 import io
@@ -19,9 +21,7 @@ import io
 from PIL import Image
 
 _ROTATION_TRANSPOSE = {
-    1: Image.Transpose.ROTATE_270,
     2: Image.Transpose.ROTATE_180,
-    3: Image.Transpose.ROTATE_90,
 }
 
 
@@ -34,7 +34,7 @@ def rotate_png_payload(data: bytes, rotation: int) -> bytes:
         rotation: Surface rotation 值（0-3）。
 
     返回：
-        补偿后的 PNG 字节；rotation 为 0 或越界时字节级原样透传。
+        补偿后的 PNG 字节；rotation 非 2（含 0/1/3 与越界）时字节级原样透传。
     """
     if rotation not in _ROTATION_TRANSPOSE:
         return data

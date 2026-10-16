@@ -1,11 +1,11 @@
 """
-截图 PNG 旋转补偿纯函数测试（方案 38 B4）
+截图 PNG 旋转补偿纯函数测试
 ==========================================
 
 测试 image_ops.rotate_png_payload：
-    - rotation=0 / 越界 → 字节级原样透传（不增不减）
+    - rotation=0 / 1 / 3 / 越界 → 字节级原样透传（仅 180° 补偿，三链一致口径）
     - rotation=2 → 180° 像素位置互换锚点验证
-    - rotation 1/2/3 → 两次互补旋转回原图（映射互补性守卫）
+    - rotation=2 → 两次旋转回原图（180° 自反守卫）
 """
 
 import io
@@ -40,6 +40,14 @@ def test_rotation_zero_passthrough():
     assert rotate_png_payload(png, 0) == png
 
 
+@pytest.mark.parametrize("rotation", [1, 3])
+def test_rotation_90_270_passthrough(rotation: int):
+    """rotation=1/3 字节级原样透传：.22 实测 screencap 原生输出已是逻辑正立，
+    服务端 90/270 旋转属过补偿（与视频流/raw 链对齐，一律不转）。"""
+    png, _ = _make_png()
+    assert rotate_png_payload(png, rotation) == png
+
+
 def test_rotation_invalid_passthrough():
     """越界 rotation 原样透传（防御不猜）。"""
     png, _ = _make_png()
@@ -57,10 +65,8 @@ def test_rotation_180_flips_pixels():
             assert dst[y * w + x] == src_px[w - 1 - x, h - 1 - y]
 
 
-@pytest.mark.parametrize("rotation", [1, 2, 3])
-def test_complementary_rotation_identity(rotation: int):
-    """rotation r 后再旋转 4-r 回到原图（映射互补性守卫）。"""
+def test_rotation_180_self_inverse():
+    """rotation=2 两次旋转回原图（180° 自反守卫）。"""
     png, src = _make_png()
-    once = rotate_png_payload(png, rotation)
-    twice = rotate_png_payload(once, (4 - rotation) % 4)
+    twice = rotate_png_payload(rotate_png_payload(png, 2), 2)
     assert _pixels(twice) == list(src.getdata())

@@ -260,8 +260,8 @@ class DeviceService:
 
     async def screenshot(self, device_id: str) -> bytes:
         """
-        从设备截取屏幕截图（方案 38 B4：rotation>0 时经 180/90 补偿，
-        使截图方向与视频流一致）。
+        从设备截取屏幕截图（仅 rotation=2 经 180° 补偿；0/1/3 不旋转，
+        与视频流/raw 链三链一致，见 image_ops）。
 
         参数：
             device_id: ADB 序列号。

@@ -214,7 +214,8 @@ async def screenshot(
         raw：gzip 压缩的 raw RGBA 帧数据（X-Frame-Format: raw-rgba）；
         链路失败时回退 PNG（X-Frame-Format: png）。
         两类响应均携带 X-Rotation（0-3，方案 38 B6）：前端 raw 链路据此
-        画布补偿；PNG 链路已由应用层内联补偿，头供一致性参考。
+        画布补偿；PNG 链路已由应用层内联补偿仅 180°（90/270 不旋转，
+        screencap 原生输出即逻辑正立），头供一致性参考。
     """
     rotation = await service.get_rotation(device_id)
     if format == "raw":
