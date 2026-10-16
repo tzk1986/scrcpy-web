@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-10-16（验证包，未发布）
+
+### Added
+
+- 设备备注/别名快速定位（方案 50）：已连接设备可为其设置备注（≤64 字符，存 user.yaml `devices.<id>.alias`，跨断线重连与重启持久）；Dashboard 设备 ID 列别名优先两行展示（别名+灰字序列号，留空回落序列号）；操作列「备注」按钮行内编辑（确定保存/空串清除/取消不动）；表格上方新增搜索框按 备注/型号/设备ID 三字段子串过滤（大小写不敏感）；设置页设备级覆盖下拉标题带别名
+
+### Fixed
+
+- 设置页设备聚焦与下拉标题长期失效（方案 45 T8 遗留）：`api.listDevices` 真实返回键为 `id`，前端曾误按 `device_id` 取值——`?device=` 参数聚焦与设备下拉选中实际未生效；本期修正取值并以真实响应形状 mock 钉死
+
 ## [0.7.9] - 2026-10-16
 
 ### Added
