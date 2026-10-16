@@ -124,10 +124,15 @@ const ElAlertStub = {
 
 const ElTableStub = defineComponent({
   name: 'ElTable',
-  props: { data: { type: Array, default: () => [] } },
+  props: {
+    data: { type: Array, default: () => [] },
+    rowClassName: { type: Function, default: null },
+  },
   emits: ['selection-change'],
   setup(props, { slots, expose }) {
     provide('tableData', () => props.data as Array<Record<string, unknown>>)
+    // 半死设备治理：row-class-name 回调透传给列 stub，用于 .stub-row 置灰断言
+    provide('rowClassName', () => props.rowClassName as ((arg: { row: Record<string, unknown> }) => string) | null)
     // 方案 36 增补 D10：clearSelection 暴露给测试断言（批量断开后调用）
     const clearSelection = vi.fn()
     expose({ clearSelection })
@@ -139,6 +144,9 @@ const ElTableColumnStub = defineComponent({
   name: 'ElTableColumn',
   setup(_props, { slots }) {
     const tableData = inject<(() => Array<Record<string, unknown>>) | undefined>('tableData')
+    const rowClassName = inject<
+      (() => ((arg: { row: Record<string, unknown> }) => string) | null) | undefined
+    >('rowClassName')
     return () => {
       const slot = slots.default
       // 无 default slot 的列（如 type=selection）仍渲染根元素：
@@ -148,7 +156,14 @@ const ElTableColumnStub = defineComponent({
         'div',
         { class: 'stub-column' },
         tableData().map((row) =>
-          vueH('div', { class: 'stub-row', 'data-id': String(row.id ?? '') }, slot({ row }))
+          vueH(
+            'div',
+            {
+              class: ['stub-row', rowClassName?.()?.({ row })],
+              'data-id': String(row.id ?? ''),
+            },
+            slot({ row })
+          )
         )
       )
     }
@@ -178,6 +193,13 @@ const ElCheckboxStub = {
 const ElPopoverStub = {
   name: 'ElPopover',
   template: '<div class="stub-popover"><slot /><slot name="reference" /></div>',
+}
+
+// 半死设备治理：tooltip 的 content 指引文案经 data-content 属性供测试断言
+const ElTooltipStub = {
+  name: 'ElTooltip',
+  props: ['content'],
+  template: '<div class="stub-tooltip" :data-content="content"><slot /></div>',
 }
 
 // 方案 47 T5：el-tabs 轻量替身——provide 当前 modelValue，pane 仅激活者渲染内容
@@ -266,6 +288,7 @@ async function mountDashboard(options: { pinia?: Pinia } = {}): Promise<VueWrapp
         'el-image': ElImageStub,
         'el-checkbox': ElCheckboxStub,
         'el-popover': ElPopoverStub,
+        'el-tooltip': ElTooltipStub,
         'el-tabs': ElTabsStub,
         'el-tab-pane': ElTabPaneStub,
       },
@@ -544,19 +567,43 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
-  it('慢设备行渲染「adb 慢」红灯，正常设备行无红灯', async () => {
+  it('半死设备（slow）行渲染「无响应」红灯+悬停指引、整行置灰、连接按钮降权；正常设备不受影响', async () => {
     mockApi.listDevices.mockResolvedValue([{ ...deviceA, slow: true }, deviceB])
     const wrapper = await mountDashboard()
 
-    const slowTags = wrapper.findAll('.stub-tag').filter((t) => t.text() === 'adb 慢')
-    expect(slowTags).toHaveLength(1)
-
+    // 桩结构每列各渲染一个 .stub-row[data-id]，故跨该设备的所有行聚合断言
     const slowRows = wrapper.findAll('.stub-row[data-id="dev-a"]')
-    expect(slowRows.some((r) => r.text().includes('adb 慢'))).toBe(true)
+    expect(slowRows.length).toBeGreaterThan(0)
 
+    const slowTags = slowRows.flatMap((r) => r.findAll('.stub-tag')).filter((t) => t.text() === '无响应')
+    expect(slowTags).toHaveLength(1)
+    expect(slowTags[0].attributes('data-type')).toBe('danger')
+
+    // 整行置灰：该设备所有行均带 row-slow
+    expect(slowRows.every((r) => r.classes().includes('row-slow'))).toBe(true)
+    // slow 行不再显示绿色「在线」
+    expect(slowRows.some((r) => r.text().includes('在线'))).toBe(false)
+
+    // 悬停指引文案经 tooltip content 可达（含 echo ok 探活指引）
+    const tooltip = wrapper.find('.stub-row[data-id="dev-a"] .stub-tooltip')
+    expect(tooltip.exists()).toBe(true)
+    expect(tooltip.attributes('data-content')).toContain('echo ok')
+
+    // 连接按钮降权（plain），不禁用
+    const slowConnectBtn = slowRows.flatMap((r) => r.findAll('button')).find((b) => b.text() === '连接')!
+    expect(slowConnectBtn.attributes('plain')).toBeDefined()
+
+    // 正常设备：绿「在线」照常、无置灰、按钮不降权
     const normalRows = wrapper.findAll('.stub-row[data-id="192.168.1.33:5555"]')
     expect(normalRows.length).toBeGreaterThan(0)
-    expect(normalRows.every((r) => !r.text().includes('adb 慢'))).toBe(true)
+    expect(normalRows.every((r) => !r.classes().includes('row-slow'))).toBe(true)
+    const normalTags = normalRows
+      .flatMap((r) => r.findAll('.stub-tag'))
+      .filter((t) => t.text() === '在线')
+    expect(normalTags).toHaveLength(1)
+    expect(normalTags[0].attributes('data-type')).toBe('success')
+    const normalConnectBtn = normalRows.flatMap((r) => r.findAll('button')).find((b) => b.text() === '连接')!
+    expect(normalConnectBtn.attributes('plain')).toBeUndefined()
 
     wrapper.unmount()
   })

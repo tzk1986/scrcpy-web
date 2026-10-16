@@ -181,6 +181,7 @@
       ref="tableRef"
       :data="filteredDevices"
       v-loading="store.loading"
+      :row-class-name="rowClassName"
       @selection-change="handleSelectionChange"
     >
       <!-- D10：选择列，仅 TCP 设备可勾选（USB 无 TCP 断开语义）；EP 回调传行对象，
@@ -252,13 +253,14 @@
       <el-table-column prop="battery" label="电量" min-width="80" />
       <el-table-column prop="status" label="状态" min-width="120">
         <template #default="{ row }">
-          <el-tag :type="row.status === 'online' ? 'success' : 'info'" size="small">
+          <!-- 方案 35 D7 + 半死设备治理：网络在线但 ADB 命令持续超时（slow=true）时，
+               不再显示误导性的绿色「在线」，改 danger「无响应」+ tooltip 可执行指引，
+               避免用户点了进黑屏。查询恢复后手动刷新即灭灯回落「在线」。 -->
+          <el-tooltip v-if="row.slow" :content="SLOW_TIP" placement="top">
+            <el-tag type="danger" size="small" class="slow-tag">无响应</el-tag>
+          </el-tooltip>
+          <el-tag v-else :type="row.status === 'online' ? 'success' : 'info'" size="small">
             {{ row.status === 'online' ? '在线' : row.status }}
-          </el-tag>
-          <!-- 方案 35 D7：信息查询失败（最常见原因为 adb 响应慢），
-               当前信息可能为缓存/默认值；查询恢复后手动刷新灭灯 -->
-          <el-tag v-if="row.slow" type="danger" size="small" class="slow-tag">
-            adb 慢
           </el-tag>
         </template>
       </el-table-column>
@@ -277,7 +279,7 @@
           >
             断开
           </el-button>
-          <el-button size="small" type="primary" @click="connect(row.id)">
+          <el-button size="small" type="primary" :plain="row.slow" @click="connect(row.id)">
             连接
           </el-button>
         </template>
@@ -491,6 +493,15 @@ const filteredDevices = computed(() => {
       d.id.toLowerCase().includes(kw)
   )
 })
+
+// 半死设备（网络在线但 ADB 命令持续超时）状态标签的悬停指引
+const SLOW_TIP =
+  '设备网络在线但 ADB 命令持续超时——可能是响应慢，也可能设备过载/adbd 卡死。截图与推流此时会失败（黑屏）。请检查该设备负载，或重启设备后用 adb shell echo ok 探活再试。'
+
+// slow 行整行置灰，提示型号/版本/电量等为缓存值（配合状态列「无响应」）
+function rowClassName({ row }: { row: DeviceInfo }): string {
+  return row.slow ? 'row-slow' : ''
+}
 
 const form = reactive({
   ip: '',
@@ -1133,6 +1144,11 @@ async function handleBatchDisconnect() {
 
 .slow-tag {
   margin-left: 4px;
+}
+
+/* 半死设备整行文字置灰（缓存值语义）；状态标签/按钮自带配色不受影响 */
+:deep(.row-slow .cell) {
+  color: #a8abb2;
 }
 
 .empty-tip p {
