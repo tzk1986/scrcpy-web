@@ -196,6 +196,7 @@ def test_list_devices(fake: FakeDeviceService) -> None:
         "ip": None,
         "port": None,
         "slow": False,
+        "alias": "",  # 方案 50 T1：瞬态备注，未配置回落空串
     }
     assert body[1]["status"] == "offline"
 
@@ -765,6 +766,7 @@ async def test_events_stream_payload_and_cancel_cleanup(fake: FakeDeviceService)
             "resolution": [1080, 2400],
             "battery": 88,
             "status": "online",
+            "alias": "",  # 方案 50 T1：SSE connected 带出备注（单源 device_alias）
         },
     }
 

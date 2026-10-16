@@ -40,6 +40,7 @@ from app.core.exceptions import (
 from app.core.launcher import is_shutdown_requested
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
+from config.settings import device_alias
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -102,6 +103,8 @@ async def device_events(service: DeviceService = Depends(get_device_service)) ->
                 "resolution": list(device.resolution),
                 "battery": device.battery,
                 "status": device.status,
+                # 走 helper 单源，不依赖回调对象是否已被 service 填充（方案 50）
+                "alias": device.alias or device_alias(device.id),
             }
         })
 

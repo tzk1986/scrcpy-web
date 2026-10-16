@@ -39,6 +39,7 @@ from app.core.exceptions import AdbError, DeviceUnreachableError, ScanBusyError
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
 from app.domain.ports import AdbDriver, DeviceRepository
+from config.settings import device_alias
 
 logger = get_logger(__name__)
 
@@ -134,6 +135,8 @@ class DeviceService:
                 devices.append(info)
             else:
                 devices.append(await self._fallback_device(device_id))
+        for d in devices:  # 瞬态备注单源填充（方案 50）
+            d.alias = device_alias(d.id)
         return devices
 
     async def _get_info_cached(self, device_id: str) -> Optional[DeviceInfo]:
@@ -200,7 +203,10 @@ class DeviceService:
         返回：
             找到则返回 DeviceInfo，否则返回 None。
         """
-        return await self.repo.get(device_id)
+        info = await self.repo.get(device_id)
+        if info is not None:
+            info.alias = device_alias(device_id)  # 方案 50
+        return info
 
     async def install_apk(self, device_id: str, apk_path: str) -> str:
         """
@@ -505,6 +511,7 @@ class DeviceService:
                     for device_id in new_devices:
                         try:
                             info = await self.adb.get_device_info(device_id)
+                            info.alias = device_alias(device_id)  # 回调对象带出备注（方案 50）
                             await self.repo.save(info)
                             await self._trigger_connected_callbacks(info)
                         except Exception as e:

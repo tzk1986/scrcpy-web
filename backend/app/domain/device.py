@@ -22,6 +22,7 @@
     ip:         （可选）WiFi 连接设备的 IP 地址
     port:       （可选）WiFi 连接设备的端口
     slow:       （瞬态）信息查询失败的标记（方案 35 D7）——不入库
+    alias:      （瞬态）设备备注（方案 50）——user.yaml 持久但经 service 读取填充，不入库
 """
 
 from dataclasses import dataclass
@@ -43,6 +44,9 @@ class DeviceInfo:
     # 瞬态展示字段：该设备本轮信息查询失败（最常见原因为 adb 响应慢），
     # 显示内容可能为缓存/默认值；不参与 SQLite 持久化（列映射不涉及）。
     slow: bool = False
+    # 瞬态展示字段：设备备注（方案 50），持久落在 user.yaml devices.<id>.alias，
+    # 由 DeviceService 经 config.settings.device_alias 读取填充；同样不参与入库。
+    alias: str = ""
 
     @property
     def is_online(self) -> bool:

@@ -140,6 +140,22 @@ class TestListDevices:
         mock_repo.save.assert_called_once_with(device)
 
     @pytest.mark.asyncio
+    async def test_list_devices_attaches_alias(self, service, mock_adb, mock_repo, monkeypatch):
+        """方案 50 T1：列表条目按 device_alias 单源填充备注（瞬态字段，入库仅 9 列不受影响）。"""
+        device = _make_device("device-1")
+        mock_adb.list_devices.return_value = ["device-1", "device-2"]
+        mock_adb.get_device_info.side_effect = [device, _make_device("device-2")]
+        monkeypatch.setattr(
+            "app.application.device_service.device_alias",
+            lambda device_id: {"device-1": "主力机"}.get(device_id, ""),
+        )
+
+        result = await service.list_devices()
+
+        assert result[0].alias == "主力机"
+        assert result[1].alias == ""
+
+    @pytest.mark.asyncio
     async def test_list_devices_empty(self, service, mock_adb):
         """测试没有连接设备时返回空列表"""
         mock_adb.list_devices.return_value = []
@@ -281,6 +297,20 @@ class TestGetDevice:
 
         assert result == device
         mock_repo.get.assert_called_once_with("emulator-5554")
+
+    @pytest.mark.asyncio
+    async def test_get_device_attaches_alias(self, service, mock_repo, monkeypatch):
+        """方案 50 T1：详情读取同样按 device_alias 单源填充备注。"""
+        device = _make_device()
+        mock_repo.get.return_value = device
+        monkeypatch.setattr(
+            "app.application.device_service.device_alias", lambda device_id: "备用机"
+        )
+
+        result = await service.get_device("emulator-5554")
+
+        assert result is not None
+        assert result.alias == "备用机"
 
     @pytest.mark.asyncio
     async def test_get_device_not_found(self, service, mock_repo):

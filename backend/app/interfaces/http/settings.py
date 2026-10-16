@@ -78,6 +78,12 @@ def _merge_devices(user: dict[str, Any], patch: dict[str, DeviceOverride | None]
                 target.update(section_patch)
             else:
                 raise SettingsStoreError(f"devices.{dev_id}.{section} 不是映射，无法合并")
+        if override.alias is not None:
+            stripped = override.alias.strip()
+            if stripped:
+                dev_cfg["alias"] = stripped
+            else:
+                dev_cfg.pop("alias", None)  # 空串 = 清除（方案 50 D1）
 
 
 def _source_of(

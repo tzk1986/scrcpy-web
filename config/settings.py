@@ -402,6 +402,9 @@ class DeviceOverride(BaseModel):
 
     stream: StreamOverride | None = None
     recording: RecordingOverride | None = None
+    alias: str | None = Field(
+        default=None, max_length=64
+    )  # 设备备注（方案 50）：user.yaml 持久，读取侧经 device_alias 消费
 
 
 def device_stream_settings(device_id: str) -> StreamConfig:
@@ -422,3 +425,9 @@ def device_recording_settings(device_id: str) -> RecordingConfig:
         return base
     patch = dev.recording.model_dump(exclude_none=True)
     return base.model_copy(update=patch) if patch else base
+
+
+def device_alias(device_id: str) -> str:
+    """设备备注单源读取（方案 50）：未配置或设备不在表回落空串。"""
+    dev = settings().devices.get(device_id)
+    return (dev.alias if dev else None) or ""

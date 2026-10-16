@@ -149,6 +149,55 @@ def test_put_device_override_rejects_bad_device_key(settings_env):
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def test_put_device_alias_roundtrip_keeps_stream(settings_env):
+    """方案 50 T1：alias 与既有 stream 覆盖并存，互不洗掉（Review Focus #1）。"""
+    make_client().put("/api/settings", json={"devices": {"d1": {"stream": {"fps": 24}}}})
+    res = make_client().put(
+        "/api/settings", json={"devices": {"d1": {"alias": "主力机"}}}
+    )
+    assert res.status_code == 200
+
+    reload_settings()
+    body = make_client().get("/api/settings").json()
+    assert body["devices"]["d1"]["alias"] == "主力机"
+    assert body["devices"]["d1"]["stream"] == {"fps": 24}
+
+
+def test_put_device_alias_trims(settings_env):
+    """方案 50 T1：写入端 trim 归一（FreeControl2 config.rs normalize 同款语义）。"""
+    res = make_client().put(
+        "/api/settings", json={"devices": {"d1": {"alias": "  A  "}}}
+    )
+    assert res.status_code == 200
+
+    reload_settings()
+    assert settings().devices["d1"].alias == "A"
+
+
+def test_put_device_alias_empty_string_clears(settings_env):
+    """方案 50 T1：空串 = 清除备注（pop 键），stream 覆盖不受牵连（Review Focus #2）。"""
+    make_client().put(
+        "/api/settings",
+        json={"devices": {"d1": {"alias": "A", "stream": {"fps": 24}}}},
+    )
+    res = make_client().put("/api/settings", json={"devices": {"d1": {"alias": ""}}})
+    assert res.status_code == 200
+
+    reload_settings()
+    body = make_client().get("/api/settings").json()
+    assert "alias" not in body["devices"]["d1"]
+    assert body["devices"]["d1"]["stream"] == {"fps": 24}
+
+
+def test_put_device_alias_rejects_too_long(settings_env):
+    """方案 50 T1：>64 字符拒绝（max_length 经 SettingsPatch 白名单校验）。"""
+    res = make_client().put(
+        "/api/settings", json={"devices": {"d1": {"alias": "x" * 65}}}
+    )
+    assert res.status_code == 422
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 def test_put_fails_loudly_when_config_dir_not_writable(settings_env, monkeypatch):
     def boom(config):
         raise OSError("read-only fs")
