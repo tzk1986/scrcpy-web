@@ -37,7 +37,7 @@ const h = vi.hoisted(() => {
   return {
     MockEventSource,
     ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
-    ElMessageBox: { confirm: vi.fn() },
+    ElMessageBox: { confirm: vi.fn(), prompt: vi.fn() },
   }
 })
 
@@ -49,6 +49,7 @@ const mockApi = vi.hoisted(() => ({
   getDevice: vi.fn(),
   scanSubnet: vi.fn(),
   screenshot: vi.fn(),
+  putSettings: vi.fn(),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 vi.mock('element-plus', () => ({
@@ -285,6 +286,8 @@ beforeEach(() => {
   mockApi.disconnectDevice.mockReset()
   mockApi.scanSubnet.mockReset()
   mockApi.screenshot.mockReset().mockResolvedValue(new Blob(['png']))
+  mockApi.putSettings.mockReset().mockResolvedValue({ saved: true })
+  h.ElMessageBox.prompt.mockReset()
   urlStub.createObjectURL.mockReset().mockImplementation(() => 'blob:dash-thumb')
   urlStub.revokeObjectURL.mockReset()
   Object.defineProperty(URL, 'createObjectURL', {
@@ -1106,13 +1109,110 @@ describe('Dashboard', () => {
     const wrapper = await mountDashboard()
     await flushPromises()
 
-    // prop="id" 列无 slot：column props 经 fallthrough attrs 落在 stub-no-slot 根
+    // 方案 50 T2：ID 列改 slot 复合列（别名/ID 两行），列属性约束保持
     const idCol = wrapper
-      .findAll('.stub-column.stub-no-slot')
-      .find((c) => c.attributes('prop') === 'id')
+      .findAll('.stub-column')
+      .find((c) => c.find('.device-id-cell').exists())
     expect(idCol).toBeDefined()
     expect(idCol!.attributes('min-width')).toBe('140')
     expect(idCol!.attributes()).toHaveProperty('show-overflow-tooltip')
+
+    wrapper.unmount()
+  })
+
+  // ==================== 方案 50 T2：设备别名展示 / 搜索 / 行内编辑 ====================
+
+  it('别名优先渲染：有 alias 行双行（别名+ID），无 alias 行仅 ID', async () => {
+    mockApi.listDevices.mockResolvedValue([{ ...deviceA, alias: '主力机' }, deviceB])
+    const wrapper = await mountDashboard()
+
+    const rowA = wrapper.find('.stub-row[data-id="dev-a"]')
+    expect(rowA.find('.device-id-cell .alias').text()).toBe('主力机')
+    expect(rowA.find('.device-id-cell small').text()).toBe('dev-a')
+
+    const rowB = wrapper.find('.stub-row[data-id="192.168.1.33:5555"]')
+    expect(rowB.find('.device-id-cell .alias').text()).toBe('192.168.1.33:5555')
+    expect(rowB.find('.device-id-cell small').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('搜索过滤：备注/型号/设备ID 三字段子串命中（大小写不敏感），清空恢复全量', async () => {
+    mockApi.listDevices.mockResolvedValue([{ ...deviceA, alias: '主力机' }, deviceB])
+    const wrapper = await mountDashboard()
+    const table = wrapper.findComponent({ name: 'ElTable' })
+    expect(table.props('data')).toHaveLength(2)
+
+    await wrapper.find('input.device-search').setValue('主力')
+    expect(table.props('data').map((d: { id: string }) => d.id)).toEqual(['dev-a'])
+
+    await wrapper.find('input.device-search').setValue('pixel') // 型号、大小写不敏感
+    expect(table.props('data').map((d: { id: string }) => d.id)).toEqual(['dev-a'])
+
+    await wrapper.find('input.device-search').setValue('1.33') // 设备ID 子串
+    expect(table.props('data').map((d: { id: string }) => d.id)).toEqual([
+      '192.168.1.33:5555',
+    ])
+
+    await wrapper.find('input.device-search').setValue('')
+    expect(table.props('data')).toHaveLength(2)
+
+    wrapper.unmount()
+  })
+
+  it('备注行内编辑：prompt 确认 trim 后写 devices 节并即时更新该行', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceA])
+    h.ElMessageBox.prompt.mockResolvedValue({ value: ' 新机 ' })
+    const wrapper = await mountDashboard()
+
+    const remarkBtn = wrapper
+      .findAll('.stub-row[data-id="dev-a"] button')
+      .find((b) => b.text() === '备注')
+    expect(remarkBtn).toBeDefined()
+    await remarkBtn!.trigger('click')
+    await flushPromises()
+
+    expect(h.ElMessageBox.prompt).toHaveBeenCalled()
+    expect(mockApi.putSettings).toHaveBeenCalledWith({ devices: { 'dev-a': { alias: '新机' } } })
+    expect(wrapper.find('.stub-row[data-id="dev-a"] .device-id-cell .alias').text()).toBe('新机')
+    expect(h.ElMessage.success).toHaveBeenCalledWith('备注已更新')
+
+    wrapper.unmount()
+  })
+
+  it('备注编辑输入空串（含纯空白）：提交 alias:"" 且显示回落设备ID', async () => {
+    mockApi.listDevices.mockResolvedValue([{ ...deviceA, alias: '主力机' }])
+    h.ElMessageBox.prompt.mockResolvedValue({ value: '   ' })
+    const wrapper = await mountDashboard()
+
+    const remarkBtn = wrapper
+      .findAll('.stub-row[data-id="dev-a"] button')
+      .find((b) => b.text() === '备注')
+    await remarkBtn!.trigger('click')
+    await flushPromises()
+
+    expect(mockApi.putSettings).toHaveBeenCalledWith({ devices: { 'dev-a': { alias: '' } } })
+    const rowA = wrapper.find('.stub-row[data-id="dev-a"]')
+    expect(rowA.find('.device-id-cell .alias').text()).toBe('dev-a')
+    expect(rowA.find('.device-id-cell small').exists()).toBe(false)
+    expect(h.ElMessage.success).toHaveBeenCalledWith('备注已清除')
+
+    wrapper.unmount()
+  })
+
+  it('备注编辑取消 prompt：不写入、显示不变', async () => {
+    mockApi.listDevices.mockResolvedValue([{ ...deviceA, alias: '主力机' }])
+    h.ElMessageBox.prompt.mockRejectedValue('cancel')
+    const wrapper = await mountDashboard()
+
+    const remarkBtn = wrapper
+      .findAll('.stub-row[data-id="dev-a"] button')
+      .find((b) => b.text() === '备注')
+    await remarkBtn!.trigger('click')
+    await flushPromises()
+
+    expect(mockApi.putSettings).not.toHaveBeenCalled()
+    expect(wrapper.find('.stub-row[data-id="dev-a"] .device-id-cell .alias').text()).toBe('主力机')
 
     wrapper.unmount()
   })

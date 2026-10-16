@@ -147,7 +147,12 @@
           placeholder="选择设备"
           data-test="override-device-select"
         >
-          <el-option v-for="d in deviceList" :key="d.device_id" :label="d.device_id" :value="d.device_id" />
+          <el-option
+            v-for="d in deviceList"
+            :key="d.id"
+            :label="d.alias ? `${d.alias}（${d.id}）` : d.id"
+            :value="d.id"
+          />
         </el-select>
         <template v-if="overrideDeviceId">
           <StreamFieldSet v-model="overrideStreamForm" :h265-supported="h265Supported" />
@@ -235,7 +240,7 @@ const streamForm = ref<StreamFormValue>({
 })
 const recordingForm = ref<RecordingFormValue>({ bit_rate: '4M', time_limit: 60 })
 /** 设备级覆盖卡（方案 45 T8）：设备列表 / 当前选中设备 / 该设备串流覆盖表单。 */
-const deviceList = ref<{ device_id: string }[]>([])
+const deviceList = ref<{ id: string; alias?: string }[]>([])
 const overrideDeviceId = ref('')
 const overrideStreamForm = ref<StreamFormValue>({
   max_size: streamForm.value.max_size,
@@ -417,9 +422,9 @@ onMounted(() => {
   api
     .listDevices()
     .then((list) => {
-      deviceList.value = Array.isArray(list) ? (list as { device_id: string }[]) : []
+      deviceList.value = Array.isArray(list) ? (list as { id: string; alias?: string }[]) : []
       const q = String(route.query.device ?? '')
-      if (q && !overrideDeviceId.value && deviceList.value.some((d) => d.device_id === q)) {
+      if (q && !overrideDeviceId.value && deviceList.value.some((d) => d.id === q)) {
         overrideDeviceId.value = q
       }
     })

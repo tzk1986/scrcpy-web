@@ -153,6 +153,16 @@
       </p>
     </el-alert>
 
+    <!-- 方案 50 T2：本地过滤（备注/型号/设备ID 三字段子串，大小写不敏感） -->
+    <div class="device-search-bar">
+      <el-input
+        v-model="searchKeyword"
+        placeholder="搜索备注/型号/设备ID"
+        class="device-search"
+        clearable
+      />
+    </div>
+
     <!-- 方案 36 增补 D10：批量断开工具条（选中 ≥1 台 TCP 设备时出现） -->
     <div v-if="selectedDevices.length > 0" class="batch-bar">
       <span class="batch-count">已选 {{ selectedDevices.length }} 台</span>
@@ -169,14 +179,22 @@
 
     <el-table
       ref="tableRef"
-      :data="store.devices"
+      :data="filteredDevices"
       v-loading="store.loading"
       @selection-change="handleSelectionChange"
     >
       <!-- D10：选择列，仅 TCP 设备可勾选（USB 无 TCP 断开语义）；EP 回调传行对象，
            经 rowSelectable 取 id 后与行内「断开」按钮同一判定口径 -->
       <el-table-column type="selection" :selectable="rowSelectable" width="40" />
-      <el-table-column prop="id" label="设备ID" min-width="140" show-overflow-tooltip />
+      <el-table-column label="设备ID" min-width="140" show-overflow-tooltip>
+        <template #default="{ row }">
+          <!-- 方案 50 T2：备注优先展示，下行灰字保留序列号 -->
+          <div class="device-id-cell">
+            <span class="alias">{{ row.alias || row.id }}</span>
+            <small v-if="row.alias">{{ row.id }}</small>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="屏幕" width="120" align="center">
         <template #default="{ row }">
           <div
@@ -244,8 +262,11 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
+          <el-button size="small" @click="editAlias(row)">
+            备注
+          </el-button>
           <el-button
             v-if="isTcpDevice(row.id)"
             size="small"
@@ -458,6 +479,19 @@ const tableRef = ref()
 const selectedDevices = ref<DeviceInfo[]>([])
 const batchDisconnecting = ref(false)
 
+// ===== 设备备注与搜索（方案 50 T2） =====
+const searchKeyword = ref('')
+const filteredDevices = computed(() => {
+  const kw = searchKeyword.value.trim().toLowerCase()
+  if (!kw) return store.devices
+  return store.devices.filter(
+    (d) =>
+      (d.alias ?? '').toLowerCase().includes(kw) ||
+      d.model.toLowerCase().includes(kw) ||
+      d.id.toLowerCase().includes(kw)
+  )
+})
+
 const form = reactive({
   ip: '',
   port: 5555,
@@ -522,6 +556,34 @@ onUnmounted(() => {
 /** 刷新设备列表 */
 function refresh() {
   store.fetchDevices()
+}
+
+/** 行内编辑设备备注（方案 50 T2）：空串=清除；取消 prompt 不写入 */
+async function editAlias(row: DeviceInfo) {
+  let value: string
+  try {
+    const res = await ElMessageBox.prompt(
+      '留空提交即清除备注；清除后展示回落设备 ID。',
+      `设置设备备注 — ${row.id}`,
+      {
+        inputValue: row.alias ?? '',
+        inputValidator: (v: string) =>
+          (v ?? '').trim().length <= 64 || '备注不能超过 64 字符',
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+      }
+    )
+    value = (res.value ?? '').trim()
+  } catch {
+    return // 取消（reject）吞掉
+  }
+  try {
+    await api.putSettings({ devices: { [row.id]: { alias: value } } })
+    store.setLocalAlias(row.id, value)
+    ElMessage.success(value ? '备注已更新' : '备注已清除')
+  } catch (e) {
+    ElMessage.error(`备注保存失败: ${extractApiError(e, '未知错误')}`)
+  }
 }
 
 /** 扫描结果摘要文本（探测 / 开放 / 连接成功 / 失败分类） */
@@ -991,6 +1053,23 @@ async function handleBatchDisconnect() {
 }
 
 /* 方案 36 增补 D10：批量断开工具条 */
+/* 方案 50 T2：设备搜索框与 ID 列复合单元格 */
+.device-search-bar {
+  max-width: 280px;
+  margin-bottom: 0.75rem;
+}
+
+.device-id-cell {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.device-id-cell small {
+  color: #909399;
+  font-size: 12px;
+}
+
 .batch-bar {
   display: flex;
   align-items: center;

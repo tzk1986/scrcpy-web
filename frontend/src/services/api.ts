@@ -118,6 +118,8 @@ export interface SettingEntry {
 export interface DeviceOverrideView {
   stream?: Record<string, number | string | boolean>
   recording?: Record<string, number | string | boolean>
+  /** 设备备注（方案 50 T2）：未设置时键缺席（后端 exclude_none）。 */
+  alias?: string
 }
 
 /** GET /api/settings 合并视图（stream/recording 两节 + 设备级覆盖键值表）。 */
@@ -131,8 +133,12 @@ export interface SettingsView {
 export interface SettingsPatch {
   stream?: Record<string, unknown> | null
   recording?: Record<string, unknown> | null
-  /** 设备级覆盖（方案 45 T8）：devices.<id> 节合并；整设备传 null = 删除该设备覆盖。 */
-  devices?: Record<string, Record<string, Record<string, unknown>> | null>
+  /** 设备级覆盖（方案 45 T8）：devices.<id> 节合并；整设备传 null = 删除该设备覆盖。
+   *  alias 传空串 = 清除备注（方案 50 T2）。 */
+  devices?: Record<
+    string,
+    { stream?: Record<string, unknown>; recording?: Record<string, unknown>; alias?: string } | null
+  >
 }
 
 /** 运行环境信息（方案 45 T6，对应后端 GET /api/system/runtime-env 只读透明化）。 */

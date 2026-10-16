@@ -290,7 +290,8 @@ beforeEach(() => {
   mockApi.getSettings.mockResolvedValue(DEFAULT_VIEW)
   mockApi.putSettings.mockResolvedValue({ saved: true })
   mockApi.getRuntimeEnv.mockResolvedValue(RUNTIME_ENV_VIEW)
-  mockApi.listDevices.mockResolvedValue([{ device_id: 'd1' }, { device_id: 'd9' }])
+  // 方案 50 T2：后端真实形状为 { id, alias? }（此前 device_id cast 是缺陷，mock 跟着错）
+  mockApi.listDevices.mockResolvedValue([{ id: 'd1', alias: '主力机' }, { id: 'd9' }])
   codecMock.isH265DecoderSupported.mockResolvedValue(false)
   elMock.ElMessageBox.confirm.mockReset().mockResolvedValue('confirm')
 })
@@ -618,6 +619,20 @@ describe('Settings.vue', () => {
     expect(select.attributes('data-value')).toBe('d1')
     expect(wrapper.findAll('[data-test="save-override"]').length).toBe(1)
     expect(wrapper.find('[data-test="clear-override"]').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('设备下拉标题带别名（方案 50 T2）：有别名「别名（id）」、无别名仅 id', async () => {
+    const wrapper = await mountSettings()
+
+    const options = wrapper.findAll('.stub-option')
+    const d1 = options.find((o) => o.attributes('data-value') === 'd1')
+    expect(d1).toBeDefined()
+    expect(d1!.text()).toBe('主力机（d1）')
+    const d9 = options.find((o) => o.attributes('data-value') === 'd9')
+    expect(d9).toBeDefined()
+    expect(d9!.text()).toBe('d9')
 
     wrapper.unmount()
   })

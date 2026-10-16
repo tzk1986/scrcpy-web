@@ -50,6 +50,8 @@ export interface DeviceInfo {
    * adb 响应慢），当前信息可能为缓存/默认值。光源为列表响应即出即用。
    */
   slow?: boolean
+  /** 设备备注（方案 50 T2）：后端瞬态字段，列表/SSE 带出；空表示未设置。 */
+  alias?: string
 }
 
 /** 批量断开回执（方案 36 增补 D10）：成功 ID 与失败明细（含单条错误消息）。 */
@@ -405,6 +407,15 @@ export const useDeviceStore = defineStore('device', () => {
   })
 
   /**
+   * 本地即时更新设备备注（方案 50 T2）：PUT 成功后先行回显，
+   * 不等列表重拉；alias 空串 = 清除。
+   */
+  function setLocalAlias(deviceId: string, alias: string) {
+    const dev = devices.value.find((d) => d.id === deviceId)
+    if (dev) dev.alias = alias
+  }
+
+  /**
    * 在指定设备上安装 APK。
    */
   async function installApk(deviceId: string, apkPath: string) {
@@ -437,6 +448,7 @@ export const useDeviceStore = defineStore('device', () => {
     loadThumbnail,
     loadThumbnails,
     setThumbnailFromBlob,
+    setLocalAlias,
     startSSE,
     stopSSE,
     installApk,
