@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-10-19（验证包，未发布）
+
+### Added
+
+- 设备上下线实时自动播报（SSE 生产者接线）：Dashboard 挂着页面时插入/拔掉设备，列表约 5 秒内自动出现/消失，无需手动刷新——后端 5s 设备轮询循环、SSE `/api/devices/events` 端点与前端监听早已齐备，但应用装配入口（lifespan）从未启动过该循环（0.7.11 规模化压测归档时发现「生产者未接线」断点，本版接通）。上下线判定与设备列表接口同口径（adb `device` 态行），半死「无响应」slow 设备行不受误删影响
+
 ## [0.7.11] - 2026-10-16
 
 ### Fixed
