@@ -15,15 +15,19 @@
        recording 目录双限/自愈，方案 37 B3；recording 清理循环首轮
        即含强杀残留扫盘清，方案 42 §3）
     5. ConfigWatcher.start() — 启动配置文件热重载监听（可配置关闭）
+    6. DeviceService.start() — 启动设备状态 5s 轮询循环，上下线经
+       SSE /api/devices/events 自动播报（接通路线图 §10 发现的
+       「生产者未接线」断点）
 
 关闭顺序：
-    1. config_watcher.stop() — 停止配置热重载监听
-    2. performance_service.cleanup() / network_service.cleanup() — 停止采样并
+    1. device_service.stop() — 停止设备状态轮询（与启动逆序）
+    2. config_watcher.stop() — 停止配置热重载监听
+    3. performance_service.cleanup() / network_service.cleanup() — 停止采样并
        释放内存暂存（含录制 final flush，方案 18 §3.7）
-    3. stop_cleanup_task() — 停止后台清理任务（recording + debug 日志）；
+    4. stop_cleanup_task() — 停止后台清理任务（recording + debug 日志）；
        随后 RecordingService.cleanup_all_recordings() 清空录像暂存目录
        （方案 42 §3）
-    4. writer.flush()      — 冲刷批量日志缓冲
+    5. writer.flush()      — 冲刷批量日志缓冲
 
 添加新的启动工作时（如连接池、后台任务），放在 `yield` 之前。
 添加关闭工作时，放在 `yield` 之后。
@@ -60,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 恢复上次进程遗留的活跃调试会话（续跑 logcat 采集）
     from app.deps import (
         get_debug_service,
+        get_device_service,
         get_network_service,
         get_performance_service,
         get_recording_service,
@@ -79,11 +84,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         config_watcher = ConfigWatcher(interval=settings().app.config_watch_interval)
         config_watcher.start()
 
+    # 启动设备状态轮询循环（上下线经 SSE 自动播报，路线图 §10 断点接线）
+    device_service = get_device_service()
+    await device_service.start()
+
     logger.info("application_started")
 
     yield
 
     logger.info("application_shutting_down")
+
+    # 停止设备状态轮询（与启动逆序）
+    await device_service.stop()
 
     # 停止配置热重载监听
     if config_watcher is not None:

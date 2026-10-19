@@ -3,8 +3,9 @@
 ================================================
 
 monkeypatch 注入全 fake 服务跑 lifespan（不触真实 SQLite/ADB/日志/热重载），
-断言：启动拉起录屏周期任务；关闭按序「先停 tick → cleanup_all_recordings
-清盘」。对应 lifecycle.py 的 shutdown 顺序第 3 步扩展。
+断言：启动拉起录屏周期任务与设备状态轮询；关闭按序「先停设备轮询 →
+先停 tick → cleanup_all_recordings 清盘」。对应 lifecycle.py 的
+shutdown 顺序第 3 步扩展；设备轮询接线见路线图 §10 断点收口。
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -40,8 +41,12 @@ async def test_lifespan_shutdown_clears_all_recordings(monkeypatch) -> None:
     fake_debug.start_cleanup_task = AsyncMock()
     fake_debug.stop_cleanup_task = AsyncMock()
     fake_debug.writer.flush = AsyncMock()
+    fake_device = MagicMock()
+    fake_device.start = AsyncMock()
+    fake_device.stop = AsyncMock()
     monkeypatch.setattr("app.deps.get_recording_service", lambda: rec)
     monkeypatch.setattr("app.deps.get_debug_service", lambda: fake_debug)
+    monkeypatch.setattr("app.deps.get_device_service", lambda: fake_device)
     monkeypatch.setattr(
         "app.deps.get_performance_service", lambda: MagicMock(cleanup=AsyncMock())
     )
@@ -51,5 +56,7 @@ async def test_lifespan_shutdown_clears_all_recordings(monkeypatch) -> None:
 
     async with lifecycle.lifespan(MagicMock()):
         assert rec.calls == ["start"]
+        fake_device.start.assert_awaited_once()
 
     assert rec.calls == ["start", "stop", "cleanup_all"]
+    fake_device.stop.assert_awaited_once()
