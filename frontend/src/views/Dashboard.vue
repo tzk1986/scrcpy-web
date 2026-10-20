@@ -259,8 +259,8 @@
           <el-tooltip v-if="row.slow" :content="SLOW_TIP" placement="top">
             <el-tag type="danger" size="small" class="slow-tag">无响应</el-tag>
           </el-tooltip>
-          <el-tag v-else :type="row.status === 'online' ? 'success' : 'info'" size="small">
-            {{ row.status === 'online' ? '在线' : row.status }}
+          <el-tag v-else :type="statusTagType(row.status)" size="small">
+            {{ statusLabel(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
@@ -498,9 +498,27 @@ const filteredDevices = computed(() => {
 const SLOW_TIP =
   '设备网络在线但 ADB 命令持续超时——可能是响应慢，也可能设备过载/adbd 卡死。截图与推流此时会失败（黑屏）。请检查该设备负载，或重启设备后用 adb shell echo ok 探活再试。'
 
-// slow 行整行置灰，提示型号/版本/电量等为缓存值（配合状态列「无响应」）
+// B5 失联行状态呈现：adb 原始态中文标签 + 配色（offline/unauthorized 等，
+// 列表不再静默过滤；未知态回落原文，不谎报）
+const STATUS_LABELS: Record<string, string> = {
+  online: '在线',
+  offline: '离线',
+  unauthorized: '待授权',
+}
+function statusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status
+}
+function statusTagType(status: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'online') return 'success'
+  if (status === 'unauthorized') return 'warning'
+  if (status === 'offline') return 'danger'
+  return 'info'
+}
+
+// slow 行整行置灰（缓存值语义）；B5 失联行同样置灰（列表数据为失联前缓存）
 function rowClassName({ row }: { row: DeviceInfo }): string {
-  return row.slow ? 'row-slow' : ''
+  if (row.slow) return 'row-slow'
+  return row.status === 'online' ? '' : 'row-offline'
 }
 
 const form = reactive({
@@ -786,9 +804,9 @@ function clearScanRecord() {
   localStorage.removeItem(SCAN_RECORD_KEY)
 }
 
-/** 强制重拉全表设备缩略图（绕过 TTL） */
+/** 强制重拉全表在线设备缩略图（绕过 TTL）；失联行必失败，跳过（B5） */
 function refreshThumbnails() {
-  void store.loadThumbnails(store.devices.map((d) => d.id), true)
+  void store.loadThumbnails(store.devices.filter((d) => d.status === 'online').map((d) => d.id), true)
 }
 
 /** 缩略图快照时间提示（原生 title） */
@@ -1148,6 +1166,11 @@ async function handleBatchDisconnect() {
 
 /* 半死设备整行文字置灰（缓存值语义）；状态标签/按钮自带配色不受影响 */
 :deep(.row-slow .cell) {
+  color: #a8abb2;
+}
+
+/* B5 失联行（offline/unauthorized 等）整行置灰：信息为失联前缓存值 */
+:deep(.row-offline .cell) {
   color: #a8abb2;
 }
 

@@ -6,7 +6,8 @@
  *   - fetchDevices：成功覆盖列表、失败写入 error（loading 的翻转）
  *   - connectDevice：成功（默认/自定义端口）后延时刷新、success=false 不刷新、异常向上抛
  *   - disconnectDevice：成功先本地移除再重拉列表、success=false 保持原状、异常向上抛
- *   - startSSE/stopSSE：URL 组装、connected 去重添加、disconnected 移除、非法 JSON/onerror
+ *   - startSSE/stopSSE：URL 组装、connected 添加/替换、unreachable 保行标注（B5）、
+ *     disconnected 移除、非法 JSON/onerror
  *   - installApk / getDevice（含失败返回 null）
  *   - scanSubnet（方案 36）：参数透传、静默重拉、ok 集合自动加载缩略图、失败抛错
  *   - 缩略图缓存（方案 36 D5）：TTL 命中/过期 revoke、force 重拉、并发池 ≤3、
@@ -298,7 +299,7 @@ describe('device store - disconnectDevice', () => {
 })
 
 describe('device store - SSE', () => {
-  it('startSSE 按当前地址组装 URL，connected 去重添加、disconnected 移除', () => {
+  it('startSSE 按当前地址组装 URL，connected 添加/替换、disconnected 移除', () => {
     const store = useDeviceStore()
     store.devices = [dev('a')]
 
@@ -315,6 +316,40 @@ describe('device store - SSE', () => {
 
     es.onmessage!({ data: JSON.stringify({ type: 'disconnected', device_id: 'a' }) })
     expect(store.devices.map((d) => d.id)).toEqual(['b'])
+  })
+
+  it('connected 对失联后恢复的行整体替换为最新信息（B5 恢复路径）', () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a', { status: 'offline', model: '' })]
+
+    store.startSSE()
+    const es = lastEventSource()
+    es.onmessage!({ data: JSON.stringify({ type: 'connected', device: dev('a', { model: 'Pixel 恢复' }) }) })
+
+    expect(store.devices).toHaveLength(1)
+    expect(store.devices[0].status).toBe('device')
+    expect(store.devices[0].model).toBe('Pixel 恢复')
+  })
+
+  it('unreachable 保留行并标注 adb 状态，列表无该行时补最小条目（B5 失联可见）', () => {
+    const store = useDeviceStore()
+    store.devices = [dev('a'), dev('b', { status: 'offline' })]
+
+    store.startSSE()
+    const es = lastEventSource()
+
+    // 已缓存行：仅更新状态，不删除
+    es.onmessage!({ data: JSON.stringify({ type: 'unreachable', device_id: 'a', state: 'offline' }) })
+    expect(store.devices.map((d) => d.id)).toEqual(['a', 'b'])
+    expect(store.devices[0].status).toBe('offline')
+
+    // 新出现的失联序列号：补最小行
+    es.onmessage!({ data: JSON.stringify({ type: 'unreachable', device_id: 'c', state: 'unauthorized' }) })
+    expect(store.devices.map((d) => d.id)).toEqual(['a', 'b', 'c'])
+    const added = store.devices[2]
+    expect(added.status).toBe('unauthorized')
+    expect(added.model).toBe('')
+    expect(added.resolution).toEqual([0, 0])
   })
 
   it('https 页面使用同源 https SSE 地址', () => {

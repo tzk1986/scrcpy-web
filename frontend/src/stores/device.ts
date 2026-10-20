@@ -242,14 +242,30 @@ export const useDeviceStore = defineStore('device', () => {
       try {
         const data = JSON.parse(event.data)
         if (data.type === 'connected') {
-          // 新设备连接，添加到列表
+          // 新设备连接添加到列表；已有行（B5 失联后恢复）整体替换为最新信息
           const device = data.device as DeviceInfo
-          const exists = devices.value.find(d => d.id === device.id)
-          if (!exists) {
-            devices.value.push(device)
+          const idx = devices.value.findIndex(d => d.id === device.id)
+          if (idx >= 0) devices.value[idx] = device
+          else devices.value.push(device)
+        } else if (data.type === 'unreachable') {
+          // 设备失联（offline/unauthorized 等，B5）：保留行仅标注状态，
+          // 不再静默移除；旧缩略图已非实时画面，清掉防误导
+          const row = devices.value.find(d => d.id === data.device_id)
+          if (row) {
+            row.status = data.state
+          } else {
+            devices.value.push({
+              id: data.device_id,
+              model: '',
+              os_version: '',
+              resolution: [0, 0],
+              battery: 0,
+              status: data.state,
+            })
           }
+          removeThumbnail(data.device_id)
         } else if (data.type === 'disconnected') {
-          // 设备断开，从列表移除并清理缩略图（D5 revoke 策略）
+          // 设备断开（adb 表消失），从列表移除并清理缩略图（D5 revoke 策略）
           devices.value = devices.value.filter(d => d.id !== data.device_id)
           removeThumbnail(data.device_id)
         }
