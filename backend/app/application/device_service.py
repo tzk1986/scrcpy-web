@@ -21,6 +21,10 @@
     - stop():           停止后台刷新
     - on_device_connected():    注册设备连接回调
     - on_device_disconnected(): 注册设备断开回调
+    - on_device_unreachable():  注册设备失联回调（路线图 B5）
+
+回调注册均有对应公开 ``off_device_*`` 注销 API（方案 37 A1 L7：SSE 端点
+等接口层不再触碰私有列表）。
 
 注意：batch_install 已用 asyncio.gather() + 信号量（并发上限 5）实现并发；
 单设备失败被捕获并计入结果列表，不中止整批。
@@ -100,9 +104,12 @@ class DeviceService:
         self.repo = repo
         self._refresh_task: asyncio.Task[None] | None = None
         self._refresh_interval = 5  # 刷新间隔（秒）
-        self._previous_devices: set[str] = set()
+        # 上轮 adb 设备表全量 {serial: state}——含非 device 态行，
+        # 失联/恢复按状态转移播报（路线图 B5）
+        self._previous_states: dict[str, str] = {}
         self._on_device_connected: list[Callable[[DeviceInfo], Awaitable[None]]] = []
         self._on_device_disconnected: list[Callable[[str], Awaitable[None]]] = []
+        self._on_device_unreachable: list[Callable[[str, str], Awaitable[None]]] = []
         self._info_semaphore = asyncio.Semaphore(_INFO_CONCURRENCY)
         self._info_cooldown: dict[str, float] = {}  # device_id → 冷却截止（time.monotonic）
         self._info_tasks: dict[str, asyncio.Task[Optional[DeviceInfo]]] = {}
@@ -123,10 +130,13 @@ class DeviceService:
             - 查询成功的设备持久化到仓库（upsert）
 
         返回：
-            所有当前已连接设备的 DeviceInfo 对象列表（含失败兜底条目）。
+            设备 DeviceInfo 列表：在线设备（含失败兜底条目）+
+            「已登记但失联」的 offline/unauthorized 行（路线图 B5——
+            失联设备状态可见，不再从列表静默消失）。
         """
         logger.info("listing_devices")
-        device_ids = await self.adb.list_devices()
+        states = await self.adb.list_device_states()
+        device_ids = [d for d, s in states.items() if s == "device"]
         results = await asyncio.gather(*(self._get_info_cached(d) for d in device_ids))
 
         devices: list[DeviceInfo] = []
@@ -135,6 +145,23 @@ class DeviceService:
                 devices.append(info)
             else:
                 devices.append(await self._fallback_device(device_id))
+        # 失联行（非 device 态）：有缓存带出缓存条目仅覆写状态，无缓存给
+        # 最小条目；不回写库（失联状态不污染在线缓存数据）
+        for device_id, state in states.items():
+            if state == "device":
+                continue
+            cached = await self.repo.get(device_id)
+            if cached is not None:
+                devices.append(replace(cached, status=state, slow=False))
+            else:
+                devices.append(DeviceInfo(
+                    id=device_id,
+                    model="",
+                    os_version="",
+                    resolution=(0, 0),
+                    battery=0,
+                    status=state,
+                ))
         for d in devices:  # 瞬态备注单源填充（方案 50）
             d.alias = device_alias(d.id)
         return devices
@@ -497,36 +524,48 @@ class DeviceService:
         """
         后台设备刷新循环。
 
-        每 _refresh_interval 秒刷新一次设备列表，检测设备上下线。
+        每 _refresh_interval 秒取一次 adb 设备全表（{serial: state}）与
+        上轮比对，按三类变化播报：新序列号出现、序列号从表中消失、
+        状态在 device 与非 device（offline/unauthorized 等）间迁移
+        （路线图 B5：失联播报 unreachable，恢复播报 connected，
+        仅真正从 adb 表消失才 disconnected+清缓存）。
         当任务被取消时优雅退出。
         """
         try:
             while True:
                 try:
-                    current_device_ids = set(await self.adb.list_devices())
-                    previous_device_ids = self._previous_devices.copy()
+                    current_states = await self.adb.list_device_states()
+                    previous = self._previous_states
+                    current_ids = set(current_states)
+                    previous_ids = set(previous)
 
-                    # 检测新连接的设备
-                    new_devices = current_device_ids - previous_device_ids
-                    for device_id in new_devices:
-                        try:
-                            info = await self.adb.get_device_info(device_id)
-                            info.alias = device_alias(device_id)  # 回调对象带出备注（方案 50）
-                            await self.repo.save(info)
-                            await self._trigger_connected_callbacks(info)
-                        except Exception as e:
-                            logger.error("new_device_error", device=device_id, error=str(e))
+                    # 新出现的序列号
+                    for device_id in current_ids - previous_ids:
+                        state = current_states[device_id]
+                        if state == "device":
+                            await self._announce_connected(device_id)
+                        else:
+                            await self._trigger_unreachable_callbacks(device_id, state)
 
-                    # 检测断开的设备
-                    disconnected_devices = previous_device_ids - current_device_ids
-                    for device_id in disconnected_devices:
+                    # 从表中消失的序列号：清除登记并播 disconnected
+                    for device_id in previous_ids - current_ids:
                         try:
                             await self.repo.delete(device_id)
                             await self._trigger_disconnected_callbacks(device_id)
                         except Exception as e:
                             logger.error("disconnect_device_error", device=device_id, error=str(e))
 
-                    self._previous_devices = current_device_ids
+                    # 留存序列号的状态迁移
+                    for device_id in current_ids & previous_ids:
+                        old, new = previous[device_id], current_states[device_id]
+                        if old == new:
+                            continue
+                        if new == "device":
+                            await self._announce_connected(device_id)
+                        else:
+                            await self._trigger_unreachable_callbacks(device_id, new)
+
+                    self._previous_states = current_states
 
                 except Exception as e:
                     logger.error("device_refresh_failed", error=str(e))
@@ -535,6 +574,16 @@ class DeviceService:
         except asyncio.CancelledError:
             logger.debug("device_refresh_cancelled")
             raise
+
+    async def _announce_connected(self, device_id: str) -> None:
+        """在线登记/恢复共用路径：查信息、落库、播 connected。"""
+        try:
+            info = await self.adb.get_device_info(device_id)
+            info.alias = device_alias(device_id)  # 回调对象带出备注（方案 50）
+            await self.repo.save(info)
+            await self._trigger_connected_callbacks(info)
+        except Exception as e:
+            logger.error("new_device_error", device=device_id, error=str(e))
 
     def on_device_connected(self, callback: Callable[[DeviceInfo], Awaitable[None]]) -> None:
         """
@@ -560,6 +609,43 @@ class DeviceService:
         self._on_device_disconnected.append(callback)
         logger.debug("device_disconnected_callback_registered", callback=callback.__name__)
 
+    def on_device_unreachable(
+        self, callback: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """
+        注册设备失联回调（路线图 B5）。
+
+        参数：
+            callback: 异步回调，接收 (device_id, state)，state 为
+                adb 原始状态字符串（offline/unauthorized 等）。
+        """
+        self._on_device_unreachable.append(callback)
+        logger.debug("device_unreachable_callback_registered", callback=callback.__name__)
+
+    def off_device_connected(self, callback: Callable[[DeviceInfo], Awaitable[None]]) -> None:
+        """注销设备连接回调（不在列表中则忽略）。"""
+        if callback in self._on_device_connected:
+            self._on_device_connected.remove(callback)
+
+    def off_device_disconnected(self, callback: Callable[[str], Awaitable[None]]) -> None:
+        """注销设备断开回调（不在列表中则忽略）。"""
+        if callback in self._on_device_disconnected:
+            self._on_device_disconnected.remove(callback)
+
+    def off_device_unreachable(self, callback: Callable[[str, str], Awaitable[None]]) -> None:
+        """注销设备失联回调（不在列表中则忽略）。"""
+        if callback in self._on_device_unreachable:
+            self._on_device_unreachable.remove(callback)
+
+    def sse_client_count(self) -> int:
+        """
+        当前 SSE 订阅连接数。
+
+        events 端点每连接注册一组回调（connected/disconnected/unreachable
+        各一），以 connected 回调计数为准，用于连接数上限判定（方案 37 A1 L1）。
+        """
+        return len(self._on_device_connected)
+
     async def _trigger_connected_callbacks(self, device: DeviceInfo) -> None:
         """触发所有设备连接回调"""
         for callback in self._on_device_connected:
@@ -581,6 +667,19 @@ class DeviceService:
             except Exception as e:
                 logger.error(
                     "device_disconnected_callback_failed",
+                    device=device_id,
+                    callback=callback.__name__,
+                    error=str(e)
+                )
+
+    async def _trigger_unreachable_callbacks(self, device_id: str, state: str) -> None:
+        """触发所有设备失联回调（路线图 B5）"""
+        for callback in self._on_device_unreachable:
+            try:
+                await callback(device_id, state)
+            except Exception as e:
+                logger.error(
+                    "device_unreachable_callback_failed",
                     device=device_id,
                     callback=callback.__name__,
                     error=str(e)

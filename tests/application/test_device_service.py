@@ -46,6 +46,7 @@ def mock_adb():
     """
     adb = MagicMock()
     adb.list_devices = AsyncMock(return_value=[])
+    adb.list_device_states = AsyncMock(return_value={})
     adb.get_device_info = AsyncMock()
     adb.shell = AsyncMock(return_value="")
     adb.install = AsyncMock()
@@ -119,7 +120,7 @@ class TestListDevices:
         device1 = _make_device("device-1")
         device2 = _make_device("device-2")
 
-        mock_adb.list_devices.return_value = ["device-1", "device-2"]
+        mock_adb.list_device_states.return_value = {"device-1": "device", "device-2": "device"}
         mock_adb.get_device_info.side_effect = [device1, device2]
 
         result = await service.list_devices()
@@ -132,7 +133,7 @@ class TestListDevices:
     async def test_list_devices_persists_each(self, service, mock_adb, mock_repo):
         """测试每个设备都被持久化到仓库"""
         device = _make_device("device-1")
-        mock_adb.list_devices.return_value = ["device-1"]
+        mock_adb.list_device_states.return_value = {"device-1": "device"}
         mock_adb.get_device_info.return_value = device
 
         await service.list_devices()
@@ -143,7 +144,7 @@ class TestListDevices:
     async def test_list_devices_attaches_alias(self, service, mock_adb, mock_repo, monkeypatch):
         """方案 50 T1：列表条目按 device_alias 单源填充备注（瞬态字段，入库仅 9 列不受影响）。"""
         device = _make_device("device-1")
-        mock_adb.list_devices.return_value = ["device-1", "device-2"]
+        mock_adb.list_device_states.return_value = {"device-1": "device", "device-2": "device"}
         mock_adb.get_device_info.side_effect = [device, _make_device("device-2")]
         monkeypatch.setattr(
             "app.application.device_service.device_alias",
@@ -158,7 +159,7 @@ class TestListDevices:
     @pytest.mark.asyncio
     async def test_list_devices_empty(self, service, mock_adb):
         """测试没有连接设备时返回空列表"""
-        mock_adb.list_devices.return_value = []
+        mock_adb.list_device_states.return_value = {}
 
         result = await service.list_devices()
 
@@ -178,7 +179,7 @@ class TestListDevices:
             in_flight -= 1
             return _make_device(device_id)
 
-        mock_adb.list_devices.return_value = ["d1", "d2", "d3"]
+        mock_adb.list_device_states.return_value = {"d1": "device", "d2": "device", "d3": "device"}
         mock_adb.get_device_info.side_effect = fake_get_device_info
 
         started = time.monotonic()
@@ -194,7 +195,7 @@ class TestListDevices:
     async def test_list_devices_keeps_broken_device_without_cache(self, service, mock_adb, mock_repo):
         """信息获取失败的设备保留在列表中（最小信息 + slow 标记），不落库（方案 35 D3/D7）"""
         good = _make_device("device-good")
-        mock_adb.list_devices.return_value = ["device-good", "device-broken"]
+        mock_adb.list_device_states.return_value = {"device-good": "device", "device-broken": "device"}
         mock_adb.get_device_info.side_effect = [good, AdbError("device offline")]
 
         result = await service.list_devices()
@@ -213,7 +214,7 @@ class TestListDevices:
     async def test_list_devices_keeps_broken_device_with_cache(self, service, mock_adb, mock_repo):
         """有缓存的失败设备：返回缓存内容（逐字段一致）但 slow 标记，且不覆写仓库"""
         cached = _make_device("device-broken", model="Cached Model")
-        mock_adb.list_devices.return_value = ["device-broken"]
+        mock_adb.list_device_states.return_value = {"device-broken": "device"}
         mock_adb.get_device_info.side_effect = AdbError("timeout")
         mock_repo.get.return_value = cached
 
@@ -241,7 +242,7 @@ class TestListDevices:
                 return FakeTime.now
 
         monkeypatch.setattr("app.application.device_service.time", FakeTime)
-        mock_adb.list_devices.return_value = ["device-flaky"]
+        mock_adb.list_device_states.return_value = {"device-flaky": "device"}
         mock_adb.get_device_info.side_effect = AdbError("slow device")
 
         # 第一次：查询失败 → 兜底 + slow
@@ -274,7 +275,7 @@ class TestListDevices:
             await asyncio.sleep(0.1)
             return _make_device(device_id)
 
-        mock_adb.list_devices.return_value = ["d1", "d2"]
+        mock_adb.list_device_states.return_value = {"d1": "device", "d2": "device"}
         mock_adb.get_device_info.side_effect = slow_get_device_info
 
         r1, r2 = await asyncio.gather(service.list_devices(), service.list_devices())
@@ -831,16 +832,16 @@ class TestRefreshLoop:
         # 第一次调用返回新设备，第二次抛 CancelledError 退出循环
         call_count = 0
 
-        async def list_devices_side_effect():
+        async def list_device_states_side_effect():
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return ["new-device"]
+                return {"new-device": "device"}
             # 第二次循环前等待时会被取消
             await asyncio.sleep(100)
-            return []
+            return {}
 
-        mock_adb.list_devices.side_effect = list_devices_side_effect
+        mock_adb.list_device_states.side_effect = list_device_states_side_effect
         mock_adb.get_device_info.return_value = device
 
         # 手动运行一次刷新
@@ -863,10 +864,10 @@ class TestRefreshLoop:
     async def test_detects_disconnected_device(self, service, mock_adb, mock_repo):
         """测试检测到断开的设备"""
         # 初始状态有一个设备
-        service._previous_devices = {"old-device"}
+        service._previous_states = {"old-device": "device"}
 
         # 下次刷新时设备消失
-        mock_adb.list_devices.return_value = []
+        mock_adb.list_device_states.return_value = {}
 
         service._refresh_interval = 0.01
         task = asyncio.create_task(service._refresh_loop())
@@ -886,7 +887,7 @@ class TestRefreshLoop:
         """测试单次刷新失败不会停止整个循环"""
         call_count = 0
 
-        async def list_devices_side_effect():
+        async def list_device_states_side_effect():
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -894,9 +895,9 @@ class TestRefreshLoop:
             elif call_count == 2:
                 # 第二次循环前等待时会被取消
                 await asyncio.sleep(100)
-            return []
+            return {}
 
-        mock_adb.list_devices.side_effect = list_devices_side_effect
+        mock_adb.list_device_states.side_effect = list_device_states_side_effect
 
         service._refresh_interval = 0.01
         task = asyncio.create_task(service._refresh_loop())
@@ -990,15 +991,15 @@ class TestEventCallbacks:
         # 第一次返回新设备，后续挂起
         call_count = 0
 
-        async def list_devices_side_effect():
+        async def list_device_states_side_effect():
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return ["new-device"]
+                return {"new-device": "device"}
             await asyncio.sleep(100)
-            return []
+            return {}
 
-        mock_adb.list_devices.side_effect = list_devices_side_effect
+        mock_adb.list_device_states.side_effect = list_device_states_side_effect
         mock_adb.get_device_info.return_value = device
 
         service._refresh_interval = 0.01
@@ -1021,8 +1022,8 @@ class TestEventCallbacks:
         service.on_device_disconnected(callback)
 
         # 初始有一个设备
-        service._previous_devices = {"old-device"}
-        mock_adb.list_devices.return_value = []
+        service._previous_states = {"old-device": "device"}
+        mock_adb.list_device_states.return_value = {}
 
         service._refresh_interval = 0.01
         task = asyncio.create_task(service._refresh_loop())
@@ -1036,3 +1037,136 @@ class TestEventCallbacks:
             pass
 
         callback.assert_called_with("old-device")
+
+
+# ---------------------------------------------------------------------------
+# 失联设备可见性（路线图 B5：offline/unauthorized 不再静默）
+# ---------------------------------------------------------------------------
+
+class TestUnreachableVisibility:
+    """非 device 态行的列表呈现与事件播报。"""
+
+    @pytest.mark.asyncio
+    async def test_list_devices_includes_offline_and_unauthorized_rows(
+        self, service, mock_adb, mock_repo
+    ):
+        """adb 表中的 offline/unauthorized 行以独立状态入列，不再消失"""
+        mock_adb.list_device_states.return_value = {
+            "dev-online": "device",
+            "dev-off": "offline",
+            "dev-auth": "unauthorized",
+        }
+        mock_adb.get_device_info.return_value = _make_device("dev-online")
+
+        devices = await service.list_devices()
+
+        by_id = {d.id: d for d in devices}
+        assert by_id["dev-online"].status == "online"
+        assert by_id["dev-off"].status == "offline"
+        assert by_id["dev-auth"].status == "unauthorized"
+        # 失联行不查设备信息（查了也拿不到），也不落库
+        mock_adb.get_device_info.assert_called_once_with("dev-online")
+        mock_repo.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_list_devices_offline_prefers_cache(self, service, mock_adb, mock_repo):
+        """offline 行有缓存时带出缓存型号，仅状态覆写为失联态"""
+        mock_adb.list_device_states.return_value = {"dev-off": "offline"}
+        mock_repo.get.return_value = _make_device("dev-off", model="Pixel 7")
+
+        devices = await service.list_devices()
+
+        assert len(devices) == 1
+        assert devices[0].model == "Pixel 7"
+        assert devices[0].status == "offline"
+        mock_repo.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_device_to_offline_triggers_unreachable_not_disconnect(
+        self, service, mock_adb, mock_repo
+    ):
+        """在线→offline：播 unreachable、保缓存、不播 disconnected"""
+        disconnected_cb = AsyncMock()
+        unreachable_cb = AsyncMock()
+        service.on_device_disconnected(disconnected_cb)
+        service.on_device_unreachable(unreachable_cb)
+        service._previous_states = {"dev1": "device"}
+        mock_adb.list_device_states.return_value = {"dev1": "offline"}
+
+        service._refresh_interval = 0.01
+        task = asyncio.create_task(service._refresh_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        unreachable_cb.assert_called_once_with("dev1", "offline")
+        disconnected_cb.assert_not_called()
+        mock_repo.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_offline_to_device_triggers_connected(self, service, mock_adb, mock_repo):
+        """offline→device（恢复上线）：刷新信息并播 connected"""
+        connected_cb = AsyncMock()
+        service.on_device_connected(connected_cb)
+        device = _make_device("dev1")
+        service._previous_states = {"dev1": "offline"}
+        mock_adb.list_device_states.return_value = {"dev1": "device"}
+        mock_adb.get_device_info.return_value = device
+
+        service._refresh_interval = 0.01
+        task = asyncio.create_task(service._refresh_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        connected_cb.assert_called_once()
+        assert connected_cb.call_args[0][0].id == "dev1"
+
+    @pytest.mark.asyncio
+    async def test_new_offline_serial_announces_unreachable(
+        self, service, mock_adb, mock_repo
+    ):
+        """首次出现即 offline 的序列号：播 unreachable，不查信息不落库"""
+        unreachable_cb = AsyncMock()
+        connected_cb = AsyncMock()
+        service.on_device_unreachable(unreachable_cb)
+        service.on_device_connected(connected_cb)
+        mock_adb.list_device_states.return_value = {"dev-new-off": "unauthorized"}
+
+        service._refresh_interval = 0.01
+        task = asyncio.create_task(service._refresh_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        unreachable_cb.assert_called_once_with("dev-new-off", "unauthorized")
+        connected_cb.assert_not_called()
+        mock_repo.save.assert_not_awaited()
+
+    def test_register_and_unregister_unreachable(self, service):
+        """unreachable 回调注册与公开注销 API（L7：接口层不再触碰私有列表）"""
+        cb = AsyncMock()
+        service.on_device_unreachable(cb)
+        assert cb in service._on_device_unreachable
+
+        service.off_device_unreachable(cb)
+        assert cb not in service._on_device_unreachable
+
+        # 注销不存在的回调不抛
+        service.off_device_unreachable(cb)
+        service.off_device_connected(cb)
+        service.off_device_disconnected(cb)
+
+    def test_sse_client_count(self, service):
+        """连接计数 = connected 回调注册数（SSE 每连接注册一对）"""
+        assert service.sse_client_count() == 0
+        cb1 = AsyncMock()
+        cb2 = AsyncMock()
+        service.on_device_connected(cb1)
+        service.on_device_connected(cb2)
+        assert service.sse_client_count() == 2
+        service.off_device_connected(cb1)
+        assert service.sse_client_count() == 1

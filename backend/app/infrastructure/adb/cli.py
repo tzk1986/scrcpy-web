@@ -726,7 +726,7 @@ class AdbCliDriver:
             if "already connected" in lowered:
                 # already connected 不尝试重连、不代表 transport 可用；
                 # 设备表复核非 device 态时报错，否则成功提示配空列表（路线图 15）
-                state = (await self._device_states()).get(device_id)
+                state = (await self.list_device_states()).get(device_id)
                 if state != "device":
                     logger.warning(
                         "tcp_connect_fake_success_blocked", device=device_id, state=state
@@ -738,8 +738,12 @@ class AdbCliDriver:
             logger.error("tcp_connect_failed", ip=ip, port=port, error=str(e))
             raise
 
-    async def _device_states(self) -> dict[str, str]:
-        """`adb devices` → {serial: state}（表头跳过；仅两列及以上的行）。"""
+    async def list_device_states(self) -> dict[str, str]:
+        """`adb devices` → {serial: state}（表头跳过；仅两列及以上的行）。
+
+        含非 device 态行（offline/unauthorized/bootloader 等）——
+        列表端点与刷新循环据此呈现「失联可见」（路线图 B5）。
+        """
         output = await self._run("devices")
         states: dict[str, str] = {}
         for line in output.split("\n")[1:]:

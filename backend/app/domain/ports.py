@@ -236,6 +236,18 @@ class AdbDriver(Protocol):
         """
         ...
 
+    async def list_device_states(self) -> dict[str, str]:
+        """
+        列出 adb 设备表全部行的 {序列号: 状态}。
+
+        含非 device 态行（offline/unauthorized 等）——设备列表与
+        刷新循环据此让「已登记但失联」的设备可见（路线图 B5）。
+
+        返回：
+            {serial: state} 字典。
+        """
+        ...
+
     async def get_device_info(self, device_id: str) -> DeviceInfo:
         """
         查询设备属性并构建 DeviceInfo 快照。

@@ -206,11 +206,11 @@ async def main() -> None:
         a_drift_p99 = statistics.quantiles(drifts, n=100)[98] if len(drifts) > 10 else None
         rss_a = rss_mb()
 
-        # Phase A2：SSE 上线事件突发——重置刷新循环的已见集合，
+        # Phase A2：SSE 上线事件突发——重置刷新循环的已见状态表，
         # 让下一周期把 N 台全部当作新设备重发 connected（N 台集中上线的量化）
         sse_times.clear()
         from app.deps import get_device_service
-        get_device_service()._previous_devices = set()  # noqa: SLF001（spike 专用）
+        get_device_service()._previous_states = {}  # noqa: SLF001（spike 专用）
         t_churn = time.monotonic()
         await asyncio.sleep(15.0)
         churn_drift_p99 = (statistics.quantiles(drifts[-150:], n=100)[98]

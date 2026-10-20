@@ -18,7 +18,8 @@
     os_version: Android 版本字符串（如 "13"）
     resolution: 屏幕分辨率 (宽, 高) 元组
     battery:    电量 0-100
-    status:     连接状态 — "online"、"offline" 或 "busy"
+    status:     连接状态 — "online"、"offline" 或 "busy"；B5 失联行直接携带
+                adb 原始态（如 "unauthorized"、"offline"）供列表呈现
     ip:         （可选）WiFi 连接设备的 IP 地址
     port:       （可选）WiFi 连接设备的端口
     slow:       （瞬态）信息查询失败的标记（方案 35 D7）——不入库
@@ -38,7 +39,7 @@ class DeviceInfo:
     os_version: str
     resolution: tuple[int, int]
     battery: int
-    status: str  # "online" | "offline" | "busy"
+    status: str  # "online" | "offline" | "busy" | adb 原始态（B5 失联行）
     ip: Optional[str] = None
     port: Optional[int] = None
     # 瞬态展示字段：该设备本轮信息查询失败（最常见原因为 adb 响应慢），

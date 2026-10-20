@@ -29,7 +29,7 @@ def test_health(client: TestClient):
 def test_list_devices(client: TestClient):
     """测试设备列表端点返回 200 和列表格式（假 ADB 驱动 + 假仓库）。"""
     fake_adb = MagicMock()
-    fake_adb.list_devices = AsyncMock(return_value=["FAKE-5555"])
+    fake_adb.list_device_states = AsyncMock(return_value={"FAKE-5555": "device"})
     fake_adb.get_device_info = AsyncMock(
         return_value=DeviceInfo(
             id="FAKE-5555",
