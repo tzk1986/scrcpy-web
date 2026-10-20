@@ -17,7 +17,7 @@
 
 | 项 | 值 | 来源 |
 |----|----|------|
-| 后端监听 | `0.0.0.0:8765`（HTTP 与 WebSocket 同端口） | `config/base.yaml` `server.host/port`；`config/settings.py` `ServerConfig` |
+| 后端监听 | `127.0.0.1:8765`（HTTP 与 WebSocket 同端口；局域网开放需显式设 `BACKEND_HOST=0.0.0.0`，注意后端无鉴权，A1 M1） | `config/base.yaml` `server.host/port`；`config/settings.py` `ServerConfig` |
 | 端口覆盖 | 环境变量 `BACKEND_HOST` / `BACKEND_PORT`（优先级最高） | `config/settings.py:get_settings()` |
 | 前端 dev server | `http://localhost:8080`，`/api` 与 `/ws` 由 Vite 代理到后端 | `frontend/vite.config.ts` |
 | API 前缀 | HTTP 业务端点为 `/api/*`；WS 为 `/ws/*`；另有根路径 `/health` | `backend/app/main.py` |
