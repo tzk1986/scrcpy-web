@@ -23,8 +23,14 @@ def test_default_port_is_8765():
     assert get_settings().server.port == 8765
 
 
-def test_base_yaml_port_used(monkeypatch):
-    # base.yaml 现设 port=8765；确认它作为默认生效（与类默认一致）
+def test_base_yaml_host_default_is_loopback(monkeypatch):
+    """A1 M1：dev 默认绑回环——0.0.0.0 全网卡暴露且后端零鉴权，
+    局域网开放必须显式 BACKEND_HOST=0.0.0.0（或改配置）自担风险。"""
+    assert get_settings().server.host == "127.0.0.1"
+
+
+def test_env_can_open_lan_explicitly(monkeypatch):
+    monkeypatch.setenv("BACKEND_HOST", "0.0.0.0")
     assert get_settings().server.host == "0.0.0.0"
 
 

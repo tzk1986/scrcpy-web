@@ -80,6 +80,12 @@ def main() -> int:
     if not frozen:
         # 开发模式：行为与原版一致（reload=False），仅改为显式持有
         # Server 实例并注册退出回调，支持 UI 退出按钮优雅停机（方案 23 T2）
+        if srv.host not in ("127.0.0.1", "localhost", "::1"):
+            # A1 M1：默认已收口回环，走到这里说明显式开了局域网绑定——响亮提示
+            print(
+                f"[OpenScrcpy] 注意：绑定 {srv.host} —— 后端无鉴权，"
+                "同网段主机可直接访问全部 API，请确认为预期配置"
+            )
         _serve(app, srv.host, srv.port)
         return 0
 

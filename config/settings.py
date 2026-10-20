@@ -30,7 +30,9 @@ class AppConfig(BaseSettings):
 
 
 class ServerConfig(BaseSettings):
-    host: str = "0.0.0.0"
+    # A1 M1：默认回环——后端零鉴权，0.0.0.0 会向局域网全网卡暴露；
+    # 局域网开放须显式改 base.yaml 或设 BACKEND_HOST=0.0.0.0（run_server 会警示）
+    host: str = "127.0.0.1"
     port: int = 8765  # 后端 HTTP/WS 端口；可被 base.yaml server.port 或 BACKEND_PORT 环境变量覆盖
     workers: int = 4
 
