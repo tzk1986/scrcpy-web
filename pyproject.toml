@@ -1,6 +1,6 @@
 [project]
 name = "openscrcpy"
-version = "0.7.12"
+version = "0.7.13"
 description = "scrcpy Web-based remote control and debugging platform"
 readme = "README.md"
 license = { text = "MIT" }
