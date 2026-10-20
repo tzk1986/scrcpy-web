@@ -151,7 +151,7 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                     continue
                 try:
                     async with aclosing(
-                        debug_service._exec_shell_stream_raw(session_id, cmd)
+                        debug_service.exec_shell_stream_raw(session_id, cmd)
                     ) as stream:
                         async for line in stream:
                             await websocket.send_json({

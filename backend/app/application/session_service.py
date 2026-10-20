@@ -24,12 +24,21 @@
     - get_session():      检索会话信息
 """
 
+import hashlib
 from typing import Any, Optional
 
-from app.core.exceptions import PermissionDeniedError, SessionNotFoundError
+from app.core.exceptions import (
+    InvalidIdentifierError,
+    PermissionDeniedError,
+    SessionLimitError,
+    SessionNotFoundError,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+_MAX_COLLAB_SESSIONS = 32  # 活跃协作会话上限（A1 L2：无鉴权下防无界堆积）
+_PERMISSIONS = ("admin", "viewer")  # join 角色白名单（A1 L2）
 
 
 class SessionService:
@@ -46,7 +55,9 @@ class SessionService:
         创建新的协作会话。
 
         创建用户同时成为 owner 和 active_controller。
-        会话 ID 由 device_id 和 user_id 派生以保证确定性。
+        会话 ID 由 device_id 和 user_id 哈希派生：确定性可重建，但不含
+        明文拼接（消「a_b|c 与 a|b_c 同 ID」碰撞面，也不可被枚举猜测，
+        A1 L2）。调用方以本方法返回值作为句柄，不自行推导 ID。
 
         参数：
             device_id: 目标设备的 ADB 序列号。
@@ -54,8 +65,13 @@ class SessionService:
 
         返回：
             会话字典，包含 id、device_id、owner、participants、active_controller。
+
+        异常：
+            SessionLimitError: 活跃会话数已达上限（503）。
         """
-        session_id = f"{device_id}_{user_id}"
+        if len(self.sessions) >= _MAX_COLLAB_SESSIONS:
+            raise SessionLimitError("协作", _MAX_COLLAB_SESSIONS)
+        session_id = hashlib.sha256(f"{device_id}|{user_id}".encode("utf-8")).hexdigest()[:12]
         session = {
             "id": session_id,
             "device_id": device_id,
@@ -77,7 +93,10 @@ class SessionService:
 
         异常：
             SessionNotFoundError: 如果 session_id 不存在。
+            InvalidIdentifierError: permission 不在白名单（A1 L2，400）。
         """
+        if permission not in _PERMISSIONS:
+            raise InvalidIdentifierError("permission")
         session = self.sessions.get(session_id)
         if not session:
             raise SessionNotFoundError(session_id)

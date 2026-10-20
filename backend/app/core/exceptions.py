@@ -32,7 +32,9 @@
     ├── TargetExistsError        — 重命名目标已存在（409，方案 39）
     ├── FileTooLargeError        — 上传超出单文件上限（413，方案 39）
     ├── JobNotFoundError         — 传输任务 ID 无效/过期/跨设备（404，方案 39）
-    └── NotAFileError            — 下载目标是目录（400，方案 39）
+    ├── NotAFileError            — 下载目标是目录（400，方案 39）
+    ├── SseClientLimitError      — SSE 订阅连接数达上限，新连接被拒（503，A1 L1）
+    └── SessionLimitError        — 活跃会话数达上限，新建被拒（503，A1 L2）
 
 所有异常都携带一个机器可读的 ``code`` 字段（如 "DEVICE_NOT_FOUND"）
 以及一个人可读的 ``message``。这让前端可以根据 ``error.code`` 进行
@@ -49,6 +51,16 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+def _clip(text: str, limit: int = 120) -> str:
+    """回显用户输入的错误消息净化（A1 L4）：截断 + 剔除不可打印字符。
+
+    错误消息会进 HTTP 响应与日志：超长载荷刷屏、控制字符（换行/ANSI
+    转义/NUL）构成日志注入与终端转义面。正常短输入原样通过。
+    """
+    cleaned = "".join(ch for ch in text if ch.isprintable())
+    return cleaned if len(cleaned) <= limit else cleaned[:limit] + "…"
 
 
 class OpenScrcpyException(Exception):
@@ -77,7 +89,7 @@ class DeviceNotFoundError(OpenScrcpyException):
     status_code = 404
 
     def __init__(self, device_id: str):
-        super().__init__(f"Device not found: {device_id}", code="DEVICE_NOT_FOUND")
+        super().__init__(f"Device not found: {_clip(device_id)}", code="DEVICE_NOT_FOUND")
 
 
 class SessionNotFoundError(OpenScrcpyException):
@@ -86,7 +98,7 @@ class SessionNotFoundError(OpenScrcpyException):
     status_code = 404
 
     def __init__(self, session_id: str):
-        super().__init__(f"Session not found: {session_id}", code="SESSION_NOT_FOUND")
+        super().__init__(f"Session not found: {_clip(session_id)}", code="SESSION_NOT_FOUND")
 
 
 class PermissionDeniedError(OpenScrcpyException):
@@ -109,7 +121,12 @@ class InvalidIdentifierError(OpenScrcpyException):
 
 
 class AdbError(OpenScrcpyException):
-    """当 ADB 子进程以非零退出码退出时抛出。"""
+    """当 ADB 子进程以非零退出码退出时抛出。
+
+    消息不净化：A1 L4 针对「回显用户输入」的消息，AdbError 属 adb 诊断
+    输出（不含用户输入），且 err-38 重试合并等链路的完整文本有既有断言
+    与 200 字符截断专项口径，_clip 会破坏二者。
+    """
 
     def __init__(self, message: str):
         super().__init__(message, code="ADB_ERROR")
@@ -119,7 +136,10 @@ class DeviceUnreachableError(OpenScrcpyException):
     """TCP 可达性预检失败：目标 host:port 无法建立连接。"""
 
     def __init__(self, host: str, port: int, reason: str):
-        super().__init__(f"设备 {host}:{port} 不可达：{reason}", code="DEVICE_UNREACHABLE")
+        super().__init__(
+            f"设备 {_clip(host)}:{port} 不可达：{_clip(reason)}",
+            code="DEVICE_UNREACHABLE",
+        )
 
 
 class DeviceNotReadyError(OpenScrcpyException):
@@ -151,11 +171,12 @@ class DeviceNotReadyError(OpenScrcpyException):
     @classmethod
     def classify(cls, device_id: str, state: str | None) -> "DeviceNotReadyError":
         """设备表状态（None=不在表）→ 分类 DeviceNotReadyError。"""
+        device = _clip(device_id)
         if state == "offline":
-            return cls(cls.OFFLINE_HINT.format(device=device_id))
+            return cls(cls.OFFLINE_HINT.format(device=device))
         if state == "unauthorized":
-            return cls(cls.UNAUTHORIZED_HINT.format(device=device_id))
-        return cls(cls.ABSENT_HINT.format(device=device_id))
+            return cls(cls.UNAUTHORIZED_HINT.format(device=device))
+        return cls(cls.ABSENT_HINT.format(device=device))
 
 
 class ScrcpyOccupiedError(OpenScrcpyException):
@@ -185,9 +206,10 @@ class ScrcpyOccupiedError(OpenScrcpyException):
     def classify(cls, device_id: str, cmdline: str | None) -> "ScrcpyOccupiedError":
         """残留进程 cmdline（读失败为 None）→ 参数指纹归因分类。"""
         markers = ("max_size=0", "tunnel_forward=true", "audio=false", "clipboard_autosync=false")
+        device = _clip(device_id)
         if cmdline and all(m in cmdline for m in markers):
-            return cls(cls.OWN_RESIDUAL_HINT.format(device=device_id))
-        return cls(cls.OTHER_SESSION_HINT.format(device=device_id))
+            return cls(cls.OWN_RESIDUAL_HINT.format(device=device))
+        return cls(cls.OTHER_SESSION_HINT.format(device=device))
 
 
 class InvalidPairRequestError(OpenScrcpyException):
@@ -217,6 +239,7 @@ class PairError(OpenScrcpyException):
     @classmethod
     def classify(cls, detail: str) -> "PairError":
         """adb pair 失败文本 → 分类 PairError（stderr/stdout 两形态共用）。"""
+        detail = _clip(detail)
         low = detail.lower()
         if "command 'pair' not found" in low or "unknown command" in low:
             return cls(cls.OLD_ADB_HINT)
@@ -267,7 +290,7 @@ class InvalidScanRangeError(OpenScrcpyException):
 
     def __init__(self, cidr: str) -> None:
         super().__init__(
-            f"扫描网段 {cidr!r} 非法或超出支持范围（仅支持 IPv4，前缀 /22 至 /32）",
+            f"扫描网段 {_clip(cidr)!r} 非法或超出支持范围（仅支持 IPv4，前缀 /22 至 /32）",
             code="INVALID_SCAN_RANGE",
         )
 
@@ -290,7 +313,7 @@ class RecordingNotFoundError(OpenScrcpyException):
     status_code = 404
 
     def __init__(self, device_id: str) -> None:
-        super().__init__(f"设备 {device_id} 没有录屏会话", code="NO_RECORDING")
+        super().__init__(f"设备 {_clip(device_id)} 没有录屏会话", code="NO_RECORDING")
 
 
 class RecordingDeleteError(OpenScrcpyException):
@@ -318,7 +341,7 @@ class PathNotFoundError(OpenScrcpyException):
     status_code = 404
 
     def __init__(self, path: str) -> None:
-        super().__init__(f"Path not found: {path}", code="PATH_NOT_FOUND")
+        super().__init__(f"Path not found: {_clip(path)}", code="PATH_NOT_FOUND")
 
 
 class TransferBusyError(OpenScrcpyException):
@@ -339,7 +362,7 @@ class TargetExistsError(OpenScrcpyException):
     status_code = 409
 
     def __init__(self, path: str) -> None:
-        super().__init__(f"Target already exists: {path}", code="TARGET_EXISTS")
+        super().__init__(f"Target already exists: {_clip(path)}", code="TARGET_EXISTS")
 
 
 class FileTooLargeError(OpenScrcpyException):
@@ -360,14 +383,41 @@ class JobNotFoundError(OpenScrcpyException):
     status_code = 404
 
     def __init__(self, job_id: str) -> None:
-        super().__init__(f"Transfer job not found: {job_id}", code="JOB_NOT_FOUND")
+        super().__init__(f"Transfer job not found: {_clip(job_id)}", code="JOB_NOT_FOUND")
 
 
 class NotAFileError(OpenScrcpyException):
     """下载目标是目录（首版不支持目录直下，方案 39）。"""
 
     def __init__(self, path: str) -> None:
-        super().__init__(f"Not a file (download unsupported): {path}", code="NOT_A_FILE")
+        super().__init__(f"Not a file (download unsupported): {_clip(path)}", code="NOT_A_FILE")
+
+
+class SseClientLimitError(OpenScrcpyException):
+    """SSE 订阅连接数达上限，新连接被拒（A1 L1 资源耗尽防护）。"""
+
+    status_code = 503
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(
+            f"SSE 事件流连接数已达上限（{limit}），请关闭部分页面后重试",
+            code="SSE_CLIENT_LIMIT",
+        )
+
+
+class SessionLimitError(OpenScrcpyException):
+    """活跃会话数达上限，新建被拒（A1 L2：无鉴权下防会话无界堆积）。
+
+    kind 为会话类别中文名（如「调试」「协作」），消息不回显任何用户输入。
+    """
+
+    status_code = 503
+
+    def __init__(self, kind: str, limit: int) -> None:
+        super().__init__(
+            f"{kind}活跃会话数已达上限（{limit}），请先关闭部分会话后重试",
+            code="SESSION_LIMIT",
+        )
 
 
 # ---------------------------------------------------------------------------

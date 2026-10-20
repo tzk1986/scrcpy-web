@@ -34,7 +34,11 @@ from uuid import uuid4
 
 from fastapi import WebSocket
 
-from app.core.exceptions import InvalidIdentifierError, SessionNotFoundError
+from app.core.exceptions import (
+    InvalidIdentifierError,
+    SessionLimitError,
+    SessionNotFoundError,
+)
 from app.core.logging import get_logger
 from app.domain.identifiers import is_valid_device_id
 from app.domain.ports import (
@@ -50,6 +54,9 @@ from app.infrastructure.persistence.batch_writer import BatchLogWriter
 from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 logger = get_logger(__name__)
+
+# 活跃调试会话上限（A1 L2：无鉴权下防会话无界堆积耗尽内存/日志缓冲）
+_MAX_DEBUG_SESSIONS = 32
 
 
 class DebugService:
@@ -112,9 +119,15 @@ class DebugService:
 
         返回：
             新创建的 DebugSession。
+
+        异常：
+            InvalidIdentifierError: device_id 格式非法（400）。
+            SessionLimitError: 活跃会话数已达上限（503，A1 L2）。
         """
         if not is_valid_device_id(device_id):
             raise InvalidIdentifierError("device_id")
+        if len(self.sessions) >= _MAX_DEBUG_SESSIONS:
+            raise SessionLimitError("调试", _MAX_DEBUG_SESSIONS)
         logger.info("creating_debug_session", device=device_id, user=user_id)
         await self.writer.start()
         session_id = uuid4().hex[:12]
@@ -696,53 +709,12 @@ class DebugService:
                 pass
             logger.debug("shell_output_forwarding_stopped", session=session_id)
 
-    async def exec_shell_stream(self, session_id: str, cmd: str) -> dict[str, Any]:
+    async def exec_shell_stream_raw(self, session_id: str, cmd: str) -> AsyncGenerator[str, None]:
         """
-        流式执行 shell 命令（使用 InteractiveShell 的 execute）。
+        流式执行 shell 命令，逐行产出输出（供 WebSocket 使用，A1 L7 公开化）。
 
-        执行期间，后台读取器将输出路由到 _exec_queue，
-        避免与 PTY 输出队列冲突。命令完成后返回汇总结果。
-
-        参数：
-            session_id: 活跃的调试会话。
-            cmd: 要执行的 shell 命令。
-
-        返回：
-            字典 {"output": str, "success": bool}
-
-        异常：
-            SessionNotFoundError: 如果找不到 session_id。
-        """
-        session = self.sessions.get(session_id)
-        if not session:
-            raise SessionNotFoundError(session_id)
-
-        collected_output = []
-        success = True
-        try:
-            async with self._get_session_lock(session_id):
-                # 使用 InteractiveShell（PTY 模式）
-                shell = await self.get_or_create_shell(session_id)
-                async for line in shell.execute(cmd):
-                    collected_output.append(line)
-        except Exception as e:
-            collected_output.append(str(e))
-            success = False
-        finally:
-            # 命令完成后，记录到历史
-            full_output = "".join(collected_output)
-            await self.repo.save_shell_history(session_id, cmd, full_output)
-            session.shell_history.append(cmd)
-            session.touch()
-
-        return {"output": full_output, "success": success}
-
-    async def _exec_shell_stream_raw(self, session_id: str, cmd: str) -> AsyncGenerator[str, None]:
-        """
-        流式执行 shell 命令，逐行产出输出（供 WebSocket 使用）。
-
-        与 exec_shell_stream 类似，但以异步迭代器形式逐行产出，
-        而不是收集完整输出。WebSocket 处理器使用此方法实时转发输出。
+        以异步迭代器形式逐行产出而非收集完整输出，WS 处理器据此实时
+        转发输出（原汇总版 exec_shell_stream 无调用方，已随 A1 L8 移除）。
 
         执行期间持有会话锁；消费者提前中断时必须以 aclose 关闭生成器
         （WS 层用 contextlib.aclosing 包裹），否则锁滞留到生成器被 GC。

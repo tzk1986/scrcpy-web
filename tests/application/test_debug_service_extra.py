@@ -716,40 +716,6 @@ async def test_stop_output_forwarding_cancels_running_task():
 # 流式命令执行
 # ---------------------------------------------------------------------------
 
-async def test_exec_shell_stream_collects_output_and_records():
-    shell = FakeShell(lines=["a", "b"])
-    repo = FakeRepo()
-    svc = DebugService(adb=FakeAdb(shell=shell), repo=repo)
-    session = make_session()
-    svc.sessions[session.id] = session
-
-    result = await svc.exec_shell_stream(session.id, "ls")
-    assert result == {"output": "ab", "success": True}
-    assert repo.shell_history == [(session.id, "ls", "ab")]
-    assert session.shell_history == ["ls"]
-    await svc.stop_output_forwarding(session.id)
-
-
-async def test_exec_shell_stream_error_path_still_records_history():
-    shell = FakeShell(fail_execute=RuntimeError("shell exploded"))
-    repo = FakeRepo()
-    svc = DebugService(adb=FakeAdb(shell=shell), repo=repo)
-    session = make_session()
-    svc.sessions[session.id] = session
-
-    result = await svc.exec_shell_stream(session.id, "boom")
-    assert result["success"] is False
-    assert "shell exploded" in result["output"]
-    assert repo.shell_history == [(session.id, "boom", "shell exploded")]
-    await svc.stop_output_forwarding(session.id)
-
-
-async def test_exec_shell_stream_missing_session_raises():
-    svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
-    with pytest.raises(SessionNotFoundError):
-        await svc.exec_shell_stream("nope", "ls")
-
-
 async def test_exec_shell_stream_raw_yields_lines_and_records():
     shell = FakeShell(lines=["x", "y"])
     repo = FakeRepo()
@@ -757,7 +723,7 @@ async def test_exec_shell_stream_raw_yields_lines_and_records():
     session = make_session()
     svc.sessions[session.id] = session
 
-    lines = [line async for line in svc._exec_shell_stream_raw(session.id, "ls")]
+    lines = [line async for line in svc.exec_shell_stream_raw(session.id, "ls")]
     assert lines == ["x", "y"]
     assert repo.shell_history == [(session.id, "ls", "xy")]
     assert session.shell_history == ["ls"]
@@ -767,7 +733,7 @@ async def test_exec_shell_stream_raw_yields_lines_and_records():
 async def test_exec_shell_stream_raw_missing_session_raises():
     svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
     with pytest.raises(SessionNotFoundError):
-        async for _line in svc._exec_shell_stream_raw("nope", "ls"):
+        async for _line in svc.exec_shell_stream_raw("nope", "ls"):
             pass
 
 
@@ -810,7 +776,7 @@ async def test_exec_shell_and_stream_raw_share_session_lock():
     svc.sessions[session.id] = session
 
     async def consume_raw():
-        return [line async for line in svc._exec_shell_stream_raw(session.id, "ls")]
+        return [line async for line in svc.exec_shell_stream_raw(session.id, "ls")]
 
     _, lines = await asyncio.gather(
         svc.exec_shell(session.id, "http-cmd"),
@@ -829,7 +795,7 @@ async def test_stream_raw_releases_lock_when_consumer_closes():
     session = make_session()
     svc.sessions[session.id] = session
 
-    gen = svc._exec_shell_stream_raw(session.id, "ls")
+    gen = svc.exec_shell_stream_raw(session.id, "ls")
     assert await anext(gen) == "x"  # 已进入执行、持锁
     await gen.aclose()              # 模拟消费者中断（WS 断开）
 
@@ -847,7 +813,7 @@ async def test_stream_raw_closes_inner_generator_on_consumer_close():
     session = make_session()
     svc.sessions[session.id] = session
 
-    gen = svc._exec_shell_stream_raw(session.id, "ls")
+    gen = svc.exec_shell_stream_raw(session.id, "ls")
     assert await anext(gen) == "x"
     assert shell.generator_closed is False  # 尚在执行中
 

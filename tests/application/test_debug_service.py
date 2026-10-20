@@ -254,3 +254,19 @@ async def test_create_session_id_is_opaque_random():
         await svc.close_session(s1.id)
         await svc.close_session(s2.id)
         await svc.writer.stop()
+
+
+async def test_create_session_active_limit():
+    """A1 L2：活跃调试会话数达上限 → SessionLimitError（503），不再新建。"""
+    from app.application.debug_service import _MAX_DEBUG_SESSIONS
+    from app.core.exceptions import SessionLimitError
+
+    adb = HangingAdb()
+    svc = DebugService(adb=adb, repo=Repo())
+    for i in range(_MAX_DEBUG_SESSIONS):
+        svc.sessions[f"fill-{i}"] = DebugSession(id=f"fill-{i}", device_id="dev", user_id="u")
+
+    with pytest.raises(SessionLimitError):
+        await svc.create_session("dev1", "u1")
+    assert len(svc.sessions) == _MAX_DEBUG_SESSIONS
+    await svc.writer.stop()

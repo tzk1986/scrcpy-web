@@ -21,6 +21,7 @@
 """
 
 import asyncio
+import contextlib
 import json
 import re
 from collections.abc import AsyncIterator
@@ -34,8 +35,10 @@ from app.application.device_service import DeviceService, ScanResult
 from app.core.exceptions import (
     AdbError,
     DeviceNotFoundError,
+    InvalidIdentifierError,
     InvalidPairRequestError,
     InvalidScanRangeError,
+    SseClientLimitError,
 )
 from app.core.launcher import is_shutdown_requested
 from app.deps import get_device_service
@@ -76,25 +79,50 @@ async def batch_install(
     return {"success": True, "results": results}
 
 
+_MAX_SSE_CLIENTS = 16      # SSE 并发订阅上限（A1 L1：防页面开太多拖垮事件循环/内存）
+_SSE_QUEUE_MAXSIZE = 100   # 单连接事件缓冲上限，满则丢最旧（A1 L1：慢消费者不反压发布链）
+
+
 @router.get("/events")
 async def device_events(service: DeviceService = Depends(get_device_service)) -> StreamingResponse:
     """
     设备变化事件流（Server-Sent Events）。
 
-    实时推送设备连接和断开事件。
+    实时推送设备连接、断开与失联事件。
 
     事件格式：
         data: {"type": "connected", "device": {...}}
         data: {"type": "disconnected", "device_id": "..."}
+        data: {"type": "unreachable", "device_id": "...", "state": "offline|..."}
+
+    资源上限（A1 L1）：并发订阅超过 ``_MAX_SSE_CLIENTS`` 时新连接被拒
+    （503 SSE_CLIENT_LIMIT）；单连接缓冲满 ``_SSE_QUEUE_MAXSIZE`` 时丢最旧
+    事件，回调侧永不因消费者慢而阻塞。
 
     返回：
         SSE 流（Content-Type: text/event-stream）。
+
+    异常：
+        SseClientLimitError: 订阅连接数达上限（503）。
     """
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    if service.sse_client_count() >= _MAX_SSE_CLIENTS:
+        raise SseClientLimitError(_MAX_SSE_CLIENTS)
+
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_SSE_QUEUE_MAXSIZE)
+
+    def _push(event: dict[str, Any]) -> None:
+        """非阻塞入队：队满丢最旧腾位（回调禁 await put，防反压刷新循环）。"""
+        while True:
+            try:
+                queue.put_nowait(event)
+                return
+            except asyncio.QueueFull:
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
 
     async def on_connected(device: DeviceInfo) -> None:
         """设备连接回调"""
-        await queue.put({
+        _push({
             "type": "connected",
             "device": {
                 "id": device.id,
@@ -110,11 +138,16 @@ async def device_events(service: DeviceService = Depends(get_device_service)) ->
 
     async def on_disconnected(device_id: str) -> None:
         """设备断开回调"""
-        await queue.put({"type": "disconnected", "device_id": device_id})
+        _push({"type": "disconnected", "device_id": device_id})
+
+    async def on_unreachable(device_id: str, state: str) -> None:
+        """设备失联回调（B5：offline/unauthorized 呈现，缓存保留）"""
+        _push({"type": "unreachable", "device_id": device_id, "state": state})
 
     # 注册回调
     service.on_device_connected(on_connected)
     service.on_device_disconnected(on_disconnected)
+    service.on_device_unreachable(on_unreachable)
 
     async def event_stream() -> AsyncIterator[str]:
         """生成 SSE 事件流。
@@ -133,11 +166,10 @@ async def device_events(service: DeviceService = Depends(get_device_service)) ->
                     continue
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
-            # 客户端断开或停机收尾：清理回调
-            if on_connected in service._on_device_connected:
-                service._on_device_connected.remove(on_connected)
-            if on_disconnected in service._on_device_disconnected:
-                service._on_device_disconnected.remove(on_disconnected)
+            # 客户端断开或停机收尾：清理回调（公开 off_*，A1 L7 不触碰私有属性）
+            service.off_device_connected(on_connected)
+            service.off_device_disconnected(on_disconnected)
+            service.off_device_unreachable(on_unreachable)
 
     return StreamingResponse(
         event_stream(),
@@ -189,6 +221,12 @@ async def install_apk(
 
     返回：
         {"success": True, "result": "..."}。
+
+    备查（A1 L6）：apk_path 不做路径白名单校验——本端点等价于「调用者
+    可对本机任意文件执行 adb install」，安全前提是服务仅本机可达。
+    M1 已把默认绑定收口 127.0.0.1；显式开局域网（BACKEND_HOST=0.0.0.0）
+    即等于把该能力交给同网段主机，属部署方知情自担面（后端整体零鉴权，
+    非本端点特有），故维持纯文档口径不加校验。
     """
     result = await service.install_apk(device_id, apk_path)
     return {"success": True, "result": result}
@@ -424,11 +462,20 @@ async def disconnect_device(
 
     返回：
         {"success": True}。
+
+    异常：
+        InvalidIdentifierError: 端口段非数字或越界（400，A1 L3；
+        原裸 int() 会落 500 兜底）。
     """
     # 从 device_id 解析 ip 和 port
     if ":" in device_id:
-        parts = device_id.split(":")
-        ip = parts[0]
-        port = int(parts[1]) if len(parts) > 1 else 5555
+        ip, _, port_text = device_id.partition(":")
+        if port_text:
+            # isdecimal 而非 isdigit：后者放行 "²" 等 int() 不可解析字符（A1 L3）
+            if not port_text.isdecimal() or not 1 <= int(port_text) <= 65535:
+                raise InvalidIdentifierError("port")
+            port = int(port_text)
+        else:
+            port = 5555
         await service.disconnect_tcp(ip, port)
     return {"success": True}

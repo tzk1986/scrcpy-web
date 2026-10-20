@@ -83,12 +83,18 @@ def create_app() -> FastAPI:
         FastAPI: 配置好的应用实例。
     """
     s = settings()
+    # A1 L5：frozen（打包 exe）局域网可达且无鉴权，docs/OpenAPI 是功能面
+    # 侦察入口，关闭三件套；源码 dev 保持开启（开发依赖文档）。
+    frozen = getattr(sys, "frozen", False)
 
     app = FastAPI(
         title=s.app.name,
         version=s.app.version,
         debug=s.app.debug,
         lifespan=lifespan,
+        docs_url=None if frozen else "/docs",
+        redoc_url=None if frozen else "/redoc",
+        openapi_url=None if frozen else "/openapi.json",
     )
 
     # --- 中间件 -----------------------------------------------------------

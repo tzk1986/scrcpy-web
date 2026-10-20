@@ -78,8 +78,8 @@ class FakeDeviceService:
     """
     替身。
 
-    注意：SSE 端点的取消清理分支直接访问 service._on_device_connected /
-    _on_device_disconnected（与 DeviceService 私有属性同名），故此处保持同名。
+    注意：SSE 端点清理走公开 off_device_*（A1 L7），列表属性仅供测试断言
+    注册/注销结果与驱动事件，端点代码不再直接触碰。
     """
 
     def __init__(self) -> None:
@@ -107,6 +107,7 @@ class FakeDeviceService:
         self.connect_error: Exception | None = None
         self._on_device_connected: list[Any] = []
         self._on_device_disconnected: list[Any] = []
+        self._on_device_unreachable: list[Any] = []
 
     async def list_devices(self) -> list[DeviceInfo]:
         self.calls.append(("list_devices",))
@@ -165,6 +166,24 @@ class FakeDeviceService:
 
     def on_device_disconnected(self, callback: Any) -> None:
         self._on_device_disconnected.append(callback)
+
+    def on_device_unreachable(self, callback: Any) -> None:
+        self._on_device_unreachable.append(callback)
+
+    def off_device_connected(self, callback: Any) -> None:
+        if callback in self._on_device_connected:
+            self._on_device_connected.remove(callback)
+
+    def off_device_disconnected(self, callback: Any) -> None:
+        if callback in self._on_device_disconnected:
+            self._on_device_disconnected.remove(callback)
+
+    def off_device_unreachable(self, callback: Any) -> None:
+        if callback in self._on_device_unreachable:
+            self._on_device_unreachable.remove(callback)
+
+    def sse_client_count(self) -> int:
+        return len(self._on_device_connected)
 
 
 @pytest.fixture
@@ -778,10 +797,21 @@ async def test_events_stream_payload_and_cancel_cleanup(fake: FakeDeviceService)
         "device_id": "192.168.1.5:5555",
     }
 
-    # 客户端断连：CancelledError 进入生成器 → 清理回调后重抛
+    # 设备失联事件（B5：offline/unauthorized 不再静默）
+    await fake._on_device_unreachable[0]("192.168.8.39:5555", "offline")
+    line = await stream.__anext__()
+    assert json.loads(line.removeprefix("data: ").strip()) == {
+        "type": "unreachable",
+        "device_id": "192.168.8.39:5555",
+        "state": "offline",
+    }
+
+    # 客户端断连：CancelledError 进入生成器 → 清理回调（公开 off_*，A1 L7）后重抛
     with pytest.raises(asyncio.CancelledError):
         await stream.athrow(asyncio.CancelledError())
     assert fake._on_device_connected == []
+    assert fake._on_device_disconnected == []
+    assert fake._on_device_unreachable == []
 
 
 async def test_events_connected_alias_or_fallback(
@@ -845,3 +875,53 @@ async def test_events_stream_keeps_running_without_shutdown(
     line = await asyncio.wait_for(stream.__anext__(), timeout=1.0)
     assert line.startswith("data: ")
     assert json.loads(line.removeprefix("data: ").strip())["type"] == "connected"
+
+
+async def test_events_client_limit_503(fake: FakeDeviceService) -> None:
+    """SSE 订阅数达上限 → 新连接 503 SSE_CLIENT_LIMIT（A1 L1 资源耗尽防护）。"""
+    for i in range(devices_module._MAX_SSE_CLIENTS):
+        fake.on_device_connected(lambda *_: None)  # type: ignore[arg-type]
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.get("/api/devices/events")
+
+    assert response.status_code == 503
+    body = response.json()["error"]
+    assert body["code"] == "SSE_CLIENT_LIMIT"
+    assert body["message"]
+
+
+async def test_events_queue_overflow_drops_oldest(fake: FakeDeviceService) -> None:
+    """慢消费者：事件缓冲满后丢最旧不阻塞发布回调，流从最新窗口续读（A1 L1）。"""
+    response = await devices_module.device_events(fake)  # type: ignore[arg-type]
+    stream = response.body_iterator
+
+    total = devices_module._SSE_QUEUE_MAXSIZE + 5
+    for i in range(total):
+        await fake._on_device_connected[0](make_device(f"dev-{i}"))
+
+    first = json.loads((await stream.__anext__()).removeprefix("data: ").strip())
+    assert first["device"]["id"] == f"dev-{total - devices_module._SSE_QUEUE_MAXSIZE}"
+
+
+def test_disconnect_invalid_port_400(fake: FakeDeviceService) -> None:
+    """device_id 端口段非数字 → 400 INVALID_IDENTIFIER（非 500 兜底），不触达 service（A1 L3）。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/192.168.1.5:abc/disconnect")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_IDENTIFIER"
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1"])
+def test_disconnect_port_out_of_range_400(fake: FakeDeviceService, port: str) -> None:
+    """端口越界（0/65536/负数）同样 400 拦截（A1 L3）。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(f"/api/devices/192.168.1.5:{port}/disconnect")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_IDENTIFIER"
+    assert fake.calls == []

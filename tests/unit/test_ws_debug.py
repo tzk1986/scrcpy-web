@@ -40,7 +40,7 @@ class FakeDebugService:
     async def resize_shell(self, session_id, cols, rows):
         self.resizes.append((session_id, cols, rows))
 
-    async def _exec_shell_stream_raw(self, session_id, cmd):
+    async def exec_shell_stream_raw(self, session_id, cmd):
         try:
             if self._exec_error is not None:
                 raise self._exec_error
