@@ -1010,7 +1010,15 @@ class AdbCliDriver:
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
         )
-        stdout, stderr = await proc.communicate()
+        # 诊断类命令走配置的 adb.timeout（30s）——裸 communicate 会无限挂起（方案 51 A01）
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=settings().adb.timeout
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.error("screenshot_timeout", device=device_id, timeout=settings().adb.timeout)
+            raise AdbError(f"Screenshot timed out after {settings().adb.timeout}s")
 
         if proc.returncode != 0:
             error_msg = stderr.decode().strip()
@@ -1048,7 +1056,15 @@ class AdbCliDriver:
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
         )
-        stdout, stderr = await proc.communicate()
+        # 同 screenshot：按 adb.timeout 截断防无限挂起（方案 51 A01）
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=settings().adb.timeout
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.error("screenshot_raw_timeout", device=device_id, timeout=settings().adb.timeout)
+            raise AdbError(f"Raw screenshot timed out after {settings().adb.timeout}s")
 
         if proc.returncode != 0:
             error_msg = stderr.decode().strip()

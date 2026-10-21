@@ -14,6 +14,8 @@ ADB CLI 驱动测试
     - 错误处理
 """
 
+import asyncio
+
 import pytest
 from ipaddress import ip_network
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -574,6 +576,25 @@ class TestScreenshotRawGzip:
             with pytest.raises(AdbError, match="empty"):
                 await driver.screenshot_raw_gzip("dev1")
 
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_timeout_kills_and_raises(self):
+        """方案 51 A01：communicate 悬挂 → 按 adb.timeout 截断、kill 子进程、抛 AdbError（不无限挂起）。"""
+        procs: list = []
+
+        async def create_mock_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.returncode = None
+            proc.kill = MagicMock()
+            proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+            procs.append(proc)
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=create_mock_proc):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="[Tt]imed out"):
+                await driver.screenshot_raw_gzip("dev1")
+        assert procs and procs[0].kill.called
+
 
 # ---------------------------------------------------------------------------
 # 截图 PNG 链路（方案 38：sh -c 硬化 + 魔数剥前缀）
@@ -590,6 +611,25 @@ class TestScreenshotPng:
             proc.communicate = AsyncMock(return_value=(stdout, stderr))
             return proc
         return create_mock_proc
+
+    @pytest.mark.asyncio
+    async def test_screenshot_timeout_kills_and_raises(self):
+        """方案 51 A01：communicate 悬挂 → 按 adb.timeout 截断、kill 子进程、抛 AdbError（不无限挂起）。"""
+        procs: list = []
+
+        async def create_mock_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.returncode = None
+            proc.kill = MagicMock()
+            proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+            procs.append(proc)
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=create_mock_proc):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="[Tt]imed out"):
+                await driver.screenshot("dev1")
+        assert procs and procs[0].kill.called
 
     @pytest.mark.asyncio
     async def test_screenshot_argv_and_stdout(self):
