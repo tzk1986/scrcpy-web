@@ -385,7 +385,7 @@ def _parse_scan_targets(raw: str) -> tuple[str, list[str]]:
 @router.post("/connect")
 async def connect_device(
     ip: str,
-    port: int = 5555,
+    port: str = "5555",
     service: DeviceService = Depends(get_device_service),
 ) -> dict[str, Any]:
     """
@@ -394,13 +394,27 @@ async def connect_device(
     用于无线调试或 USB 连接不稳定时的备用方案。
 
     参数：
-        ip: 设备 IP 地址（查询参数）。
-        port: ADB 端口（查询参数，默认 5555）。
+        ip: 设备 IP 地址（查询参数，仅 IPv4）。
+        port: ADB 端口（查询参数，1-65535，默认 5555）。
 
     返回：
         {"success": True, "device_id": "ip:port"}。
+
+    异常：
+        InvalidIdentifierError: ip 非 IPv4 形态或端口非法（400，
+        方案 51 A05：对齐 /pair 与 /disconnect 校验面，原越界端口直落
+        adb 得 500/扫错端）。
     """
-    device_id = await service.connect_tcp(ip, port)
+    try:
+        addr = ip_address(ip)
+    except ValueError:
+        raise InvalidIdentifierError("ip")
+    if not isinstance(addr, IPv4Address):
+        raise InvalidIdentifierError("ip")
+    # isdecimal 而非 isdigit：后者放行 "²" 等 int() 不可解析字符（A1 L3 同源）
+    if not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise InvalidIdentifierError("port")
+    device_id = await service.connect_tcp(ip, int(port))
     return {"success": True, "device_id": device_id}
 
 

@@ -397,6 +397,31 @@ def test_connect_device_not_ready_passes_400(fake: FakeDeviceService) -> None:
     assert "offline" in body["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    ("params", "kind"),
+    [
+        ({"ip": "192.168.1.5", "port": 70000}, "port"),   # 越界端口（原放行→扫错端/500）
+        ({"ip": "192.168.1.5", "port": 0}, "port"),        # 0 端口
+        ({"ip": "192.168.1.5", "port": "abc"}, "port"),    # 非数字（原 422，统一 400）
+        ({"ip": "not-an-ip", "port": 5555}, "ip"),         # ip 非地址形态
+        ({"ip": "::1", "port": 5555}, "ip"),               # 仅支持 IPv4（对齐 /pair）
+    ],
+)
+def test_connect_device_invalid_params_400(
+    fake: FakeDeviceService, params: dict, kind: str
+) -> None:
+    """方案 51 A05：/connect 补 ip/port 校验，非法参数 400 结构化且不落到服务。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/connect", params=params)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "INVALID_IDENTIFIER"
+    assert body["error"]["message"] == f"Invalid {kind} format"
+    assert fake.calls == []
+
+
 # ---------------------------------------------------------------------------
 # 无线调试配对（方案 47 T4）
 # ---------------------------------------------------------------------------

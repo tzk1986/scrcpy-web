@@ -305,13 +305,16 @@ describe('LogcatView', () => {
     expect(entries.length).toBe(3)
     expect(entries[0].text()).toContain('TagA')
     expect(entries[0].text()).toContain('hello world')
-    // ts=1700000000 → 22:13:20.000（仅时间部分）
-    expect(entries[0].find('.timestamp').text()).toBe('22:13:20.000')
+    // ts=1700000000 → 本地时区 HH:MM:SS.mmm（方案 51 F2-03：原恒 UTC）
+    const d = new Date(1700000000 * 1000)
+    const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+    const localTime = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.000`
+    expect(entries[0].find('.timestamp').text()).toBe(localTime)
     expect(wrapper.find('.stats-control').text()).toContain('共 3 条')
     expect(wrapper.find('.paused-banner').text()).toContain('当前显示 3 条历史日志')
 
     await entries[0].trigger('click')
-    expect(clipboard.writeText).toHaveBeenCalledWith('22:13:20.000 [I] TagA: hello world')
+    expect(clipboard.writeText).toHaveBeenCalledWith(`${localTime} [I] TagA: hello world`)
   })
 
   it('级别过滤 + 搜索防抖（300ms）驱动列表与计数', async () => {
@@ -384,12 +387,13 @@ describe('LogcatView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    // 刷新：重新拉取日志（带当前过滤条件）
+    // 刷新：重新拉取并按 seq/签名去重合并（方案 51 F2-04：返回内容与
+    // 本地 3 条同源 → 合并后仍 3 条，整体替换语义下会变成 1 条）
     await findButton(wrapper, '刷新').trigger('click')
     await flushPromises()
     expect(mockApi.getLogs).toHaveBeenCalledWith('sess-1', null, null, 1000)
-    expect(store.logs.length).toBe(1)
-    expect(wrapper.findAll('.log-entry').length).toBe(1)
+    expect(store.logs.length).toBe(3)
+    expect(wrapper.findAll('.log-entry').length).toBe(3)
 
     // 清空：仅清本地缓存
     await findButton(wrapper, '清空').trigger('click')
@@ -590,5 +594,20 @@ describe('LogcatView', () => {
     const msg = wrapper.find('.message')
     expect(msg.find('img').exists()).toBe(false)
     expect(msg.html()).toContain('&lt;img')
+  })
+
+  it('方案 51 F2-03：时间戳按本地时区显示 HH:MM:SS.mmm（原 UTC 早 8h）', async () => {
+    const store = useDebugStore()
+    store.logs = [
+      { ts: 1700000000.123, level: 'I', pid: 1, tid: 1, tag: 'T', message: 'x' },
+    ]
+    const wrapper = mountView()
+    await flushPromises()
+
+    const d = new Date(1700000000.123 * 1000)
+    const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+    const expected =
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+    expect(wrapper.find('.timestamp').text()).toBe(expected)
   })
 })

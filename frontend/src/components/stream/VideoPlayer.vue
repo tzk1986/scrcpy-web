@@ -455,6 +455,9 @@ onMounted(async () => {
   } else {
     console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
     startScreenshotMode()
+    // 方案 51 F1-06：截图模式帧走 HTTP（VideoStream 不用 ws），ws 仅作输入
+    // 通道——原分支从不 connect，非 WebCodecs 下输入全部静默丢弃。
+    ws.connect()
   }
 
   // 挂载时 tab 可能已处于隐藏态（后台标签打开设备页），按当前可见性

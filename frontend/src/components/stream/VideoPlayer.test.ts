@@ -412,6 +412,8 @@ describe('VideoPlayer H264 状态机与回退', () => {
     expect(canvas.width).toBe(1080)
     expect(canvas.height).toBe(1920)
     expect(h.MockH264Stream.instances.length).toBe(0)
+    // 方案 51 F1-06：截图模式帧走 HTTP，但 ws 是输入通道——分支须 connect
+    expect(h.MockWebSocketService.instances[0].connect).toHaveBeenCalled()
 
     const vs = h.MockVideoStream.instances[0]
     expect(vs.start).toHaveBeenCalled()

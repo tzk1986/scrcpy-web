@@ -549,13 +549,19 @@ class DeviceService:
                     current_ids = set(current_states)
                     previous_ids = set(previous)
 
+                    # 上线/失联播报收集后并发执行（方案 51 A03）：
+                    # 大扫描批量上线时单台慢查询不再串行拖滞其余播报。
+                    # 两个任务体各自容错（内部 try），gather 无异常逃逸面。
+                    announcements: list[Awaitable[None]] = []
+
                     # 新出现的序列号
                     for device_id in current_ids - previous_ids:
                         state = current_states[device_id]
                         if state == "device":
-                            await self._announce_connected(device_id)
+                            announcements.append(self._announce_connected(device_id))
                         else:
-                            await self._trigger_unreachable_callbacks(device_id, state)
+                            announcements.append(
+                                self._trigger_unreachable_callbacks(device_id, state))
 
                     # 从表中消失的序列号：清除登记并播 disconnected
                     for device_id in previous_ids - current_ids:
@@ -571,9 +577,13 @@ class DeviceService:
                         if old == new:
                             continue
                         if new == "device":
-                            await self._announce_connected(device_id)
+                            announcements.append(self._announce_connected(device_id))
                         else:
-                            await self._trigger_unreachable_callbacks(device_id, new)
+                            announcements.append(
+                                self._trigger_unreachable_callbacks(device_id, new))
+
+                    if announcements:
+                        await asyncio.gather(*announcements)
 
                     self._previous_states = current_states
 
@@ -586,9 +596,17 @@ class DeviceService:
             raise
 
     async def _announce_connected(self, device_id: str) -> None:
-        """在线登记/恢复共用路径：查信息、落库、播 connected。"""
+        """在线登记/恢复共用路径：查信息、落库、播 connected。
+
+        方案 51 A03：经 `_get_info_cached` 复用查询面（信号量限流、失败
+        冷却、与 list_devices 在飞任务共享），None（冷却中/失败）不播报，
+        与原「查询失败仅记错不播报」语义一致。
+        """
         try:
-            info = await self.adb.get_device_info(device_id)
+            info = await self._get_info_cached(device_id)
+            if info is None:
+                logger.debug("announce_connected_skipped", device=device_id)
+                return
             info.alias = device_alias(device_id)  # 回调对象带出备注（方案 50）
             await self.repo.save(info)
             await self._trigger_connected_callbacks(info)

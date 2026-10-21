@@ -46,6 +46,36 @@ export interface LogEntry {
 }
 
 /**
+ * fetchLogs 历史与现有缓冲的合并纯函数（方案 51 F2-04）。
+ * 按 seq 去重、升序归位——整体替换会把请求在途期间 WS 订阅窗
+ * 推达的增量日志覆盖丢失。重叠 seq 时 existing 实例优先；无 seq
+ * 条目（旧协议/测试形态）按内容签名去重、保原序附尾。
+ */
+export function mergeLogs(existing: LogEntry[], incoming: LogEntry[]): LogEntry[] {
+  const bySeq = new Map<number, LogEntry>()
+  for (const e of existing) {
+    if (typeof e.seq === 'number') bySeq.set(e.seq, e)
+  }
+  for (const e of incoming) {
+    if (typeof e.seq === 'number' && !bySeq.has(e.seq)) bySeq.set(e.seq, e)
+  }
+  const sorted = [...bySeq.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, e]) => e)
+
+  const seenSig = new Set<string>()
+  const tail: LogEntry[] = []
+  for (const e of [...existing, ...incoming]) {
+    if (typeof e.seq === 'number') continue
+    const sig = `${e.ts}|${e.level}|${e.pid}|${e.tid}|${e.tag}|${e.message}`
+    if (seenSig.has(sig)) continue
+    seenSig.add(sig)
+    tail.push(e)
+  }
+  return [...sorted, ...tail]
+}
+
+/**
  * 调试 Store。
  * 管理调试会话的生命周期和日志数据。
  */
@@ -95,6 +125,8 @@ export const useDebugStore = defineStore('debug', () => {
   /**
    * 从后端获取日志。
    * 应用当前的过滤条件（level, tag）。
+   * 方案 51 F2-04：与现有缓冲按 seq 去重合并保序（原整体替换会覆盖
+   * 丢失请求在途期间 WS 订阅窗推达的增量日志）。
    */
   async function fetchLogs(limit = 1000) {
     if (!sessionId.value) return
@@ -104,7 +136,7 @@ export const useDebugStore = defineStore('debug', () => {
       filter.value.tag,
       limit
     )
-    logs.value = res.logs
+    logs.value = mergeLogs(logs.value, res.logs)
   }
 
   /**
@@ -316,9 +348,10 @@ export const useDebugStore = defineStore('debug', () => {
    * 当收到 shell_stream 消息时，调用此处理器将输出写入终端。
    *
    * 参数：
-   *   handler: 输出处理函数。
+   *   handler: 输出处理函数；传 null 摘除（方案 51 F2-05：组件卸载须
+   *   注销，否则闭包滞留引用已销毁终端，延迟消息写入失效实例）。
    */
-  function setShellOutputHandler(handler: (output: string) => void) {
+  function setShellOutputHandler(handler: ((output: string) => void) | null) {
     shellOutputHandler = handler
   }
 

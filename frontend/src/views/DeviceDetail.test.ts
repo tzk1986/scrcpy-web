@@ -208,6 +208,18 @@ describe('DeviceDetail 截图按钮（方案 37 B7 改道）', () => {
     wrapper.unmount()
   })
 
+  it('截图失败可见化（方案 51 F1-05）：ElMessage.error 且不弹预览', async () => {
+    mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
+    captureSnapshotMock.mockRejectedValue(new Error('canvas 为空'))
+    const wrapper = await mountView()
+
+    await clickScreenshot(wrapper)
+
+    expect(elMessageMock.error).toHaveBeenCalledWith('截图失败: canvas 为空')
+    expect(wrapper.findComponent({ name: 'ScreenshotPreview' }).props('visible')).toBe(false)
+    wrapper.unmount()
+  })
+
   it('回退路径时提示文案且同样打开预览弹窗', async () => {
     mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
     captureSnapshotMock.mockResolvedValue({

@@ -227,8 +227,8 @@ async def test_repeat_stop_idempotent(service, mock_adb):
 # ---------------------------------------------------------------------------
 
 def test_enforce_limits_deletes_old_first(tmp_path):
-    old = tmp_path / "old.mp4"
-    new = tmp_path / "new.mp4"
+    old = tmp_path / "openscrcpy_rec_old.mp4"
+    new = tmp_path / "openscrcpy_rec_new.mp4"
     old.write_bytes(b"x" * 10)
     new.write_bytes(b"x" * 10)
     os.utime(old, (time.time() - 10 * 86400, time.time() - 10 * 86400))
@@ -242,7 +242,7 @@ def test_enforce_limits_capacity(tmp_path, monkeypatch):
     monkeypatch.setattr(settings().recording, "max_total_mb", 1)
     paths = []
     for i in range(3):
-        p = tmp_path / f"rec{i}.mp4"
+        p = tmp_path / f"openscrcpy_rec_{i}.mp4"
         p.write_bytes(b"x" * 600_000)
         t = time.time() - (3 - i) * 3600
         os.utime(p, (t, t))
@@ -251,6 +251,29 @@ def test_enforce_limits_capacity(tmp_path, monkeypatch):
     assert not paths[0].exists()
     assert not paths[1].exists()
     assert paths[2].exists()
+
+
+def test_enforce_limits_keeps_non_recording_files(tmp_path, monkeypatch):
+    """方案 51 E6：双限只作用录屏产物（LOCAL_FILE_GLOB），
+    目录内他人文件不再被时间/容量维误删（数据保护）。"""
+    monkeypatch.setattr(settings().recording, "max_total_mb", 1)
+    sentinel = tmp_path / "notes.txt"
+    sentinel.write_bytes(b"keep me")
+    old_sentinel = tmp_path / "legacy_export.mkv"  # mtime 超 retention 也须保留
+    old_sentinel.write_bytes(b"x" * 10)
+    os.utime(old_sentinel, (time.time() - 10 * 86400, time.time() - 10 * 86400))
+    recs = []
+    for i in range(3):  # 超容量：旧 rec 产物按序删
+        p = tmp_path / f"openscrcpy_rec_{i}.mp4"
+        p.write_bytes(b"x" * 600_000)
+        t = time.time() - (3 - i) * 3600
+        os.utime(p, (t, t))
+        recs.append(p)
+    RecordingService._enforce_limits(tmp_path)
+    assert sentinel.exists()
+    assert old_sentinel.exists()
+    assert not recs[0].exists() and not recs[1].exists()
+    assert recs[2].exists()
 
 
 # ---------------------------------------------------------------------------

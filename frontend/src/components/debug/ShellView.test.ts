@@ -111,6 +111,31 @@ describe('ShellView', () => {
     expect(term.dispose).toHaveBeenCalled()
   })
 
+  it('方案 51 F2-05：卸载摘除输出处理器并置空 term，迟到的 shell_stream 不再写入', async () => {
+    const store = useDebugStore()
+    vi.spyOn(store, 'sendInput').mockImplementation(() => {})
+    let registered: ((output: string) => void) | null = null
+    const setSpy = vi.spyOn(store, 'setShellOutputHandler').mockImplementation((fn) => {
+      if (typeof fn === 'function') registered = fn
+    })
+    const wrapper = await mountView()
+    expect(registered).toBeTypeOf('function')
+
+    const term = h.MockTerminal.instances[0]
+    // 挂载时组件把 term.write 重赋为去 Tab 包装（非 mock），用 shim 观察属性调用
+    let shimCalls = 0
+    ;(term as any).write = () => {
+      shimCalls++
+    }
+    wrapper.unmount()
+
+    expect(setSpy).toHaveBeenLastCalledWith(null)
+    expect(term.dispose).toHaveBeenCalled()
+    // 旧闭包延迟触发（如组件卸载与 WS 消息竞态）：term 已置空 → 不写入、不抛错
+    expect(() => registered!('late line')).not.toThrow()
+    expect(shimCalls).toBe(0)
+  })
+
   it('输入框发送命令：空命令忽略，非空命令追加换行并清空输入', async () => {
     const store = useDebugStore()
     const sendSpy = vi.spyOn(store, 'sendInput').mockImplementation(() => {})

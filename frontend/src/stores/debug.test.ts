@@ -12,10 +12,11 @@
  *     error / session_closed / subscribed / 未知类型 / 非法 JSON
  *   - execShellWs 的 WS 路径与 HTTP 降级、sendInput base64 编码与回车转换、setFilter 同步
  *   - 连接超时（readyState 非 OPEN 时不再订阅并重置 debugWs）
+ *   - mergeLogs / fetchLogs 合并语义（方案 51 F2-04：seq 去重保序，非整体替换）
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { useDebugStore, type LogEntry } from '@/stores/debug'
+import { mergeLogs, useDebugStore, type LogEntry } from '@/stores/debug'
 
 const h = vi.hoisted(() => {
   class MockWebSocketService {
@@ -523,5 +524,40 @@ describe('debug store - 命令与过滤', () => {
     connected.setFilter('E', 'Tag1')
     expect(connected.filter).toEqual({ level: 'E', tag: 'Tag1' })
     expect(sentOps().at(-1)).toEqual({ op: 'filter', level: 'E', tag: 'Tag1', paused: true })
+  })
+})
+
+describe('debug store - fetchLogs 合并（方案 51 F2-04）', () => {
+  it('mergeLogs：重叠 seq 去重 existing 优先，混合乱序按 seq 升序归位', () => {
+    const existing = [entry(5), entry(2)]
+    const incoming = [entry(2, 'dup'), entry(1), entry(4)]
+
+    const merged = mergeLogs(existing, incoming)
+    expect(merged.map((e) => e.seq)).toEqual([1, 2, 4, 5])
+    expect(merged[1].message).toBe('log-2') // existing 实例保留，不被 incoming 覆盖
+  })
+
+  it('mergeLogs：无 seq 条目按内容签名去重、保原序附尾', () => {
+    const a: LogEntry = { ts: 9, level: 'I', pid: 1, tid: 1, tag: 't', message: 'no-seq' }
+    const b: LogEntry = { ...a, message: 'other' }
+
+    const merged = mergeLogs([a, entry(1)], [{ ...a }, b])
+    expect(merged.map((e) => e.seq ?? e.message)).toEqual([1, 'no-seq', 'other'])
+  })
+
+  it('mergeLogs：incoming 为空不改变 existing（空历史不清空缓冲）', () => {
+    const existing = [entry(1), entry(2)]
+    expect(mergeLogs(existing, [])).toEqual(existing)
+  })
+
+  it('fetchLogs 与现有缓冲合并而非整体替换：订阅窗增量保留', async () => {
+    const store = useDebugStore()
+    store.sessionId = 'sess-1'
+    store.appendLog(entry(3)) // 请求在途期间 WS 已推达的增量
+
+    mockApi.getLogs.mockResolvedValueOnce({ logs: [entry(1), entry(2)] })
+    await store.fetchLogs()
+
+    expect(store.logs.map((l) => l.seq)).toEqual([1, 2, 3])
   })
 })

@@ -217,7 +217,9 @@ class NetworkService:
         interval = float(settings().metrics.network_interval)
 
         buffer = self._buffers.get(device_id)
-        if buffer is not None and (time.time() - buffer[-1].ts) < interval:
+        # 方案 51 E3：buffer 可能已建但尚未出首样本（空 deque），判空对齐
+        # get_buffer_snapshot 守卫，空缓冲走下方内联采样兜底
+        if buffer and (time.time() - buffer[-1].ts) < interval:
             return buffer[-1]
 
         if device_id not in self._tasks:

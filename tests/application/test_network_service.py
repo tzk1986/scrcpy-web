@@ -191,6 +191,19 @@ async def test_get_stats_reuses_fresh_buffer_point(monkeypatch) -> None:
     assert DEV not in service._tasks  # 不因此拉起任务
 
 
+async def test_get_stats_empty_buffer_falls_back_to_inline_sample(monkeypatch) -> None:
+    """方案 51 E3：缓冲入口已建但尚未出首样本（空 deque）→ 不 IndexError，
+    按冷启动路径内联采样兜底。"""
+    monkeypatch.setattr(settings().metrics, "network_interval", 2.0)
+    service = NetworkService(FakeAdb(std_outputs()))
+    service._buffers[DEV] = deque(maxlen=5)  # 首样本竞态窗
+
+    result = await service.get_stats(DEV)
+
+    assert result.rx_bytes == 500000
+    await service.stop_monitoring(DEV)
+
+
 async def test_get_stats_cold_start_starts_and_samples(monkeypatch) -> None:
     """无任务无缓冲：自动拉起监控 + 内联采样一次并返回。"""
     monkeypatch.setattr(settings().metrics, "network_interval", 2.0)

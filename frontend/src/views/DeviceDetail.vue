@@ -176,12 +176,17 @@ function onFirstFrame(blob: Blob) {
 async function captureScreenshot() {
   const player = videoPlayerRef.value
   if (!player) return
-  const { blob, source } = await player.captureSnapshot()
-  if (source === 'fallback') {
-    ElMessage.info('当前无视频流，已回退设备端截图')
+  // 方案 51 F1-05：截图失败须可见（原 rejection 静默吞掉）
+  try {
+    const { blob, source } = await player.captureSnapshot()
+    if (source === 'fallback') {
+      ElMessage.info('当前无视频流，已回退设备端截图')
+    }
+    screenshotImage.value = blob
+    screenshotVisible.value = true
+  } catch (e: unknown) {
+    ElMessage.error(`截图失败: ${e instanceof Error ? e.message : String(e)}`)
   }
-  screenshotImage.value = blob
-  screenshotVisible.value = true
 }
 </script>
 

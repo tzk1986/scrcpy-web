@@ -320,6 +320,10 @@ class RecordingService:
         时间维：mtime 超 retention_days 的产物删除；
         容量维：目录总字节超 max_total_mb 时按 mtime 排序删旧，直至降到限下。
 
+        两维均只作用 `LOCAL_FILE_GLOB` 匹配的录屏产物（方案 51 E6，
+        对齐 cleanup_all_recordings 与方案 46 论断）——目录混放时他人
+        文件不得被误删。
+
         参数：
             directory: 主机落盘目录。
         """
@@ -327,9 +331,8 @@ class RecordingService:
         if not directory.is_dir():
             return
         cutoff = time.time() - cfg.retention_days * 86400
-        for path in directory.iterdir():
-            if not path.is_file():
-                continue
+        pattern = RecordingService.LOCAL_FILE_GLOB  # staticmethod 无 self
+        for path in directory.glob(pattern):
             try:
                 if path.stat().st_mtime < cutoff:
                     path.unlink(missing_ok=True)
@@ -337,7 +340,7 @@ class RecordingService:
                 logger.warning("recording_time_limit_unlink_failed", path=str(path))
         max_bytes = cfg.max_total_mb * 1024 * 1024
         files = sorted(
-            (p for p in directory.iterdir() if p.is_file()),
+            directory.glob(pattern),
             key=lambda p: p.stat().st_mtime,
         )
         total = sum(p.stat().st_size for p in files)

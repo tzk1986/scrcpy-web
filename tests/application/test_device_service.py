@@ -957,6 +957,52 @@ class TestRefreshLoop:
         except asyncio.CancelledError:
             pass
 
+    @pytest.mark.asyncio
+    async def test_batch_announce_is_concurrent(self, service, mock_adb, mock_repo):
+        """方案 51 A03：批量上线播报并发化——单台慢查询不再串行拖滞其余
+        connected/unreachable 播报（10 台×50ms：串行 ≥0.5s，并发 ~0.05s）。"""
+        ids = [f"dev-{i}" for i in range(10)]
+        seen = False
+
+        async def list_states():
+            nonlocal seen
+            if not seen:
+                seen = True
+                return {d: "device" for d in ids}
+            await asyncio.sleep(100)
+            return {}
+
+        async def info_effect(device_id):
+            await asyncio.sleep(0.05)
+            return _make_device(device_id)
+
+        mock_adb.list_device_states.side_effect = list_states
+        mock_adb.get_device_info.side_effect = info_effect
+
+        announced: list[float] = []
+
+        async def cb(info):
+            announced.append(time.monotonic())
+
+        service.on_device_connected(cb)
+        service._refresh_interval = 0.01
+        t0 = time.monotonic()
+        task = asyncio.create_task(service._refresh_loop())
+
+        try:
+            for _ in range(200):  # 最多等 2s
+                if len(announced) == len(ids):
+                    break
+                await asyncio.sleep(0.01)
+            assert len(announced) == len(ids)
+            assert announced[-1] - t0 < 0.4, "批量播报疑似串行：总耗时接近 Σ 单台"
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
 
 # ---------------------------------------------------------------------------
 # 事件回调测试

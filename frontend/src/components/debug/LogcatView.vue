@@ -356,10 +356,13 @@ function copyLog(item: { ts: number; level: string; tag: string; message: string
 /**
  * 格式化 Unix 时间戳为可读时间。
  * 格式：HH:MM:SS.mmm（只保留时间部分）。
+ * 方案 51 F2-03：本地时区（原 toISOString 恒 UTC，东八区显示早 8h）。
+ * hourCycle h23 防个别 ICU 版本 hour12:false 半夜输出 "24"。
  */
 function formatTime(ts: number) {
   const date = new Date(ts * 1000)
-  return date.toISOString().substr(11, 12)
+  const hms = date.toLocaleTimeString('zh-CN', { hour12: false, hourCycle: 'h23' })
+  return `${hms}.${String(date.getMilliseconds()).padStart(3, '0')}`
 }
 </script>
 

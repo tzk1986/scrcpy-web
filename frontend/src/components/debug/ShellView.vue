@@ -233,7 +233,11 @@ onUnmounted(() => {
   window.removeEventListener('resize', handleContainerResize)
   resizeObserver?.disconnect()
   resizeObserver = null
+  // 方案 51 F2-05：摘除 store 输出处理器并置空 term——否则 WS 迟到消息
+  // 经旧闭包向已 dispose 终端写入，且组件作用域闭包滞留泄漏。
+  debugStore.setShellOutputHandler(null)
   term?.dispose()
+  term = null
 })
 </script>
 
