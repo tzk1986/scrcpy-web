@@ -5,7 +5,9 @@
     - exec 分支错误回发失败（客户端已断开时 send 抛错）曾产生二次异常
       逃逸，绕过订阅/转发清理，实测残留订阅者与转发任务；
     - 清理已收进 finally：任何退出路径（命令异常、非法消息、
-      客户端断开）都必须执行 unsubscribe + stop_output_forwarding。
+      客户端断开）都必须执行 unsubscribe_and_maybe_stop_forwarding
+      （方案 51 C2：订阅者清零才停转发，逻辑在 debug_service 侧，
+      此处以替身钉住接口层调用面）。
 
 全部使用手写 Fake（不依赖真实设备 / Starlette 运行时）。
 """
@@ -21,17 +23,19 @@ from app.interfaces.ws.debug import debug_stream
 class FakeDebugService:
     """WS 处理器所需方法的最小替身，记录清理调用次数。"""
 
-    def __init__(self, lines=("a", "b"), exec_error=None):
+    def __init__(self, lines=("a", "b"), exec_error=None, subscribe_error=None):
         self._lines = list(lines)
         self._exec_error = exec_error
-        self.unsubscribed = 0
-        self.forwarding_stopped = 0
+        self._subscribe_error = subscribe_error
+        self.cleanup_calls = 0
         self.generators_closed = 0
         self.resizes = []
         self.subscribed = 0
         self.filters: list = []
 
     async def subscribe(self, session_id, websocket) -> None:
+        if self._subscribe_error is not None:
+            raise self._subscribe_error
         self.subscribed += 1
 
     async def set_subscriber_filter(self, session_id, websocket, level, tag, paused) -> None:
@@ -49,11 +53,8 @@ class FakeDebugService:
         finally:
             self.generators_closed += 1
 
-    async def unsubscribe(self, session_id, websocket):
-        self.unsubscribed += 1
-
-    async def stop_output_forwarding(self, session_id):
-        self.forwarding_stopped += 1
+    async def unsubscribe_and_maybe_stop_forwarding(self, session_id, websocket):
+        self.cleanup_calls += 1
 
 
 class FakeWebSocket:
@@ -95,8 +96,7 @@ async def test_cleanup_runs_when_client_disconnects_during_exec():
 
     assert ws.sent == [{"type": "shell_stream", "line": "a", "done": False}]
     assert svc.generators_closed == 1  # aclosing 已关闭命令生成器
-    assert svc.unsubscribed == 1
-    assert svc.forwarding_stopped == 1
+    assert svc.cleanup_calls == 1
 
 
 async def test_exec_error_with_broken_send_does_not_escape_cleanup():
@@ -108,8 +108,7 @@ async def test_exec_error_with_broken_send_does_not_escape_cleanup():
     await debug_stream(ws, "s1", svc)
 
     assert svc.generators_closed == 1
-    assert svc.unsubscribed == 1
-    assert svc.forwarding_stopped == 1
+    assert svc.cleanup_calls == 1
 
 
 async def test_unexpected_error_still_runs_cleanup():
@@ -126,8 +125,7 @@ async def test_unexpected_error_still_runs_cleanup():
     with pytest.raises(RuntimeError):
         await debug_stream(ws, "s1", svc)
 
-    assert svc.unsubscribed == 1
-    assert svc.forwarding_stopped == 1
+    assert svc.cleanup_calls == 1
 
 
 async def test_normal_disconnect_runs_cleanup():
@@ -137,8 +135,7 @@ async def test_normal_disconnect_runs_cleanup():
 
     await debug_stream(ws, "s1", svc)
 
-    assert svc.unsubscribed == 1
-    assert svc.forwarding_stopped == 1
+    assert svc.cleanup_calls == 1
 
 
 async def test_resize_op_forwards_dims():
@@ -149,7 +146,7 @@ async def test_resize_op_forwards_dims():
     await debug_stream(ws, "s1", svc)
 
     assert svc.resizes == [("s1", 120, 40)]
-    assert svc.unsubscribed == 1
+    assert svc.cleanup_calls == 1
 
 
 async def test_resize_op_rejects_non_positive_dims():
@@ -180,7 +177,7 @@ async def test_invalid_json_gets_bad_message_and_continues():
     ws = FakeWebSocket(["{"])
     await debug_stream(ws, "s1", svc)
     assert ws.sent == [{"type": "error", "code": "BAD_MESSAGE", "message": "invalid message"}]
-    assert svc.unsubscribed == 1
+    assert svc.cleanup_calls == 1
 
 
 async def test_non_object_json_gets_bad_message():
@@ -215,6 +212,22 @@ async def test_exec_command_non_string_rejected():
     await debug_stream(ws, "s1", svc)
     assert ws.sent[0]["code"] == "BAD_MESSAGE"
     assert svc.generators_closed == 0
+
+
+async def test_subscribe_failure_returns_error_frame_without_disconnect():
+    """方案 51 C7：订阅失效会话 → 可见 error 帧、连接保持（handler 正常收尾）。"""
+    from app.core.exceptions import SessionNotFoundError
+
+    svc = FakeDebugService(subscribe_error=SessionNotFoundError("gone"))
+    ws = FakeWebSocket([{"op": "subscribe"}])
+
+    await debug_stream(ws, "s1", svc)  # 不抛异常 = 未异常断连
+
+    assert ws.sent == [
+        {"type": "error", "code": "SUBSCRIBE_FAILED", "message": "failed to subscribe"}
+    ]
+    assert svc.subscribed == 0
+    assert svc.cleanup_calls == 1
 
 
 async def test_exec_error_text_sanitized():

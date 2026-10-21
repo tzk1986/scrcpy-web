@@ -297,7 +297,33 @@ class DebugService:
         except asyncio.CancelledError:
             logger.info("logcat_collection_cancelled", session=session.id)
         except Exception as e:
-            logger.error("logcat_collection_error", session=session.id, error=str(e))
+            # 采集异常中断须对订阅者可见（方案 51 C8）：原仅记日志，订阅端
+            # 静默永断。done 回调已清任务入口，下次开录经 _ensure_logcat_task
+            # 惰性重建（保守：不在此强启）。
+            logger.exception("logcat_collection_error", session=session.id,
+                             error=str(e))
+            await self._broadcast_stream_error(session.id)
+
+    async def _broadcast_stream_error(self, session_id: str) -> None:
+        """向该会话全部订阅者广播 stream_error 帧（发送失败连接顺手清理）。"""
+        subs = self.subscribers.get(session_id)
+        if not subs:
+            return
+        dead = set()
+        for ws in list(subs.keys()):
+            try:
+                await ws.send_json({
+                    "type": "stream_error",
+                    "message": "日志采集中断，重新开启录制可恢复",
+                })
+            except Exception as exc:
+                logger.warning("failed_to_send_stream_error",
+                               session=session_id, error=str(exc))
+                dead.add(ws)
+        for ws in dead:
+            subs.pop(ws, None)
+        if not subs:
+            self.subscribers.pop(session_id, None)
 
     def _ensure_logcat_task(self, session: DebugSession) -> None:
         """
@@ -600,9 +626,19 @@ class DebugService:
         if session_id in self.shell_sessions:
             shell = self.shell_sessions[session_id]
             if shell.is_alive:
+                # 全员退订会停转发（方案 51 C2），重订阅时补建；任务在飞则内部早退
+                self._start_output_forwarding(session_id, shell)
                 return shell
-            # Shell 已死亡，移除
+            # Shell 已死亡，移除：同时 cancel 其残留转发任务并 stop 旧 shell
+            # （方案 51 C3）——残任务不弹则新 shell 的 _start_output_forwarding
+            # 被「任务在飞」顶锁早退，会话永久无输出不自愈
             del self.shell_sessions[session_id]
+            await self.stop_output_forwarding(session_id)
+            try:
+                await shell.stop()
+            except Exception as exc:
+                logger.warning("dead_shell_stop_failed", session=session_id,
+                               error=str(exc))
 
         session = self.sessions.get(session_id)
         if not session:
@@ -695,6 +731,18 @@ class DebugService:
             self.subscribers[session_id].pop(ws, None)
         if not self.subscribers[session_id]:
             del self.subscribers[session_id]
+
+    async def unsubscribe_and_maybe_stop_forwarding(
+        self, session_id: str, websocket: WebSocket
+    ) -> None:
+        """退订并按需停转发：仅当该会话订阅者清零才停输出转发（方案 51 C2）。
+
+        原接口层每连接退订/断开都无条件停转发，多 WS 客户端（日志与终端
+        两个页签）同订一会话时，一方退出会掐断全体 PTY 流。
+        """
+        await self.unsubscribe(session_id, websocket)
+        if not self.subscribers.get(session_id):
+            await self.stop_output_forwarding(session_id)
 
     async def stop_output_forwarding(self, session_id: str) -> None:
         """

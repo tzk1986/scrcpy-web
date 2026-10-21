@@ -17,6 +17,7 @@ const h = vi.hoisted(() => {
     messageHandler: ((data: unknown) => void) | null = null
     closeHandler: (() => void) | null = null
     errorHandler: ((e: unknown) => void) | null = null
+    openHandler: (() => void) | null = null
     ws = { readyState: 1 }
     send = vi.fn()
     connect = vi.fn()
@@ -30,6 +31,9 @@ const h = vi.hoisted(() => {
     })
     setErrorHandler = vi.fn((handler: (e: unknown) => void) => {
       this.errorHandler = handler
+    })
+    setOpenHandler = vi.fn((handler: () => void) => {
+      this.openHandler = handler
     })
 
     constructor(url: string) {
@@ -243,7 +247,6 @@ afterEach(() => {
 describe('PerfView', () => {
   it('挂载时连接性能 WS 并渲染空态卡片与图表', async () => {
     const wrapper = mountView()
-    // onMounted 里置 wsConnected=true，需等一次渲染刷新才能看到 LIVE
     await nextTick()
 
     expect(h.MockWebSocketService.instances).toHaveLength(1)
@@ -253,6 +256,10 @@ describe('PerfView', () => {
     expect(ws.setMessageHandler).toHaveBeenCalled()
     expect(ws.setErrorHandler).toHaveBeenCalled()
     expect(ws.setCloseHandler).toHaveBeenCalled()
+    // 方案 51 F2-21：LIVE 由 open 事件驱动，connect 后不再立即置 true
+    expect(wrapper.find('.status-indicator').text()).toBe('未连接')
+    ws.openHandler!()
+    await nextTick()
 
     const cards = wrapper.findAll('.metric-card')
     expect(cards).toHaveLength(4)
@@ -267,6 +274,27 @@ describe('PerfView', () => {
     expect(wrapper.findAllComponents({ name: 'echarts' })).toHaveLength(2)
     expect(wrapper.find('.status-indicator').text()).toBe('LIVE')
     expect(wrapper.find('.status-text').text()).toContain('数据点: 0 / 60')
+  })
+
+  it('LIVE 徽标状态机（方案 51 F2-21）：open→LIVE、close→未连接、重连 open→LIVE', async () => {
+    const wrapper = mountView()
+    const ws = latestWs()
+    await nextTick()
+
+    expect(wrapper.find('.status-indicator').text()).toBe('未连接')
+    ws.openHandler!()
+    await nextTick()
+    expect(wrapper.find('.status-indicator').text()).toBe('LIVE')
+
+    ws.closeHandler!()
+    await nextTick()
+    expect(wrapper.find('.status-indicator').text()).toBe('未连接')
+
+    // 断线自动重连成功（真实实现里 onopen 对重连 socket 同样触发）
+    ws.openHandler!()
+    await nextTick()
+    expect(wrapper.find('.status-indicator').text()).toBe('LIVE')
+    wrapper.unmount()
   })
 
   it('WS 推送指标后更新卡片，超过 60 个数据点按 FIFO 裁剪', async () => {

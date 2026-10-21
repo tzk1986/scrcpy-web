@@ -24,6 +24,7 @@ export class WebSocketService {
   private onMessage: ((data: unknown) => void) | null = null
   private onError: ((error: Event) => void) | null = null
   private onClose: (() => void) | null = null
+  private onOpen: (() => void) | null = null
   private reconnectAttempts = 0
   private manualClose = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -48,6 +49,9 @@ export class WebSocketService {
     this.ws.onopen = () => {
       this.reconnectAttempts = 0
       console.log('[WS] Connected:', this.url, 'binaryType:', this.ws?.binaryType)
+      // 连接就绪回调（首次与重连均触发，方案 51 F2-21：供消费方以真实
+      // socket 事件维护连接状态，而非 connect() 后立即乐观置位）
+      this.onOpen?.()
       // 重连成功（区别于首次连接）：在 onopen 中触发 onReconnect——
       // 此刻该 socket 已 OPEN，handler 内发送的消息（如 resume 的
       // request_keyframe）不会被 CONNECTING 态的 send 守卫丢弃。
@@ -127,6 +131,11 @@ export class WebSocketService {
   /** 注册关闭回调。 */
   setCloseHandler(handler: () => void) {
     this.onClose = handler
+  }
+
+  /** 注册连接就绪回调（onopen 触发；首次与重连均触发，方案 51 F2-21） */
+  setOpenHandler(handler: () => void) {
+    this.onOpen = handler
   }
 
   /** 注册重连成功回调（重连 socket 的 onopen 中触发；首次连接不触发） */

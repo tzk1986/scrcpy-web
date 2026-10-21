@@ -514,8 +514,13 @@ function connectWebSocket() {
     wsConnected.value = false
   })
 
+  // 方案 51 F2-21：LIVE 徽标由真实 socket 事件驱动（open 首次/重连均触发），
+  // 不再 connect() 后立即置 true——断线自动恢复期间状态与流一致
+  ws.setOpenHandler(() => {
+    wsConnected.value = true
+  })
+
   ws.connect()
-  wsConnected.value = true
 }
 
 function disconnectWebSocket() {

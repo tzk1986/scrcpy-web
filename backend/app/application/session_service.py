@@ -59,6 +59,9 @@ class SessionService:
         明文拼接（消「a_b|c 与 a|b_c 同 ID」碰撞面，也不可被枚举猜测，
         A1 L2）。调用方以本方法返回值作为句柄，不自行推导 ID。
 
+        确定性 id 已存在时**幂等返回既有会话**（方案 51 C6）：不覆盖、
+        不重置参与者与角色——原实现同参重建会丢弃其他参与者。
+
         参数：
             device_id: 目标设备的 ADB 序列号。
             user_id: 创建用户的标识。
@@ -69,9 +72,12 @@ class SessionService:
         异常：
             SessionLimitError: 活跃会话数已达上限（503）。
         """
+        session_id = hashlib.sha256(f"{device_id}|{user_id}".encode("utf-8")).hexdigest()[:12]
+        existing = self.sessions.get(session_id)
+        if existing is not None:
+            return existing
         if len(self.sessions) >= _MAX_COLLAB_SESSIONS:
             raise SessionLimitError("协作", _MAX_COLLAB_SESSIONS)
-        session_id = hashlib.sha256(f"{device_id}|{user_id}".encode("utf-8")).hexdigest()[:12]
         session = {
             "id": session_id,
             "device_id": device_id,
@@ -107,6 +113,10 @@ class SessionService:
         从会话中移除参与者。
 
         如果没有剩余参与者，会话会被自动删除。
+        离开者是 active_controller 时控制权按序移交（方案 51 C5）：
+        首个剩余 admin → 首个剩余参与者；参与者清空即删会话，
+        不存在悬挂的幽灵控制者。协作会话无推送事件通道（调研结论，
+        裁决记档方案 51），移交结果记日志，由调用方经 GET 会话接口感知。
 
         参数：
             session_id: 要离开的会话。
@@ -118,6 +128,20 @@ class SessionService:
         session["participants"].pop(user_id, None)
         if not session["participants"]:
             del self.sessions[session_id]
+            return
+        if session["active_controller"] == user_id:
+            successors = session["participants"]
+            new_controller = next(
+                (u for u, r in successors.items() if r == "admin"),
+                next(iter(successors), None),
+            )
+            session["active_controller"] = new_controller
+            logger.info(
+                "controller_changed",
+                session=session_id,
+                left=user_id,
+                new_controller=new_controller,
+            )
 
     async def transfer_control(self, session_id: str, from_user: str, to_user: str) -> None:
         """
@@ -132,13 +156,16 @@ class SessionService:
 
         异常：
             SessionNotFoundError: 如果 session_id 不存在。
-            PermissionDeniedError: 如果 from_user 不是 admin。
+            PermissionDeniedError: 如果 from_user 不是 admin，
+                或 to_user 不是会话参与者（方案 51 C4：原静默假成功）。
         """
         session = self.sessions.get(session_id)
         if not session:
             raise SessionNotFoundError(session_id)
         if session["participants"].get(from_user) != "admin":
             raise PermissionDeniedError("Only admin can transfer control")
+        if to_user not in session["participants"]:
+            raise PermissionDeniedError("Target user is not a participant")
         session["active_controller"] = to_user
 
     async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:

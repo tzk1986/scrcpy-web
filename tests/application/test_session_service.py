@@ -61,3 +61,73 @@ async def test_create_session_active_limit():
     with pytest.raises(SessionLimitError):
         await svc.create_session("dev1", "alice")
     assert len(svc.sessions) == _MAX_COLLAB_SESSIONS
+
+
+# ---- 方案 51 C4/C5/C6：控制权移交语义 ----
+
+
+async def test_transfer_control_rejects_non_participant():
+    """C4：目标不是参与者 → PermissionDeniedError，且控制权不变（原静默假成功）。"""
+    from app.core.exceptions import PermissionDeniedError
+
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+    await svc.join_session(session["id"], "bob", "viewer")
+
+    with pytest.raises(PermissionDeniedError):
+        await svc.transfer_control(session["id"], "alice", "ghost")
+    assert session["active_controller"] == "alice"
+
+
+async def test_leave_controller_handover_to_remaining_admin():
+    """C5 路径一：控制者离开 → 移交首个剩余 admin。"""
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+    await svc.join_session(session["id"], "bob", "viewer")
+    await svc.join_session(session["id"], "carol", "admin")
+
+    await svc.leave_session(session["id"], "alice")
+    assert session["active_controller"] == "carol"
+
+
+async def test_leave_controller_handover_to_participant_when_no_admin():
+    """C5 路径二：无剩余 admin → 移交首个剩余参与者。"""
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+    await svc.join_session(session["id"], "bob", "viewer")
+
+    await svc.leave_session(session["id"], "alice")
+    assert session["active_controller"] == "bob"
+
+
+async def test_leave_non_controller_keeps_controller():
+    """C5 边界：离开者不是控制者 → 控制权不动。"""
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+    await svc.join_session(session["id"], "bob", "viewer")
+
+    await svc.leave_session(session["id"], "bob")
+    assert session["active_controller"] == "alice"
+
+
+async def test_leave_last_participant_deletes_session():
+    """C5 路径三：最后一名参与者离开 → 会话删除（维持既有口径）。"""
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+
+    await svc.leave_session(session["id"], "alice")
+    assert session["id"] not in svc.sessions
+
+
+async def test_create_session_idempotent_returns_existing():
+    """C6：同 (device,user) 二次 create → 幂等返回既有会话，参与者与角色不重置。"""
+    svc = SessionService()
+    first = await svc.create_session("dev1", "alice")
+    await svc.join_session(first["id"], "bob", "admin")
+    await svc.transfer_control(first["id"], "alice", "bob")
+
+    second = await svc.create_session("dev1", "alice")
+    assert second is first
+    assert second["participants"] == {"alice": "admin", "bob": "admin"}
+    assert second["active_controller"] == "bob"
+    assert len(svc.sessions) == 1

@@ -24,7 +24,7 @@ const mockApi = vi.hoisted(() => ({
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
-const elMessageMock = vi.hoisted(() => ({ info: vi.fn() }))
+const elMessageMock = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn() }))
 vi.mock('element-plus', () => ({ ElMessage: elMessageMock }))
 
 /** 方案 39 T5：最小 mock vue-router 的 useRouter（DeviceDetail 文件按钮跳转用），其余导出保持真实 */
@@ -110,6 +110,7 @@ beforeEach(() => {
   captureSnapshotMock.mockReset()
   setThumbnailMock.mockReset()
   elMessageMock.info.mockReset()
+  elMessageMock.error.mockReset()
   routerPushMock.mockReset()
   anchorClickSpy.mockClear()
 })
@@ -235,6 +236,39 @@ describe('DeviceDetail 首帧缩略图（方案 40 消费点 2）', () => {
 
     expect(setThumbnailMock).toHaveBeenCalledWith('dev1', blob)
     wrapper.unmount()
+  })
+})
+
+describe('DeviceDetail 会话创建失败可见化（方案 51 F2-02）', () => {
+  it('503 SESSION_LIMIT：ElMessage.error 上限专项文案', async () => {
+    mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
+    mockApi.createDebugSession.mockRejectedValue({
+      response: {
+        status: 503,
+        data: { error: { code: 'SESSION_LIMIT', message: '调试活跃会话数已达上限（32），请先关闭部分会话后重试' } },
+      },
+    })
+    const wrapper = await mountView()
+
+    expect(elMessageMock.error).toHaveBeenCalledWith(
+      '调试会话已达上限（32），请先关闭部分调试页面后重试',
+    )
+    wrapper.unmount()
+  })
+
+  it('其它失败：透传后端 message；无 message 用兜底文案', async () => {
+    mockApi.getDevice.mockResolvedValue({ id: 'dev1', resolution: [1080, 1920] })
+    mockApi.createDebugSession.mockRejectedValue({
+      response: { status: 404, data: { error: { code: 'DEVICE_NOT_FOUND', message: 'Device not found: dev1' } } },
+    })
+    const wrapper = await mountView()
+    expect(elMessageMock.error).toHaveBeenLastCalledWith('Device not found: dev1')
+
+    mockApi.createDebugSession.mockRejectedValue(new Error('network'))
+    const wrapper2 = await mountView()
+    expect(elMessageMock.error).toHaveBeenLastCalledWith('调试会话创建失败')
+    wrapper.unmount()
+    wrapper2.unmount()
   })
 })
 

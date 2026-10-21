@@ -164,8 +164,10 @@ class AppService:
             return apps
 
         except Exception as e:
+            # 方案 51 C9：不吞 ADB 异常——上抛交 HTTP 映射明确报错
+            # （离线设备从假空列表变可见错误；未预期异常同样不再伪装成空）
             logger.error("list_apps_failed", device=device_id, error=str(e))
-            return []
+            raise
 
     def _parse_dumpsys_packages(self, output: str) -> dict[str, dict[str, Any]]:
         """
@@ -337,8 +339,10 @@ class AppService:
             )
 
         except Exception as e:
+            # 方案 51 C9：不吞异常——ADB 故障上抛（原吞 None 致假 404）；
+            # 「包不存在」由 Package 块检查显式返回 None，二者语义分离
             logger.warning("get_app_info_failed", device=device_id, package=package, error=str(e))
-            return None
+            raise
 
     async def _get_apk_path(self, device_id: str, package: str) -> str | None:
         """获取应用的 APK 路径。"""

@@ -123,7 +123,19 @@ onMounted(async () => {
     // 使用默认分辨率
   }
 
-  await debugStore.createSession(deviceId, 'user-1')
+  // 方案 51 F2-02：会话创建失败须可见（503 上限专项文案，其余透传后端 message）
+  try {
+    await debugStore.createSession(deviceId, 'user-1')
+  } catch (e: unknown) {
+    const err = (
+      e as { response?: { data?: { error?: { code?: string; message?: string } } } }
+    )?.response?.data?.error
+    if (err?.code === 'SESSION_LIMIT') {
+      ElMessage.error('调试会话已达上限（32），请先关闭部分调试页面后重试')
+    } else {
+      ElMessage.error(err?.message || '调试会话创建失败')
+    }
+  }
 })
 
 /** 组件卸载时清理：关闭调试会话。 */

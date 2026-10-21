@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.application.app_service import AppInfo, AppService
-from app.core.exceptions import InvalidIdentifierError
+from app.core.exceptions import AdbError, InvalidIdentifierError
 from app.deps import get_app_service
 from app.domain.runtime import RuntimeInfo, ServiceInfo
 
@@ -70,13 +70,18 @@ class FakeAppService:
             "parse_warning": "",
         }
         self.runtime_error: Exception | None = None
+        self.read_error: Exception | None = None
 
     async def list_apps(self, device_id: str, include_system: bool = False) -> list[AppInfo]:
         self.calls.append(("list_apps", device_id, include_system))
+        if self.read_error is not None:
+            raise self.read_error
         return self.apps
 
     async def get_app_info(self, device_id: str, package: str) -> AppInfo | None:
         self.calls.append(("get_app_info", device_id, package))
+        if self.read_error is not None:
+            raise self.read_error
         return self.app_info
 
     async def launch_app(self, device_id: str, package: str) -> bool:
@@ -196,6 +201,32 @@ def test_get_app_info_not_found_404(fake: FakeAppService) -> None:
     body = response.json()
     assert body["error"]["code"] == "HTTP_ERROR"
     assert PKG in body["error"]["message"]
+
+
+# 方案 51 C9：ADB 故障不再吞成假空列表/假 404，经既有映射明确报错（裁决记档：
+# 方案文本「502」有误，AdbError 既有映射为 400/ADB_ERROR）
+
+
+def test_list_apps_adb_error_maps_400(fake: FakeAppService) -> None:
+    """列表 ADB 故障上抛 → 400 ADB_ERROR（而非 200 空列表）。"""
+    fake.read_error = AdbError("device offline")
+    client = make_client()
+    with override(get_app_service, fake):
+        response = client.get(f"/api/apps/{DEV}")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "ADB_ERROR"
+
+
+def test_get_app_info_adb_error_maps_400_not_404(fake: FakeAppService) -> None:
+    """详情 ADB 故障上抛 → 400 ADB_ERROR（而非假 404）。"""
+    fake.read_error = AdbError("device offline")
+    client = make_client()
+    with override(get_app_service, fake):
+        response = client.get(f"/api/apps/{DEV}/{PKG}")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "ADB_ERROR"
 
 
 # ---------------------------------------------------------------------------

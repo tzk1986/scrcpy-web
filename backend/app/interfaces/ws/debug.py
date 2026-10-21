@@ -102,25 +102,37 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                 ):
                     await _send_bad_message(websocket)
                     continue
-                if from_seq is not None:
-                    await debug_service.subscribe(session_id, websocket)
-                    logs, missing = await debug_service.get_logs_since(
-                        session_id, from_seq)
-                    await websocket.send_json({
-                        "type": "log_batch", "logs": logs, "missing": missing})
-                else:
-                    await debug_service.subscribe(session_id, websocket)
-                # 创建 shell（内部已启动输出转发任务）
-                shell = await debug_service.get_or_create_shell(session_id)
-                # 直接发送初始输出（设备 prompt），不依赖转发任务的时序
-                initial_output = shell.get_initial_output()
-                if initial_output:
-                    await websocket.send_json({"type": "shell_stream", "line": initial_output})
-                    logger.info("initial_output_sent_via_subscribe", session=session_id,
-                                length=len(initial_output), output=repr(initial_output[:200]))
-                else:
-                    logger.warning("initial_output_empty", session=session_id)
-                await websocket.send_json({"type": "subscribed", "session_id": session_id})
+                # 方案 51 C7：会话失效（如被 idle reaper 回收）等异常回
+                # 可见 error 帧而非异常断连（协议头已承诺 error 消息类型）
+                try:
+                    if from_seq is not None:
+                        await debug_service.subscribe(session_id, websocket)
+                        logs, missing = await debug_service.get_logs_since(
+                            session_id, from_seq)
+                        await websocket.send_json({
+                            "type": "log_batch", "logs": logs, "missing": missing})
+                    else:
+                        await debug_service.subscribe(session_id, websocket)
+                    # 创建 shell（内部已启动输出转发任务）
+                    shell = await debug_service.get_or_create_shell(session_id)
+                    # 直接发送初始输出（设备 prompt），不依赖转发任务的时序
+                    initial_output = shell.get_initial_output()
+                    if initial_output:
+                        await websocket.send_json({"type": "shell_stream", "line": initial_output})
+                        logger.info("initial_output_sent_via_subscribe", session=session_id,
+                                    length=len(initial_output), output=repr(initial_output[:200]))
+                    else:
+                        logger.warning("initial_output_empty", session=session_id)
+                    await websocket.send_json({"type": "subscribed", "session_id": session_id})
+                except WebSocketDisconnect:
+                    raise
+                except Exception as e:
+                    logger.error("subscribe_failed", session=session_id, error=str(e))
+                    await _safe_send_json(websocket, {
+                        "type": "error",
+                        "code": "SUBSCRIBE_FAILED",
+                        "message": "failed to subscribe",
+                    })
 
             elif op == "filter":
                 # 设置服务端过滤条件（减少网络流量）
@@ -225,16 +237,16 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                     })
 
             elif op == "unsubscribe":
-                # 取消订阅
-                await debug_service.unsubscribe(session_id, websocket)
-                await debug_service.stop_output_forwarding(session_id)
+                # 取消订阅：仅订阅者清零才停输出转发（方案 51 C2，多客户端不互掐）
+                await debug_service.unsubscribe_and_maybe_stop_forwarding(
+                    session_id, websocket)
                 await websocket.send_json({"type": "unsubscribed"})
 
     except WebSocketDisconnect:
         # 客户端断开属正常退出路径，清理由 finally 统一执行
         pass
     finally:
-        # 任何退出路径（客户端断开 / 其它异常）都清理订阅与输出转发，
-        # 避免残留订阅者与转发任务（曾因二次 send 抛错绕过清理而泄漏）
-        await debug_service.unsubscribe(session_id, websocket)
-        await debug_service.stop_output_forwarding(session_id)
+        # 任何退出路径（客户端断开 / 其它异常）都清理订阅；输出转发仅在
+        # 订阅者清零时停（方案 51 C2），避免残留订阅者与转发任务泄漏
+        await debug_service.unsubscribe_and_maybe_stop_forwarding(
+            session_id, websocket)

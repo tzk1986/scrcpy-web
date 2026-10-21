@@ -387,11 +387,12 @@ async def test_list_apps_returns_empty_without_valid_package_lines():
     assert fake.cmds == ["pm list packages -f -3"]
 
 
-async def test_list_apps_returns_empty_on_adb_error():
-    """包列表命令失败时兜底返回空列表。"""
+async def test_list_apps_raises_adb_error():
+    """方案 51 C9：ADB 故障不再吞成假空列表，上抛交 HTTP 映射明确报错。"""
     fake = FakeAdb().fail_on("")
 
-    assert await AppService(fake).list_apps(DEVICE) == []
+    with pytest.raises(AdbError):
+        await AppService(fake).list_apps(DEVICE)
 
 
 async def test_list_apps_parses_android11_apk_path_containing_double_equals():
@@ -570,9 +571,18 @@ async def test_get_app_info_real_device_third_party_not_system():
     assert info.install_time == "2025-09-30 15:29:17"
 
 
-async def test_get_app_info_returns_none_when_dumpsys_fails():
-    """dumpsys package 抛错 → 整体兜底返回 None。"""
+async def test_get_app_info_raises_adb_error_when_dumpsys_fails():
+    """方案 51 C9：dumpsys 抛错上抛（原吞成 None → 假 404）；「不存在」才 None。"""
     fake = FakeAdb().fail_on(f"dumpsys package {CHAT_PKG}")
+
+    with pytest.raises(AdbError):
+        await AppService(fake).get_app_info(DEVICE, CHAT_PKG)
+
+
+async def test_get_app_info_none_when_package_absent():
+    """包不存在（dumpsys 无 Package 块）→ None（真 404 语义保持）。"""
+    fake = FakeAdb()
+    fake.on(f"dumpsys package {CHAT_PKG}", "Unable to find package: com.example.chat\n")
 
     assert await AppService(fake).get_app_info(DEVICE, CHAT_PKG) is None
 
