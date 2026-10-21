@@ -12,7 +12,6 @@
  * 提供的方法：
  *   - createSession(): 创建新的调试会话
  *   - fetchLogs(): 从后端获取日志
- *   - execShell(): 执行 shell 命令
  *   - closeSession(): 关闭调试会话
  *   - appendLog(): 向日志缓冲区追加一条记录
  *   - connectWebSocket(): 建立 WebSocket 连接并订阅日志
@@ -98,16 +97,6 @@ export const useDebugStore = defineStore('debug', () => {
   /** 主动断开标记：区分 closeSession/disconnectWebSocket 与意外断线。 */
   let manualClose = false
 
-  /**
-   * Shell 命令的 pending promise 解析器。
-   * 由于 shell 命令是串行的（用户输入一条，等待输出，再输入下一条），
-   * 只需一个 resolver 即可。当收到 shell_output 消息时，调用此 resolver。
-   *
-   * 流式输出：shell_stream 消息通过 onStreamLine 回调传递给调用方。
-   */
-  let shellResolve: ((result: { output: string; success: boolean }) => void) | null = null
-  /** 流式输出回调：每收到一行 shell_stream 消息时调用。 */
-  let onStreamLine: ((line: string) => void) | null = null
   /** Shell 输出处理器：PTY 模式下接收设备输出并写入终端。 */
   let shellOutputHandler: ((output: string) => void) | null = null
 
@@ -137,14 +126,6 @@ export const useDebugStore = defineStore('debug', () => {
       limit
     )
     logs.value = mergeLogs(logs.value, res.logs)
-  }
-
-  /**
-   * 执行 shell 命令。
-   */
-  async function execShell(cmd: string) {
-    if (!sessionId.value) return
-    return await api.execShell(sessionId.value, cmd)
   }
 
   /**
@@ -184,17 +165,16 @@ export const useDebugStore = defineStore('debug', () => {
     // 使用 window.location.host 支持开发和生产环境
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/debug/${sessionId.value}`
-    console.log('[DebugStore] Connecting WebSocket:', wsUrl)
 
     debugWs = new WebSocketService(wsUrl)
 
-    let connected = false
+    let opened = false  // 局部连接标志——避免与外层 connected ref 同名遮蔽（方案 51 F2-19）
 
     debugWs.setMessageHandler((data) => {
       if (typeof data === 'string') {
         try {
           const msg = JSON.parse(data)
-          console.log('[DebugStore] Message:', msg.type)
+          // 不逐条记日志（方案 51 F2-12）
           handleMessage(msg)
         } catch (e) {
           console.error('Failed to parse WebSocket message:', e)
@@ -207,7 +187,6 @@ export const useDebugStore = defineStore('debug', () => {
     })
 
     debugWs.setCloseHandler(() => {
-      console.log('[DebugStore] WebSocket closed')
       wsConnected.value = false
       // 方案 51 F2-01：丢弃旧实例前先 close()——WebSocketService.onclose 内含
       // 自动重拨（!manualClose 时 scheduleReconnect），不关会与下方 store 级
@@ -231,7 +210,7 @@ export const useDebugStore = defineStore('debug', () => {
     await new Promise<void>((resolve) => {
       const checkInterval = setInterval(() => {
         if (debugWs && (debugWs as any).ws?.readyState === WebSocket.OPEN) {
-          connected = true
+          opened = true
           clearInterval(checkInterval)
           resolve()
         }
@@ -240,7 +219,7 @@ export const useDebugStore = defineStore('debug', () => {
       // 超时保护（10秒）
       setTimeout(() => {
         clearInterval(checkInterval)
-        if (!connected) {
+        if (!opened) {
           console.error('[DebugStore] WebSocket connection timeout')
         }
         resolve()
@@ -248,7 +227,7 @@ export const useDebugStore = defineStore('debug', () => {
     })
 
     // 只有在连接成功时才发送订阅请求并设置状态
-    if (connected && debugWs) {
+    if (opened && debugWs) {
       // 带 lastSeq 时请求从 seq+1 补发（断线续传），首次订阅行为与旧协议一致
       debugWs.send({
         op: 'subscribe',
@@ -257,7 +236,6 @@ export const useDebugStore = defineStore('debug', () => {
       // 同步当前的录制状态到后端
       debugWs.send({ op: 'filter', level: filter.value.level, tag: filter.value.tag, paused: !isRecording.value })
       wsConnected.value = true
-      console.log('[DebugStore] WebSocket connected and subscribed, paused:', !isRecording.value)
     } else {
       console.error('[DebugStore] Failed to connect WebSocket')
       // 方案 51 F2-18：先 close 再丢弃，消除 CONNECTING 僵尸 socket
@@ -356,42 +334,10 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   /**
-   * 通过 WebSocket 流式执行 shell 命令。
-   *
-   * 发送 exec 操作并通过 streamCallback 实时接收输出行。
-   * 返回一个 Promise，在命令完成（收到 shell_output）时解析。
-   * 如果 WebSocket 未连接，降级到 HTTP API。
-   *
-   * 参数：
-   *   cmd: 要执行的 shell 命令。
-   *   streamCallback: 每收到一行输出时调用的回调函数。
-   */
-  async function execShellWs(
-    cmd: string,
-    streamCallback?: (line: string) => void
-  ): Promise<{ output: string; success: boolean }> {
-    if (!debugWs || !wsConnected.value) {
-      // 降级到 HTTP API
-      const result = await execShell(cmd)
-      if (result) {
-        return { output: result.output, success: true }
-      }
-      return { output: 'Command failed', success: false }
-    }
-
-    return new Promise((resolve) => {
-      shellResolve = resolve
-      onStreamLine = streamCallback || null
-      debugWs!.send({ op: 'exec', command: cmd })
-    })
-  }
-
-  /**
    * 处理 WebSocket 消息。
    * 根据消息类型分发到不同的处理器：
    *   - log: 追加到日志缓冲区
-   *   - shell_stream: 流式 shell 输出一行（调用 onStreamLine 和 shellOutputHandler）
-   *   - shell_output: shell 命令完成（解析 pending Promise）
+   *   - shell_stream: 流式 shell 输出一行（写入 shellOutputHandler 终端）
    *   - error: 错误消息（显示在终端）
    *   - session_closed: 更新连接状态
    */
@@ -423,21 +369,10 @@ export const useDebugStore = defineStore('debug', () => {
         break
       }
       case 'shell_stream':
-        // 流式输出：每行立即传递给回调
-        if (onStreamLine && msg.line) {
-          onStreamLine(msg.line)
-        }
-        // PTY 模式：直接写入终端
+        // PTY 模式：每行立即写入终端（原 execShellWs 的 onStreamLine/
+        // shellResolve 死链已随方案 51 F2-10 删除）
         if (shellOutputHandler && msg.line) {
           shellOutputHandler(msg.line)
-        }
-        break
-      case 'shell_output':
-        // 命令完成：清理回调，解析 Promise
-        onStreamLine = null
-        if (shellResolve) {
-          shellResolve({ output: msg.output || '', success: msg.success !== false })
-          shellResolve = null
         }
         break
       case 'error':
@@ -450,18 +385,12 @@ export const useDebugStore = defineStore('debug', () => {
       case 'session_closed':
         connected.value = false
         wsConnected.value = false
-        onStreamLine = null
-        // 如果有 pending 的 shell 命令，拒绝它
-        if (shellResolve) {
-          shellResolve({ output: 'Session closed', success: false })
-          shellResolve = null
-        }
         break
       case 'subscribed':
-        console.log('Subscribed to session:', msg.session_id)
+        // 已知类型：确认订阅成功，无副作用（不落入 default 告警）
         break
       default:
-        console.log('Unknown message type:', msg.type)
+        console.warn('[DebugStore] Unknown message type:', msg.type)
     }
   }
 
@@ -474,12 +403,10 @@ export const useDebugStore = defineStore('debug', () => {
     isRecording,
     createSession,
     fetchLogs,
-    execShell,
     closeSession,
     appendLog,
     connectWebSocket,
     disconnectWebSocket,
-    execShellWs,
     setFilter,
     setRecording,
     sendInput,

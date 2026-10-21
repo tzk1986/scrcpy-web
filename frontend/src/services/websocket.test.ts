@@ -77,7 +77,6 @@ describe('connect', () => {
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(latest().url).toBe('ws://host/ws/video/dev1')
     expect(latest().binaryType).toBe('arraybuffer')
-    expect(logSpy).toHaveBeenCalledWith('[WS] Connecting to:', 'ws://host/ws/video/dev1')
   })
 
   it('注册 onopen/onmessage/onerror/onclose 四个回调', () => {
@@ -90,11 +89,8 @@ describe('connect', () => {
     expect(ws.onerror).toBeTypeOf('function')
     expect(ws.onclose).toBeTypeOf('function')
 
-    // 触发 onopen 只记日志，不抛异常
+    // 触发 onopen 不抛异常
     expect(() => ws.onopen!(new Event('open'))).not.toThrow()
-    expect(logSpy).toHaveBeenCalledWith(
-      '[WS] Connected:', 'ws://host/ws/video/dev1', 'binaryType:', 'arraybuffer',
-    )
   })
 
   it('再次 connect 会重建连接实例', () => {
@@ -106,7 +102,8 @@ describe('connect', () => {
 })
 
 describe('消息分发', () => {
-  it('文本消息记录日志并转交 handler', () => {
+  // 方案 51 F2-12：任何消息均不逐条记日志（logSpy 零调用为钉）
+  it('文本消息转交 handler 且不记日志', () => {
     const svc = new WebSocketService('ws://host/ws/debug')
     const handler = vi.fn()
     svc.setMessageHandler(handler)
@@ -115,10 +112,10 @@ describe('消息分发', () => {
     latest().onmessage!({ data: 'hello' } as MessageEvent)
 
     expect(handler).toHaveBeenCalledWith('hello')
-    expect(logSpy).toHaveBeenCalledWith('[WS] Text message:', 'hello')
+    expect(logSpy).not.toHaveBeenCalled()
   })
 
-  it('二进制（ArrayBuffer）消息不记日志但转交 handler', () => {
+  it('二进制（ArrayBuffer）消息转交 handler 且不记日志', () => {
     const svc = new WebSocketService('ws://host/ws/video/dev1')
     const handler = vi.fn()
     svc.setMessageHandler(handler)
@@ -128,10 +125,10 @@ describe('消息分发', () => {
     latest().onmessage!({ data: buf } as MessageEvent)
 
     expect(handler).toHaveBeenCalledWith(buf)
-    expect(logSpy).not.toHaveBeenCalledWith('[WS] Text message:', expect.anything())
+    expect(logSpy).not.toHaveBeenCalled()
   })
 
-  it('Blob 消息按二进制处理（不记文本日志）', () => {
+  it('Blob 消息转交 handler 且不记日志', () => {
     const svc = new WebSocketService('ws://host/ws/video/dev1')
     const handler = vi.fn()
     svc.setMessageHandler(handler)
@@ -141,7 +138,7 @@ describe('消息分发', () => {
     latest().onmessage!({ data: blob } as MessageEvent)
 
     expect(handler).toHaveBeenCalledWith(blob)
-    expect(logSpy).not.toHaveBeenCalledWith('[WS] Text message:', expect.anything())
+    expect(logSpy).not.toHaveBeenCalled()
   })
 
   it('未注册 handler 时消息被静默忽略', () => {
@@ -179,7 +176,6 @@ describe('消息分发', () => {
     latest().onclose!()
 
     expect(onClose).toHaveBeenCalledTimes(1)
-    expect(logSpy).toHaveBeenCalledWith('[WS] Closed:', 'ws://host/ws/video/dev1')
   })
 
   it('未注册 close handler 时关闭被吞掉', () => {
@@ -187,22 +183,6 @@ describe('消息分发', () => {
     const svc = new WebSocketService('ws://host/ws/video/dev1')
     svc.connect()
     expect(() => latest().onclose!()).not.toThrow()
-  })
-})
-
-describe('setBinaryType', () => {
-  it('连接后切换 binaryType 为 blob', () => {
-    const svc = new WebSocketService('ws://host/ws/video/dev1')
-    svc.connect()
-    svc.setBinaryType('blob')
-
-    expect(latest().binaryType).toBe('blob')
-    expect(logSpy).toHaveBeenCalledWith('[WS] binaryType set to:', 'blob')
-  })
-
-  it('未连接时调用不抛异常', () => {
-    const svc = new WebSocketService('ws://host/ws/video/dev1')
-    expect(() => svc.setBinaryType('arraybuffer')).not.toThrow()
   })
 })
 
@@ -299,7 +279,6 @@ describe('自动重连（指数退避）', () => {
     FakeWebSocket.instances[2].simulateClose()
     vi.advanceTimersByTime(4000)
     expect(FakeWebSocket.instances.length).toBe(4)   // 第 3 次：4s 后
-    expect(logSpy).toHaveBeenCalledWith('[WS] Reconnect scheduled in 4000ms (attempt 3)')
   })
 
   it('退避延迟 30s 封顶（attempts=5 时 2^5*1000=32000 → 30000）', () => {
@@ -311,7 +290,6 @@ describe('自动重连（指数退避）', () => {
       vi.advanceTimersByTime(30000)
     }
     expect(FakeWebSocket.instances.length).toBe(7)   // 每次排程延迟均 ≤ 30000，全部触发
-    expect(logSpy).toHaveBeenCalledWith('[WS] Reconnect scheduled in 30000ms (attempt 6)')
   })
 
   it('onopen 重置退避计数：重连成功后再次断开，延迟回到 1000ms', () => {

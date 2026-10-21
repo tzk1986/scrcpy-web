@@ -16,14 +16,13 @@
  *   后续可升级为 H.264 流式传输（WebCodecs），实现真正的 30+ FPS 视频。
  *
  * 使用方式：
- *   const stream = new VideoStream(deviceId, canvas, ws)
+ *   const stream = new VideoStream(deviceId, canvas)
  *   stream.start()
  *   // ... later
  *   stream.stop()
  */
 
 import { api } from './api'
-import type { WebSocketService } from './websocket'
 
 export type VideoStreamState = 'idle' | 'streaming' | 'error' | 'stopped'
 
@@ -63,13 +62,11 @@ export class VideoStream {
   /**
    * @param deviceId - 设备 ADB 序列号
    * @param canvas - 用于渲染的 canvas 元素
-   * @param ws - WebSocket 连接（用于输入事件）
    * @param refreshInterval - 截屏刷新间隔（毫秒），默认 1500ms（~0.7 FPS，适合当前截屏速度）
    */
   constructor(
     deviceId: string,
     canvas: HTMLCanvasElement,
-    _ws: WebSocketService,
     refreshInterval = 1500
   ) {
     this.deviceId = deviceId
@@ -339,6 +336,13 @@ export class VideoStream {
         this.canvas.height = img.height
       }
       ctx.drawImage(img, 0, 0)
+      URL.revokeObjectURL(url)
+      if (this._objectUrl === url) {
+        this._objectUrl = null
+      }
+    }
+    // 坏帧也要释放 ObjectURL，否则每帧泄漏一个 blob 引用（方案 51 F1-09）
+    img.onerror = () => {
       URL.revokeObjectURL(url)
       if (this._objectUrl === url) {
         this._objectUrl = null

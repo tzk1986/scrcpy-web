@@ -11,7 +11,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VideoStream, type VideoStreamState, type VideoStreamStats } from './videoStream'
-import type { WebSocketService } from './websocket'
 
 const { screenshotMock, screenshotRawMock } = vi.hoisted(() => ({
   screenshotMock: vi.fn(),
@@ -22,8 +21,6 @@ vi.mock('./api', () => ({
   api: { screenshot: screenshotMock, screenshotRaw: screenshotRawMock },
 }))
 
-/** VideoStream 当前不使用 ws（输入事件由外部处理），传空对象即可 */
-const fakeWs = {} as unknown as WebSocketService
 
 const drawImage = vi.fn()
 const putImageData = vi.fn()
@@ -31,6 +28,7 @@ const putImageData = vi.fn()
 class FakeImage {
   static instances: FakeImage[] = []
   onload: (() => void) | null = null
+  onerror: (() => void) | null = null
   width = 320
   height = 240
   src = ''
@@ -117,7 +115,7 @@ afterEach(() => {
 
 describe('初始状态与 getter', () => {
   it('未开始时为 idle，统计全为零值', () => {
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
     expect(stream.state).toBe('idle')
     expect(stream.stats).toEqual({
       frameCount: 0,
@@ -132,7 +130,7 @@ describe('初始状态与 getter', () => {
 describe('start / stop 生命周期', () => {
   it('start 立即抓取首帧：渲染、计数、状态回调', async () => {
     const canvas = document.createElement('canvas')
-    const stream = new VideoStream('dev1', canvas, fakeWs)
+    const stream = new VideoStream('dev1', canvas)
     const states: VideoStreamState[] = []
     const stats: VideoStreamStats[] = []
     stream.setStateChangeHandler(s => states.push(s))
@@ -160,7 +158,7 @@ describe('start / stop 生命周期', () => {
     const canvas = document.createElement('canvas')
     canvas.width = 640
     canvas.height = 480
-    const stream = new VideoStream('dev1', canvas, fakeWs)
+    const stream = new VideoStream('dev1', canvas)
 
     await stream.start()
     await flush()
@@ -171,7 +169,7 @@ describe('start / stop 生命周期', () => {
   })
 
   it('重复 start 直接返回（已在 streaming）', async () => {
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
     await stream.start()
     await stream.start()
     expect(totalCaptures()).toBe(1)
@@ -180,7 +178,7 @@ describe('start / stop 生命周期', () => {
 
   it('按 refreshInterval 周期抓帧，stop 后停止', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
 
     await stream.start()
     expect(totalCaptures()).toBe(1)
@@ -198,7 +196,7 @@ describe('start / stop 生命周期', () => {
 
   it('FPS 定时器每秒上报统计', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
     const updates: VideoStreamStats[] = []
     stream.setStatsUpdateHandler(s => updates.push(s))
 
@@ -213,7 +211,7 @@ describe('start / stop 生命周期', () => {
   })
 
   it('已停止后重复 stop 不抛异常', () => {
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
     expect(() => stream.stop()).not.toThrow()
     expect(() => stream.stop()).not.toThrow()
   })
@@ -222,7 +220,7 @@ describe('start / stop 生命周期', () => {
 describe('错误处理', () => {
   it('截屏失败进入 error 状态并携带错误信息', async () => {
     screenshotRawMock.mockRejectedValueOnce(new Error('capture failed'))
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
     const states: VideoStreamState[] = []
     stream.setStateChangeHandler(s => states.push(s))
 
@@ -238,7 +236,7 @@ describe('错误处理', () => {
   it('error 后周期回调不再抓帧', async () => {
     vi.useFakeTimers()
     screenshotRawMock.mockRejectedValueOnce(new Error('boom'))
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 100)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 100)
 
     await stream.start()
     await vi.advanceTimersByTimeAsync(1000)
@@ -249,7 +247,7 @@ describe('错误处理', () => {
 
   it('canvas 2d context 不可用时跳过渲染但帧计数继续', async () => {
     stubGetContext(null)
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
 
     await stream.start()
     await flush()
@@ -264,7 +262,7 @@ describe('降级渲染（Image + ObjectURL）', () => {
   it('createImageBitmap 失败时降级，onload 后绘制并释放 URL', async () => {
     vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported')))
     const canvas = document.createElement('canvas')
-    const stream = new VideoStream('dev1', canvas, fakeWs)
+    const stream = new VideoStream('dev1', canvas)
 
     await stream.start()
     await flush()
@@ -287,7 +285,7 @@ describe('降级渲染（Image + ObjectURL）', () => {
   it('连续降级帧会释放上一帧的 ObjectURL', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported')))
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 100)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 100)
 
     await stream.start()
     expect(createObjectURL).toHaveBeenCalledTimes(1)
@@ -299,9 +297,24 @@ describe('降级渲染（Image + ObjectURL）', () => {
     stream.stop()
   })
 
+  it('坏帧 onerror 同样释放 ObjectURL，stop 不重复 revoke（方案 51 F1-09）', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported')))
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
+
+    await stream.start()
+    await flush()
+
+    FakeImage.instances.at(-1)!.onerror!()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1)
+
+    stream.stop() // _objectUrl 已随 onerror 清空，不再重复释放
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1)
+  })
+
   it('stop 时释放尚未加载完成的 ObjectURL', async () => {
     vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported')))
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
 
     await stream.start()
     await flush()
@@ -314,7 +327,7 @@ describe('降级渲染（Image + ObjectURL）', () => {
 describe('输入事件驱动刷新（notifyInput，方案 27）', () => {
   it('notifyInput 在 debounce 160ms 后主动截一张', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
 
     await stream.start()
     expect(totalCaptures()).toBe(1) // 首帧
@@ -330,7 +343,7 @@ describe('输入事件驱动刷新（notifyInput，方案 27）', () => {
 
   it('160ms 窗口内连续输入合并为一次刷新', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
     await stream.start()
 
     stream.notifyInput()
@@ -358,7 +371,7 @@ describe('输入事件驱动刷新（notifyInput，方案 27）', () => {
           release = res
         }),
     )
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
 
     const startPromise = stream.start() // 首帧挂起（不 await）
     await flush()
@@ -379,7 +392,7 @@ describe('输入事件驱动刷新（notifyInput，方案 27）', () => {
 
   it('事件截屏完成后轮询相位重新起算（原相位点不再截）', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
 
     await stream.start() // t=0 首帧
     await vi.advanceTimersByTimeAsync(1000) // 下一周期截原定 t=1500
@@ -399,7 +412,7 @@ describe('输入事件驱动刷新（notifyInput，方案 27）', () => {
 
   it('非 streaming 状态（idle/stopped）notifyInput 不触发截屏', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
 
     stream.notifyInput() // idle
     await vi.advanceTimersByTimeAsync(1000)
@@ -415,7 +428,7 @@ describe('输入事件驱动刷新（notifyInput，方案 27）', () => {
 
   it('stop 后 debounce 定时器被清理，不产生迟发截屏', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
     await stream.start()
 
     stream.notifyInput()
@@ -433,7 +446,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
       format: 'raw-rgba',
     })
     const canvas = document.createElement('canvas')
-    const stream = new VideoStream('dev1', canvas, fakeWs)
+    const stream = new VideoStream('dev1', canvas)
 
     await stream.start()
 
@@ -468,7 +481,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
       format: 'raw-rgba',
       rotation: 2,
     })
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
 
     await stream.start()
 
@@ -494,7 +507,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
       format: 'raw-rgba',
       rotation: 0,
     })
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
 
     await stream.start()
 
@@ -510,7 +523,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
       format: 'raw-rgba',
     })
     const canvas = document.createElement('canvas')
-    const stream = new VideoStream('dev1', canvas, fakeWs)
+    const stream = new VideoStream('dev1', canvas)
 
     await stream.start()
 
@@ -527,7 +540,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
       blob: rawFrameBlob(2, 2, 0, 16),
       format: 'raw-rgba',
     })
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
 
     await stream.start()
 
@@ -552,7 +565,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
       blob: malformedRawBlob(),
       format: 'raw-rgba',
     })
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
 
     await stream.start()
 
@@ -566,7 +579,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
       blob: new Blob([new Uint8Array(8)]),
       format: 'raw-rgba',
     })
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs)
+    const stream = new VideoStream('dev1', document.createElement('canvas'))
 
     await stream.start()
 
@@ -577,7 +590,7 @@ describe('方案 29：raw 帧渲染与降级记忆', () => {
 
   it('后端回退 png 帧 → 置降级记忆，后续直接走 api.screenshot', async () => {
     vi.useFakeTimers()
-    const stream = new VideoStream('dev1', document.createElement('canvas'), fakeWs, 1500)
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 1500)
 
     await stream.start() // 默认 rawMock 返回 format:'png' → renderBlob
 

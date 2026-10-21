@@ -223,18 +223,6 @@ describe('生命周期与 getter', () => {
     expect(stream.probeStats).toEqual({ frameCount: 0, lastFrameTime: 0 })
   })
 
-  it('start 将内部 WebSocket 的 binaryType 设为 arraybuffer', () => {
-    const ws = new FakeWs()
-    ws.ws = { binaryType: 'blob' } as unknown as WebSocket
-    const stream = makeStream(ws)
-
-    stream.start()
-
-    expect(ws.ws.binaryType).toBe('arraybuffer')
-    expect(stream.state).toBe('configuring')
-    expect(logSpy).toHaveBeenCalledWith('[H264] WebSocket binaryType set to arraybuffer')
-  })
-
   it('重复 start 不再重复注册消息处理器', () => {
     const ws = new FakeWs()
     const stream = makeStream(ws)
@@ -243,6 +231,21 @@ describe('生命周期与 getter', () => {
     stream.start()
 
     expect(ws.handlerSetCount).toBe(1)
+  })
+
+  it('全生命周期零 console.log（方案 51 F1-17：调试日志已清除）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+
+    ws.handler!(KEY_FRAME)
+    const frame = {
+      displayWidth: 640, displayHeight: 480, close: vi.fn(),
+    } as unknown as VideoFrame
+    dec.init.output(frame)
+    stream.stop()
+
+    expect(logSpy).not.toHaveBeenCalled()
   })
 
   it('FPS 定时器每秒上报 stats', async () => {
@@ -545,9 +548,27 @@ describe('二进制帧处理', () => {
     expect(() => ws.handler!(KEY_FRAME)).not.toThrow()
 
     expect(warnSpy).toHaveBeenCalledWith(
-      '[H264] Frame dropped: decoder not ready, state:', undefined, 'decoder exists:', false,
+      '[H264] Frame dropped:',
+      'decoder not ready (state: null, exists: false)',
+      '- subsequent drops silent, summarized every 100',
     )
     expect(stream.stats.frameCount).toBe(0)
+  })
+
+  it('畸形短帧（<8B）直接丢弃并计入未就绪限速（方案 51 F1-07）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    expect(() => ws.handler!(new ArrayBuffer(4))).not.toThrow()
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[H264] Frame dropped:',
+      'malformed frame (byteLength=4 < 8)',
+      expect.any(String),
+    )
+    expect(stream.stats.frameCount).toBe(0)
+    stream.stop()
   })
 
   it('关键帧：AVCC 转换、chunk 类型与帧计数', () => {
@@ -732,8 +753,9 @@ describe('追赶状态机（方案 31）', () => {
 })
 
 describe('warn 限速（方案 31）', () => {
+  // 匹配任一参数（F1-12 改造后 reason 不再位于首参）
   const countWarns = (needle: string) =>
-    warnSpy.mock.calls.filter(c => String(c[0]).includes(needle)).length
+    warnSpy.mock.calls.filter(c => c.some(a => String(a).includes(needle))).length
 
   it('解码器未就绪连续多帧：warn 仅 1 次', () => {
     const ws = new FakeWs()
@@ -745,6 +767,18 @@ describe('warn 限速（方案 31）', () => {
     ws.handler!(KEY_FRAME)
 
     expect(countWarns('decoder not ready')).toBe(1)
+  })
+
+  it('未就绪满 100 帧：每 WARN_SUMMARY_EVERY 条汇总 warn 一次（方案 51 F1-12）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    for (let i = 0; i < 99; i++) ws.handler!(KEY_FRAME) // 首次 warn 后静默
+    expect(countWarns('decoder not ready')).toBe(1)
+
+    ws.handler!(KEY_FRAME) // 第 100 条：汇总
+    expect(countWarns('decoder not ready')).toBe(2)
   })
 
   it('恢复 configured 后再未就绪：再 warn 1 次', () => {
@@ -787,6 +821,25 @@ describe('warn 限速（方案 31）', () => {
 })
 
 describe('解码器回调与渲染', () => {
+  it('stop 后在途输出帧直接释放且不再产生 streaming 状态（方案 51 F1-08）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const states: string[] = []
+    stream.setStateChangeHandler((s) => states.push(s))
+    const dec = startWithConfig(stream, ws)
+
+    stream.stop()
+    states.length = 0
+
+    const frame = {
+      displayWidth: 640, displayHeight: 480, close: vi.fn(),
+    } as unknown as VideoFrame
+    dec.init.output(frame)
+
+    expect(frame.close).toHaveBeenCalledTimes(1)
+    expect(states).toEqual([])
+  })
+
   it('输出帧绘制到 canvas 并切换到 streaming（状态回调仅一次）', () => {
     const ws = new FakeWs()
     const stream = makeStream(ws)

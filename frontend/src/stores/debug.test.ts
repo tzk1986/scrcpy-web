@@ -6,11 +6,11 @@
  *   - setRecording 通过 WS filter 消息同步 paused 状态（后端据此启停采集，方案 17 实施项 5）
  *   - 意外断线自动重连仅在录制开启时生效（未录制不重连、不重启采集）
  *   - 主动断开（disconnectWebSocket/closeSession）永不重连
- *   - 会话生命周期：createSession / fetchLogs / execShell / closeSession 及状态重置
+ *   - 会话生命周期：createSession / fetchLogs / closeSession 及状态重置
  *   - appendLog 缓冲上限（FIFO）与 closeSession 的 lastSeq 重置
- *   - WS 消息处理：log / log_batch（断线补发去重）/ shell_stream / shell_output /
+ *   - WS 消息处理：log / log_batch（断线补发去重）/ shell_stream /
  *     error / session_closed / subscribed / 未知类型 / 非法 JSON
- *   - execShellWs 的 WS 路径与 HTTP 降级、sendInput base64 编码与回车转换、setFilter 同步
+ *   - sendInput base64 编码与回车转换、setFilter 同步
  *   - 连接超时（readyState 非 OPEN 时不再订阅并重置 debugWs）
  *   - mergeLogs / fetchLogs 合并语义（方案 51 F2-04：seq 去重保序，非整体替换）
  */
@@ -58,7 +58,6 @@ const mockApi = vi.hoisted(() => ({
   getDebugStats: vi.fn().mockResolvedValue({ db_size_mb: 0 }),
   createDebugSession: vi.fn().mockResolvedValue({ session_id: 's1' }),
   closeDebugSession: vi.fn().mockResolvedValue(undefined),
-  execShell: vi.fn().mockResolvedValue({ output: '', success: true }),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
@@ -87,7 +86,6 @@ beforeEach(() => {
   mockApi.getDebugStats.mockClear()
   mockApi.createDebugSession.mockClear()
   mockApi.closeDebugSession.mockClear()
-  mockApi.execShell.mockClear()
   // 静默 store 内部日志（产生大量噪音），同时便于断言错误分支
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -230,17 +228,6 @@ describe('debug store - 会话生命周期', () => {
     await store.fetchLogs(200)
     expect(mockApi.getLogs).toHaveBeenCalledWith('sess-1', 'E', 'Tag1', 200)
     expect(store.logs.map((l) => l.seq)).toEqual([1])
-  })
-
-  it('execShell 无会话时早退，有会话时转发命令并返回结果', async () => {
-    const store = useDebugStore()
-    expect(await store.execShell('ls')).toBeUndefined()
-    expect(mockApi.execShell).not.toHaveBeenCalled()
-
-    store.sessionId = 'sess-1'
-    mockApi.execShell.mockResolvedValueOnce({ output: 'ok', success: true })
-    expect(await store.execShell('ls -l')).toEqual({ output: 'ok', success: true })
-    expect(mockApi.execShell).toHaveBeenCalledWith('sess-1', 'ls -l')
   })
 
   it('appendLog 超过 50000 条时 FIFO 淘汰最旧记录', () => {
@@ -397,28 +384,18 @@ describe('debug store - 消息处理', () => {
     expect(console.warn).not.toHaveBeenCalled()
   })
 
-  it('shell_stream / shell_output 驱动 execShellWs 流式输出', async () => {
+  it('shell_stream 逐行写入 shellOutputHandler 终端（方案 51 F2-10：execShellWs/onStreamLine 死链已删）', async () => {
     const store = await connectStore(true)
-    const lines: string[] = []
     const terminal: string[] = []
     store.setShellOutputHandler((l) => terminal.push(l))
 
-    const p = store.execShellWs('ls -l', (l) => lines.push(l))
-    expect(sentOps().at(-1)).toEqual({ op: 'exec', command: 'ls -l' })
-
     emit(JSON.stringify({ type: 'shell_stream', line: 'a.txt' }))
-    expect(lines).toEqual(['a.txt'])
-    expect(terminal).toEqual(['a.txt'])
+    emit(JSON.stringify({ type: 'shell_stream', line: 'b.txt' }))
+    expect(terminal).toEqual(['a.txt', 'b.txt'])
 
-    emit(JSON.stringify({ type: 'shell_output', output: 'a.txt\n', success: true }))
-    await expect(p).resolves.toEqual({ output: 'a.txt\n', success: true })
-  })
-
-  it('shell_output 缺省 output 为空串，并透传 success=false', async () => {
-    const store = await connectStore(true)
-    const p = store.execShellWs('false')
-    emit(JSON.stringify({ type: 'shell_output', success: false }))
-    await expect(p).resolves.toEqual({ output: '', success: false })
+    store.setShellOutputHandler(null) // 摘除后延迟消息不再写入（方案 51 F2-05）
+    emit(JSON.stringify({ type: 'shell_stream', line: 'c.txt' }))
+    expect(terminal).toEqual(['a.txt', 'b.txt'])
   })
 
   it('shell_stream 无任何 handler 时不报错', async () => {
@@ -438,27 +415,19 @@ describe('debug store - 消息处理', () => {
     expect(terminal).toEqual(['\r\n[Error] boom\r\n'])
   })
 
-  it('session_closed 重置连接状态并拒绝 pending 的 shell 命令', async () => {
+  it('session_closed 重置连接状态', async () => {
     const store = await connectStore(true)
-    const p = store.execShellWs('sleep 100')
     emit(JSON.stringify({ type: 'session_closed' }))
-    await expect(p).resolves.toEqual({ output: 'Session closed', success: false })
     expect(store.connected).toBe(false)
     expect(store.wsConnected).toBe(false)
   })
 
-  it('session_closed 无 pending 命令时不报错', async () => {
-    const store = await connectStore(true)
-    emit(JSON.stringify({ type: 'session_closed' }))
-    expect(store.wsConnected).toBe(false)
-  })
-
-  it('subscribed 与未知类型消息只记录日志', async () => {
+  it('subscribed 无副作用；未知类型 warn 且不逐条记日志（方案 51 F2-12）', async () => {
     await connectStore(true)
     emit(JSON.stringify({ type: 'subscribed', session_id: 'sess-1' }))
     emit(JSON.stringify({ type: 'who-knows' }))
-    expect(console.log).toHaveBeenCalledWith('Subscribed to session:', 'sess-1')
-    expect(console.log).toHaveBeenCalledWith('Unknown message type:', 'who-knows')
+    expect(console.warn).toHaveBeenCalledWith('[DebugStore] Unknown message type:', 'who-knows')
+    expect(console.log).not.toHaveBeenCalled()
   })
 
   it('非法 JSON 与非字符串消息被安全忽略', async () => {
@@ -475,20 +444,6 @@ describe('debug store - 消息处理', () => {
 })
 
 describe('debug store - 命令与过滤', () => {
-  it('execShellWs 未连接时降级 HTTP：成功与失败两分支', async () => {
-    const store = useDebugStore()
-    store.sessionId = 'sess-1'
-
-    mockApi.execShell.mockResolvedValueOnce({ output: 'http-out', success: true })
-    await expect(store.execShellWs('ls')).resolves.toEqual({ output: 'http-out', success: true })
-
-    mockApi.execShell.mockResolvedValueOnce(null)
-    await expect(store.execShellWs('ls')).resolves.toEqual({
-      output: 'Command failed',
-      success: false,
-    })
-  })
-
   it('sendInput 未连接时告警不发送；已连接时 base64 编码', async () => {
     const store = useDebugStore()
     store.sendInput('ignored')

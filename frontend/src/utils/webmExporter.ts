@@ -113,6 +113,10 @@ export async function exportWebmClip(
     video.currentTime = originTime
   } catch (err) {
     if (stopTimer !== null) clearTimeout(stopTimer)
+    // 先给 stopped 挂观察者再 throw：中途出错时 recorder.stop()/onerror 可能
+    // 已让 stopped 以 reject 落定，而下方 throw 使 return stopped 永远不
+    // 执行，reject 无人处理成 unhandled rejection（方案 51 F1-10）
+    stopped.catch(() => {})
     try {
       recorder.stop() // 录制中途出错也收尾（已停止时抛 InvalidState，忽略）
     } catch {

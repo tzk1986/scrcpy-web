@@ -41,14 +41,14 @@ export class WebSocketService {
    * 注册 onopen/onmessage/onerror/onclose 回调。
    */
   connect() {
-    console.log('[WS] Connecting to:', this.url)
     this.ws = new WebSocket(this.url)
-    // 默认设置为 arraybuffer，确保二进制数据直接可用
+    // 默认设置为 arraybuffer，确保二进制数据直接可用。
+    // 本方法是 binaryType 唯一设点（方案 51 F1-13：公共 setBinaryType
+    // 与 h264 侧私有 hack 均已删）
     this.ws.binaryType = 'arraybuffer'
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0
-      console.log('[WS] Connected:', this.url, 'binaryType:', this.ws?.binaryType)
       // 连接就绪回调（首次与重连均触发，方案 51 F2-21：供消费方以真实
       // socket 事件维护连接状态，而非 connect() 后立即乐观置位）
       this.onOpen?.()
@@ -62,11 +62,7 @@ export class WebSocketService {
     }
 
     this.ws.onmessage = (event) => {
-      // 视频帧为高频二进制消息，逐条日志是纯浪费；仅记录低频文本控制消息
-      const isBinary = event.data instanceof ArrayBuffer || event.data instanceof Blob
-      if (!isBinary) {
-        console.log('[WS] Text message:', (event.data as string).substring(0, 100))
-      }
+      // 不逐条记日志（方案 51 F2-12：文本/二进制均为每消息噪音）
       if (this.onMessage) {
         this.onMessage(event.data)
       }
@@ -80,21 +76,12 @@ export class WebSocketService {
     }
 
     this.ws.onclose = () => {
-      console.log('[WS] Closed:', this.url)
       if (this.onClose) {
         this.onClose()
       }
       if (!this.manualClose) {
         this.scheduleReconnect()
       }
-    }
-  }
-
-  /** 设置 binaryType */
-  setBinaryType(type: 'arraybuffer' | 'blob') {
-    if (this.ws) {
-      this.ws.binaryType = type
-      console.log('[WS] binaryType set to:', type)
     }
   }
 
@@ -146,7 +133,6 @@ export class WebSocketService {
   private scheduleReconnect() {
     const delay = Math.min(30000, 1000 * 2 ** this.reconnectAttempts)
     this.reconnectAttempts += 1
-    console.log(`[WS] Reconnect scheduled in ${delay}ms (attempt ${this.reconnectAttempts})`)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       // 标记本次 connect 为重连：onReconnect 延后到其 onopen 中触发，

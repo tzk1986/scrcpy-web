@@ -56,15 +56,16 @@ export interface FallbackThresholds {
  * 最长 ~15s，2× 间隔会让前端在中途误进截图 fallback 形成呼吸循环；
  * idle=5 → STALL 12s 覆盖「空闲窗 + 探针应答 p50 量级」慢恢复段，
  * 尾段仍会落截图则属有意设计：真死时 12s 落截图优于等后端 15s 自愈），
- * 再叠加 2s/5s 余量保证 NO_STREAM < HARD 单调。keepaliveMs=0（保活关闭）回默认。
+ * 再叠加 2s/5s 余量保证 NO_STREAM < HARD 单调。keepaliveMs=0（保活关闭）
+ * 时各 Math.max 自然落在默认值。
  */
 export function computeFallbackThresholds(keepaliveMs: number): FallbackThresholds {
+  // keepaliveMs<=0 时无需特判：三个 Math.max 下限即默认值
+  // （STALL=max(3000, ≤2000)、NO_STREAM=max(8000, 5000)、HARD=max(15000, 13000)）
+  // 与提前分支恒等（方案 51 F1-15 删冗余分支）
   const STALL_MS = Math.max(3000, keepaliveMs * 2 + 2000)
   const NO_STREAM_MS = Math.max(8000, STALL_MS + 2000)
   const HARD_TIMEOUT_MS = Math.max(15000, NO_STREAM_MS + 5000)
-  if (keepaliveMs <= 0) {
-    return { STALL_MS: 3000, NO_STREAM_MS: 8000, HARD_TIMEOUT_MS: 15000 }
-  }
   return { STALL_MS, NO_STREAM_MS, HARD_TIMEOUT_MS }
 }
 

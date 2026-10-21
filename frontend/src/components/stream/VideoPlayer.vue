@@ -216,7 +216,6 @@ function startH264StatsReporting() {
 function attachH264Handlers() {
   if (!h264Stream) return
   h264Stream.setStateChangeHandler((newState) => {
-    console.log('[VideoPlayer] H264 stream state changed:', newState)
     state.value = newState
     if (newState === 'error') {
       error.value = h264Stream?.stats.error || 'Unknown error'
@@ -361,14 +360,12 @@ function handleWsReconnect() {
 
 /** 启动截图回退模式 */
 function startScreenshotMode() {
-  console.log('[VideoPlayer] Starting screenshot fallback mode')
   mode.value = 'screenshot'
   // 独立 'screenshot' 状态：覆盖层条件不含它，回退过程不闪现「正在连接」
   state.value = 'screenshot'
-  videoStream = new VideoStream(props.deviceId, canvasRef.value!, ws!)
+  videoStream = new VideoStream(props.deviceId, canvasRef.value!)
 
   videoStream.setStateChangeHandler((newState) => {
-    console.log('[VideoPlayer] Screenshot stream state changed:', newState)
     state.value = newState
     if (newState === 'error') {
       error.value = videoStream?.stats.error || 'Unknown error'
@@ -386,9 +383,6 @@ function startScreenshotMode() {
 onMounted(async () => {
   if (!canvasRef.value) return
 
-  console.log('[VideoPlayer] Component mounted, deviceId:', props.deviceId)
-  console.log('[VideoPlayer] Device resolution:', props.deviceWidth, 'x', props.deviceHeight)
-
   // 设置 canvas 初始尺寸（使用设备实际分辨率，保持比例）
   // CSS 尺寸由 width:100%; height:100%; object-fit:contain 控制，
   // 自适应容器大小并维持视频原始比例（含 letterboxing）。
@@ -402,13 +396,11 @@ onMounted(async () => {
 
   // 初始化 WebSocket（用于视频流和输入事件）
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/video/${props.deviceId}`
-  console.log('[VideoPlayer] Creating WebSocket:', wsUrl)
   ws = new WebSocketService(wsUrl)
   ws.setErrorHandler((e) => {
     console.error('[VideoPlayer] WebSocket error:', e)
   })
   ws.setCloseHandler(() => {
-    console.log('[VideoPlayer] WebSocket closed')
     state.value = 'stopped'
   })
 
@@ -425,9 +417,7 @@ onMounted(async () => {
   })
 
   // 根据浏览器支持选择视频流模式
-  console.log('[VideoPlayer] WebCodecs supported:', isWebCodecsSupported())
   if (isWebCodecsSupported()) {
-    console.log('[VideoPlayer] Using H264 video stream mode')
     mode.value = 'h264'
     const hwAccel = readHardwareAcceleration()
     if (hwAccel) {
@@ -453,7 +443,6 @@ onMounted(async () => {
     startH264StatsReporting()
     stopStatsTimer = () => stopH264Stats()
   } else {
-    console.log('[VideoPlayer] WebCodecs NOT supported, using screenshot mode')
     startScreenshotMode()
     // 方案 51 F1-06：截图模式帧走 HTTP（VideoStream 不用 ws），ws 仅作输入
     // 通道——原分支从不 connect，非 WebCodecs 下输入全部静默丢弃。
@@ -466,7 +455,6 @@ onMounted(async () => {
   // 会停掉刚启动的 fps 上报（startH264StatsReporting 内部先 stopH264Stats，
   // 不存在双重定时器）。
   if (document.hidden) {
-    console.log('[VideoPlayer] Mounted while tab hidden, applying load-shedding')
     onVisibilityChange()
   }
 })

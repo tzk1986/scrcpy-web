@@ -428,6 +428,9 @@ export const useDeviceStore = defineStore('device', () => {
    * 写入结构与 loadThumbnail 一致（{url, ts}），TTL 命中/过期语义共用。
    */
   function setThumbnailFromBlob(deviceId: string, blob: Blob) {
+    // 设备已被移除（列表不含）或在途加载已作废 → 不建 URL 不回写，
+    // 消除幽灵缩略图（方案 51 F1-11；与 loadThumbnail 的 cancelled 分支同口径）
+    if (thumbCancelled.has(deviceId) || !devices.value.some((d) => d.id === deviceId)) return
     const url = URL.createObjectURL(blob)
     const old = thumbnails.value[deviceId]
     thumbnails.value = { ...thumbnails.value, [deviceId]: { url, ts: Date.now() } }

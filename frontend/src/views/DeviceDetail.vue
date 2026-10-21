@@ -112,10 +112,8 @@ const screenshotImage = ref<Blob | string | null>(null)
  *   2. 创建调试会话（用于 logcat 和 shell）
  */
 onMounted(async () => {
-  console.log('[DeviceDetail] Component mounted, deviceId:', deviceId)
   try {
     const device = await api.getDevice(deviceId)
-    console.log('[DeviceDetail] Device info:', device)
     if (device?.resolution) {
       deviceResolution.value = device.resolution
     }

@@ -800,6 +800,7 @@ describe('device store - 缩略图缓存（方案 36 D5）', () => {
 describe('device store - 流帧缩略图写入（方案 40 消费点 2）', () => {
   it('setThumbnailFromBlob 写入 url+ts 并 revoke 旧 URL', () => {
     const store = useDeviceStore()
+    store.devices = [dev('a')]
     store.thumbnails = { a: { url: 'blob:old', ts: 1 } }
 
     store.setThumbnailFromBlob('a', new Blob(['frame']))
@@ -811,12 +812,23 @@ describe('device store - 流帧缩略图写入（方案 40 消费点 2）', () =
 
   it('流帧写入后 TTL 内 loadThumbnail 命中缓存不重拉', async () => {
     const store = useDeviceStore()
+    store.devices = [dev('a')]
     store.setThumbnailFromBlob('a', new Blob(['frame']))
     mockApi.screenshot.mockClear()
 
     await store.loadThumbnail('a')
 
     expect(mockApi.screenshot).not.toHaveBeenCalled()
+  })
+
+  it('已移除设备不建 URL 不回写：无幽灵缩略图（方案 51 F1-11）', () => {
+    const store = useDeviceStore()
+    store.devices = [dev('b')]
+
+    store.setThumbnailFromBlob('a', new Blob(['frame']))
+
+    expect(urlStub.createObjectURL).not.toHaveBeenCalled()
+    expect(store.thumbnails['a']).toBeUndefined()
   })
 })
 

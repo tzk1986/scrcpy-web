@@ -37,6 +37,9 @@ import {
   MAX_DECODE_QUEUE,
 } from './h264NalUtils'
 
+/** warn 限速（方案 31 §2.2 / 方案 51 F1-12）：进入异常态首次 warn 后，每 N 条累计再汇总 warn 一次 */
+const WARN_SUMMARY_EVERY = 100
+
 /** 32 位整数按位整体反转（HEVC compat flags：SPS 序 → hvcC/codec 串序，与后端 T3 同变换） */
 function reverseBits32(value: number): number {
   let v = value >>> 0
@@ -184,16 +187,17 @@ export class H264VideoStream {
   // 追赶状态（方案 31）：丢帧后参考链已断，锁定丢弃 delta 直到下一 IDR
   // （自包含的干净恢复点），期间请求服务端催发 IDR 缩短恢复窗口
   private _awaitingIdr = false
-  // warn 限速（方案 31）：未就绪/尺寸错配为状态性问题，仅在进入异常态时 warn 一次
+  // warn 限速（方案 31 §2.2 全口径 + 方案 51 F1-12）：状态性问题首次
+  // warn，其后每 WARN_SUMMARY_EVERY 条丢弃/错配汇总 warn 一次，恢复后复位
   private _notReadyWarned = false
   private _sizeMismatchWarned = false
+  private _notReadyDropCount = 0
+  private _sizeMismatchCount = 0
   private _probeFrameCount = 0
   private _probeLastFrameTime = 0
   // 最近一次 config 的解析结果（suspend 期间新到的 config 暂存于此，resume 时复用）
   private _lastCodec: string | null = null
   private _lastAvccDesc: BufferSource | null = null
-  private _lastWidth = 0
-  private _lastHeight = 0
   // 后端 RESET_VIDEO 保活间隔（config.idle_reset_seconds×1000，0 表示关闭/未知）
   private _keepaliveMs = 0
   // 解码硬件加速偏好（实验开关，方案 17 实施项 4）
@@ -298,9 +302,8 @@ export class H264VideoStream {
       this.onStatsUpdate?.(this.stats)
     }, 1000)
 
-    // 重要：先设置 binaryType，再注册消息处理器
-    // 确保二进制数据以 ArrayBuffer 形式接收
-    this.setBinaryType()
+    // binaryType 唯一设点在 WebSocketService.connect()（方案 51 F1-13：
+    // 原 start() 内的私有 hack 恒空转，已删）
 
     // 注册消息处理器
     // binaryType=arraybuffer 下 JSON 控制消息一律走 string 通道，
@@ -330,8 +333,6 @@ export class H264VideoStream {
     // H264 推送，否则空闲设备瞬断后永久降级为只读截图。
     // resume() 自带 _suspended 守卫：非挂起时为空操作。
     this.ws.setReconnectHandler(() => this.resume())
-
-    console.log('[H264] Stream started, waiting for config...')
   }
 
   /** 停止视频流，释放解码器资源 */
@@ -412,25 +413,13 @@ export class H264VideoStream {
     }
     this.onStateChange?.(this._state)
     if (this._lastCodec && this._lastAvccDesc) {
-      this.initDecoder(this._lastCodec, this._lastAvccDesc, this._lastWidth, this._lastHeight)
-    }
-  }
-
-  /** 设置 WebSocket 的 binaryType 为 arraybuffer */
-  private setBinaryType() {
-    const wsInternal = (this.ws as unknown as { ws: WebSocket | null }).ws
-    if (wsInternal) {
-      wsInternal.binaryType = 'arraybuffer'
-      console.log('[H264] WebSocket binaryType set to arraybuffer')
-    } else {
-      console.warn('[H264] WebSocket not available, binaryType not set')
+      this.initDecoder(this._lastCodec, this._lastAvccDesc)
     }
   }
 
   /** 处理 JSON 控制消息 */
   private handleJsonMessage(msg: Record<string, unknown>) {
     const type = msg.type as string
-    console.log('[H264] JSON message type:', type, msg)
 
     if (type === 'config') {
       const codec = msg.codec as string || 'avc1.42E01E'
@@ -441,13 +430,6 @@ export class H264VideoStream {
       // avc1.42E01E）→ h264，h264 分支与泛化前逐行等价
       this.codecFamily = codec.startsWith('hvc1.') || codec.startsWith('hev1.') ? 'h265' : 'h264'
 
-      console.log('[H264] Config received:', {
-        codec,
-        descriptionLength: descriptionHex?.length,
-        width,
-        height,
-      })
-
       if (!descriptionHex) {
         this.setError('Missing codec description in config')
         return
@@ -456,21 +438,15 @@ export class H264VideoStream {
       // 解析 hex 格式的参数集（Annex B 格式，带起始码；h264 为 SPS+PPS，
       // h265 为 VPS+SPS+PPS，方案 45 T3）
       const annexBData = this.hexToUint8Array(descriptionHex)
-      console.log('[H264] AnnexB data hex (first 40 bytes):',
-        Array.from(annexBData.slice(0, 40)).map(b => b.toString(16).padStart(2, '0')).join(' '))
 
       // 按家族提取参数集 NAL 单元（h264：type 7/8 存 raw 含起始码——沿用原
       // 语义供 buildAvccDescription 去码；h265：type 32/33/34 存 data 去起始码
       // 含 2B NAL 头——buildHvcCDescription 直接消费）
       const nalus = extractNalus(annexBData)
-      console.log('[H264] Extracted NALUs:', nalus.length)
       for (const nalu of nalus) {
         const naluType = this.codecFamily === 'h265'
           ? ((nalu.data[0] as number) >> 1) & 0x3f
           : nalu.data[0] & 0x1F
-        console.log('[H264] NALU type:', naluType,
-          'length (with NAL header):', nalu.data.length,
-          'first bytes:', Array.from(nalu.data.slice(0, 6)).map(b => b.toString(16).padStart(2, '0')).join(' '))
         if (this.codecFamily === 'h265') {
           if (naluType === 32) {
             // VPS
@@ -503,9 +479,6 @@ export class H264VideoStream {
           this.setError('Failed to build hvcC description')
           return
         }
-        console.log('[H264] hvcC description hex:',
-          Array.from(hvcC).map(b => b.toString(16).padStart(2, '0')).join(' '))
-        console.log('[H264] hvcC description size:', hvcC.byteLength)
         description = hvcC
       } else {
         if (!this.spsData || !this.ppsData) {
@@ -518,9 +491,6 @@ export class H264VideoStream {
           this.setError('Failed to build AVCC description')
           return
         }
-        console.log('[H264] AVCC description hex:',
-          Array.from(new Uint8Array(avccDescription)).map(b => b.toString(16).padStart(2, '0')).join(' '))
-        console.log('[H264] AVCC description size:', avccDescription.byteLength)
         description = avccDescription
       }
 
@@ -533,31 +503,27 @@ export class H264VideoStream {
         this.canvas.height = height
         this._width = width
         this._height = height
-        console.log('[H264] Canvas buffer initialized to device resolution:', width, 'x', height)
       }
 
       // 暂存 config 解析结果（suspend 期间仅暂存；resume 时复用重建解码器）
       this._lastCodec = codec
       this._lastAvccDesc = description
-      this._lastWidth = width
-      this._lastHeight = height
       // NaN 守卫（终审 Minor #4）：非有限数（缺失/非法字段）归 0
       const keepaliveSec = Number(msg.idle_reset_seconds ?? 0)
       this._keepaliveMs = (Number.isFinite(keepaliveSec) ? keepaliveSec : 0) * 1000
 
       if (this._suspended) {
-        console.log('[H264] Config stored while suspended, decoder init deferred')
+        // suspend（截图回退探测）期间 config 仅暂存，resume 时复用重建
         return
       }
 
       // 初始化 VideoDecoder
-      this.initDecoder(codec, description, width, height)
+      this.initDecoder(codec, description)
 
     } else if (type === 'restarting') {
       // 服务端自适应码率重启预告：1-3s 黑屏属预期，宽限期内
       // 暂停回退 watchdog 与 stats 上报（重启后 config 会再次到达并重建解码器）
       this._restartGraceUntil = Date.now() + 15_000
-      console.log('[H264] Stream restarting for bitrate switch, grace until', this._restartGraceUntil)
     } else if (type === 'stream_ended') {
       // 后端编码器/流已结束：立即报错走回退链，不再等 watchdog（方案 19 实施项 5）
       this.setError('视频流已结束')
@@ -568,6 +534,13 @@ export class H264VideoStream {
 
   /** 处理二进制视频帧 */
   private handleBinaryFrame(data: Uint8Array) {
+    // 畸形短帧（连 8B PTS 头都不足）直接丢弃，warn 限速复用未就绪
+    // 计数器（方案 51 F1-07；不进探测窗，帧本身不可信）
+    if (data.byteLength < 8) {
+      this._noteDrop(`malformed frame (byteLength=${data.byteLength} < 8)`)
+      return
+    }
+
     // suspend（截图回退）期间不解码，仅记录帧到达供回切判定
     if (this._suspended) {
       this._probeFrameCount++
@@ -576,12 +549,9 @@ export class H264VideoStream {
     }
 
     if (!this.decoder || this.decoder.state !== 'configured') {
-      // 状态性问题：进入未就绪态后仅首次 warn，避免长窗口每帧风暴（方案 31）
-      if (!this._notReadyWarned) {
-        this._notReadyWarned = true
-        console.warn('[H264] Frame dropped: decoder not ready, state:', this.decoder?.state,
-          'decoder exists:', !!this.decoder)
-      }
+      // 状态性问题：进入未就绪态后首次 warn，其后每 N 条汇总 warn
+      // （方案 31 §2.2 全口径 + 方案 51 F1-12）
+      this._noteDrop(`decoder not ready (state: ${this.decoder?.state ?? 'null'}, exists: ${!!this.decoder})`)
       return
     }
 
@@ -595,13 +565,6 @@ export class H264VideoStream {
     // 零拷贝单遍扫描（方案 26）：扫描与关键帧判定合一，AVCC 组装单次分配；
     // 关键帧语义按家族判定（h264 IDR=5；h265 IRAP 16..21，方案 45 T4）
     const scan = scanFrame(payload, this.codecFamily)
-
-    if (this._frameCount <= 5) {
-      console.log('[H264] Frame', this._frameCount, ':',
-        'raw size:', payload.length,
-        'isKeyFrame:', scan.isKey,
-        'NALUs:', scan.nalus.map(n => `type=${this.naluTypeOf(payload[n.offset])},len=${n.length}`))
-    }
 
     // 丢帧策略（方案 31）：
     // - 正常态：队列积压丢 delta 并进入追赶——被丢帧未提交，后续 delta 的
@@ -628,7 +591,7 @@ export class H264VideoStream {
       console.warn('[H264] Decode queue overflow across IDR, rebuilding decoder. queue:',
         this.decoder.decodeQueueSize)
       if (this._lastCodec && this._lastAvccDesc) {
-        this.initDecoder(this._lastCodec, this._lastAvccDesc, this._lastWidth, this._lastHeight)
+        this.initDecoder(this._lastCodec, this._lastAvccDesc)
       }
     }
 
@@ -651,7 +614,7 @@ export class H264VideoStream {
   }
 
   /** 初始化 VideoDecoder（description 为 avcC/hvcC 配置记录，方案 45 T4 泛化为 BufferSource） */
-  private initDecoder(codec: string, description: BufferSource, width: number, height: number) {
+  private initDecoder(codec: string, description: BufferSource) {
     // 每条重建路径（config 重发 / resume / IDR 重建）都回到干净初始态：
     // 新解码器不含旧参考链，追赶锁定随之解除（方案 31）
     this._awaitingIdr = false
@@ -671,27 +634,34 @@ export class H264VideoStream {
       return
     }
 
-    console.log('[H264] Creating VideoDecoder with codec:', codec,
-      'description size:', description.byteLength,
-      'expected dimensions:', width, 'x', height)
-
     this.decoder = new VideoDecoder({
       output: (frame: VideoFrame) => {
+        // 已停止/挂起后解码器仍排空的在途输出帧：直接释放，不再产生
+        // 假 streaming 状态事件（方案 51 F1-08）
+        if (this._state === 'stopped') {
+          frame.close()
+          return
+        }
         // canvas 尺寸已在 config 到达时设为设备分辨率（deviceW x deviceH）。
         // max_size=0 保证帧尺寸 == 设备分辨率，因此此处不再调整 canvas。
         // 若帧尺寸与 canvas 不同（异常情况），仅记录警告，不改变 canvas（保持坐标映射正确）。
         if (this.canvas.width !== frame.displayWidth ||
             this.canvas.height !== frame.displayHeight) {
-          // 状态性问题：错配期间仅首次 warn；恢复匹配后重置（方案 31）
+          // 状态性问题：错配首次 warn + 累计计数每 N 条汇总，恢复匹配
+          // 后重置（方案 31 §2.2 全口径 + 方案 51 F1-12）
+          this._sizeMismatchCount++
           if (!this._sizeMismatchWarned) {
             this._sizeMismatchWarned = true
             console.warn('[H264] Frame size mismatch with canvas!',
               'canvas:', this.canvas.width, 'x', this.canvas.height,
               'frame:', frame.displayWidth, 'x', frame.displayHeight,
               '- click mapping may be inaccurate')
+          } else if (this._sizeMismatchCount % WARN_SUMMARY_EVERY === 0) {
+            console.warn('[H264] Size-mismatched frames so far:', this._sizeMismatchCount)
           }
         } else {
           this._sizeMismatchWarned = false
+          this._sizeMismatchCount = 0
         }
         ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height)
         frame.close()
@@ -719,17 +689,33 @@ export class H264VideoStream {
         config.hardwareAcceleration = this._hardwareAcceleration
       }
       this.decoder.configure(config)
-      console.log('[H264] Decoder state after configure:', this.decoder.state,
-        this._hardwareAcceleration ? `(hardwareAcceleration: ${this._hardwareAcceleration})` : '')
       if (this.decoder.state !== 'configured') {
         this.setError(`VideoDecoder configure failed, state: ${this.decoder.state}`)
       } else {
-        // 恢复 configured：未就绪 warn 限速复位（方案 31）
+        // 恢复 configured：未就绪 warn 限速与计数复位（方案 31 §2.2 全口径）
         this._notReadyWarned = false
+        this._notReadyDropCount = 0
       }
     } catch (e) {
       console.error('[H264] VideoDecoder configure threw exception:', e)
       this.setError(`VideoDecoder configure exception: ${e}`)
+    }
+  }
+
+  /**
+   * 未就绪/畸形帧丢弃的限速 warn（方案 31 §2.2 全口径 + 方案 51 F1-12/F1-07）：
+   * 进入异常态首次 warn，之后每 WARN_SUMMARY_EVERY 条汇总一次；
+   * 恢复 configured 时在 initDecoder 复位计数与标志。
+   */
+  private _noteDrop(reason: string) {
+    this._notReadyDropCount++
+    if (!this._notReadyWarned) {
+      this._notReadyWarned = true
+      console.warn('[H264] Frame dropped:', reason,
+        `- subsequent drops silent, summarized every ${WARN_SUMMARY_EVERY}`)
+    } else if (this._notReadyDropCount % WARN_SUMMARY_EVERY === 0) {
+      console.warn('[H264] Dropped frames so far:', this._notReadyDropCount,
+        '- last reason:', reason)
     }
   }
 
@@ -742,11 +728,6 @@ export class H264VideoStream {
   }
 
   // ===== Annex B / AVCC 转换 =====
-
-  /** 按当前家族解出 NAL 头字节中的 NAL type（仅日志用途；方案 45 T4） */
-  private naluTypeOf(header: number): number {
-    return this.codecFamily === 'h265' ? (header >> 1) & 0x3f : header & 0x1f
-  }
 
   /** 将 hex 字符串转为 Uint8Array */
   private hexToUint8Array(hex: string): Uint8Array {
@@ -808,16 +789,6 @@ export class H264VideoStream {
     const profileIdc = sps[1]  // profile_idc
     const compatibility = sps[2]  // constraint_set flags
     const levelIdc = sps[3]  // level_idc
-
-    console.log('[H264] AVCC params:', {
-      profileIdc: `0x${profileIdc.toString(16).padStart(2, '0')}`,
-      compatibility: `0x${compatibility.toString(16).padStart(2, '0')}`,
-      levelIdc: `0x${levelIdc.toString(16).padStart(2, '0')}`,
-      spsLength: sps.length,
-      ppsLength: pps.length,
-      spsHex: Array.from(sps.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' '),
-      ppsHex: Array.from(pps.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' '),
-    })
 
     // 计算总大小（avcC box 结构）：
     // configurationVersion(1) + profile(1) + compatibility(1) + level(1)
