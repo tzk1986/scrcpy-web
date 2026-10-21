@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -308,6 +309,18 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return result
 
 
+# 可由环境变量覆盖的 (env 名 → Settings 路径 → 转换器) 登记表（方案 51 D01）。
+# 新增 env 可覆盖键时在此登记，并同步方案 01 文档口径；未登记的 env 名
+# 不参与覆盖（pydantic 子模型 env 候选仅在 yaml 缺失该键时兜底，不可依赖）。
+_ENV_OVERRIDES: tuple[tuple[str, tuple[str, str], Callable[[str], Any]], ...] = (
+    ("BACKEND_HOST", ("server", "host"), str),
+    ("BACKEND_PORT", ("server", "port"), int),
+    ("DB_PATH", ("database", "path"), str),
+    ("LOG_LEVEL", ("app", "log_level"), str),
+    ("ADB_PATH", ("adb", "adb_path"), str),
+)
+
+
 def get_settings() -> Settings:
     """Get application settings"""
     import os
@@ -338,20 +351,15 @@ def get_settings() -> Settings:
         env_config = load_yaml_config(env)
         config = _deep_merge(config, env_config)
 
-    # 环境变量优先级最高：打包/部署时可据此把后端挪离默认端口，
-    # 且 base.yaml 的 server 节点会作为 init kwargs 传入（压过 pydantic env 读取），
-    # 故此处显式覆盖，确保 BACKEND_HOST/BACKEND_PORT 生效。
-    server = config.setdefault("server", {})
-    if os.getenv("BACKEND_HOST"):
-        server["host"] = os.environ["BACKEND_HOST"]
-    if os.getenv("BACKEND_PORT"):
-        server["port"] = int(os.environ["BACKEND_PORT"])
-
-    # 同上：yaml 的 database 节点作为 init kwargs 会压过 pydantic env 读取，
-    # 故显式覆盖，使容器部署（docker-compose 的 DB_PATH）能真正生效
-    if os.getenv("DB_PATH"):
-        database = config.setdefault("database", {})
-        database["path"] = os.environ["DB_PATH"]
+    # 方案 51 D01：兑现本模块头「Environment variables (highest priority)」与
+    # 方案 01 的 env > YAML 承诺。此前仅 BACKEND_*/DB_PATH 三处手工补丁生效：
+    # yaml 节作为 init kwargs 传入子模型（BaseSettings）时，其 env 候选只对
+    # dict 缺失键起作用，同名键在 yaml 中一旦给出，LOG_LEVEL/ADB_PATH 等 env
+    # 即被静默压过（走查实测坐实）。统一 overlay 表在构造前显式压过全部层。
+    for env_name, (section, key), coerce in _ENV_OVERRIDES:
+        value = os.getenv(env_name)
+        if value:
+            config.setdefault(section, {})[key] = coerce(value)
 
     return Settings(**config)
 
