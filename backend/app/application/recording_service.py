@@ -172,6 +172,10 @@ class RecordingService:
             return None
         if session.state in _TERMINAL_STATES:
             return session  # 幂等：重复 stop 直返终态会话
+        if session.state != RecordingState.RECORDING.value:
+            # stopping/pulling 进行态再入：后进者直返当前态、绝不触达 adb，
+            # 防二次 stop_recording pop 产物失败后 rm+FAILED 炸掉前进者的拉取（方案 51 E1）
+            return session
         session.state = RecordingState.STOPPING.value
         logger.info("recording_stopping", session=session.id, device=device_id)
         try:

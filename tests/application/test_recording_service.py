@@ -151,6 +151,32 @@ async def test_stop_mkdir_failure_converges_failed_and_rm_remote(service, mock_a
     mock_adb.pull_recording.assert_not_called()
 
 
+async def test_stop_reentrant_in_progress_is_noop(service, mock_adb):
+    """进行态（stopping/pulling）内 stop 再入：后进者直返当前会话，
+    不再触达 stop_recording/rm/FAILED（方案 51 E1 双击炸产物）。"""
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def slow_stop(device_id: str) -> str:
+        started.set()
+        await gate.wait()
+        return "/sdcard/openscrcpy_rec_x.mp4"
+
+    mock_adb.stop_recording = AsyncMock(side_effect=slow_stop)
+    await service.start("d1")
+    t1 = asyncio.create_task(service.stop("d1"))
+    await started.wait()  # 前进者已置 STOPPING 并挂在 stop_recording
+    # 再入：应即时直返；现码无守卫会二次挂 gate → 以超时暴露缺陷
+    second = await asyncio.wait_for(service.stop("d1"), timeout=0.5)
+    gate.set()
+    first = await t1
+    assert first.state == RecordingState.DONE.value
+    assert second is first  # 同一会话对象直返，无副作用
+    assert mock_adb.stop_recording.await_count == 1
+    assert mock_adb.pull_recording.await_count == 1
+    assert mock_adb.rm_remote.await_count == 1
+
+
 async def test_repeat_stop_idempotent(service, mock_adb):
     await service.start("d1")
     first = await service.stop("d1")
