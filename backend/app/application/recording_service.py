@@ -177,6 +177,7 @@ class RecordingService:
             # 防二次 stop_recording pop 产物失败后 rm+FAILED 炸掉前进者的拉取（方案 51 E1）
             return session
         session.state = RecordingState.STOPPING.value
+        session.phase_started_at = time.time()  # 自愈滞留判定基准（方案 51 E5）
         logger.info("recording_stopping", session=session.id, device=device_id)
         try:
             result = await self.adb.stop_recording(device_id)
@@ -197,6 +198,7 @@ class RecordingService:
             session.state = RecordingState.FAILED.value
             return session
         session.state = RecordingState.PULLING.value
+        session.phase_started_at = time.time()  # 慢 pull 不再被 started_at 基准误杀（方案 51 E5）
         local_dir = self.resolve_dir()
         local_path: str | None
         try:
@@ -395,7 +397,8 @@ class RecordingService:
                 device_recording_settings(s.device_id).time_limit
                 + self.STUCK_STATE_TIMEOUT_SECONDS
             )
-            if s.started_at >= cutoff:
+            # 基准=进入进行态时刻（E5）；未打点旧形态回落 started_at
+            if (s.phase_started_at or s.started_at) >= cutoff:
                 continue
             logger.warning("recording_stuck_self_heal", device=s.device_id, state=s.state)
             await self.adb.rm_remote(s.device_id, s.remote_path)

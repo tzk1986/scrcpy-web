@@ -382,6 +382,59 @@ async def test_self_heal_converges_stuck_pulling(service, mock_adb):
     mock_adb.rm_remote.assert_called_once_with("d1", stuck.remote_path)
 
 
+async def test_self_heal_allows_slow_pull_with_fresh_phase(service, mock_adb):
+    """E5：录满+慢 pull——started_at 已超阈但刚进入 pulling（phase 新鲜）→ 不得误杀产物。"""
+    slow = RecordingSession(
+        id="slow00000000",
+        device_id="d2",
+        started_at=time.time()
+        - (settings().recording.time_limit + RecordingService.STUCK_STATE_TIMEOUT_SECONDS + 1),
+        state=RecordingState.PULLING.value,
+        remote_path="/sdcard/openscrcpy_rec_slow0.mp4",
+        phase_started_at=time.time(),
+    )
+    service.sessions["d2"] = slow
+    await service._self_heal()
+    assert slow.state == RecordingState.PULLING.value
+    mock_adb.rm_remote.assert_not_called()
+
+
+async def test_self_heal_converges_stale_phase_pulling(service, mock_adb):
+    """E5 对偶：phase_started_at 也超阈（真卡死）→ 照旧 rm+failed。"""
+    dead = RecordingSession(
+        id="dead00000000",
+        device_id="d3",
+        started_at=time.time()
+        - (settings().recording.time_limit + RecordingService.STUCK_STATE_TIMEOUT_SECONDS + 200),
+        state=RecordingState.PULLING.value,
+        remote_path="/sdcard/openscrcpy_rec_dead0.mp4",
+        phase_started_at=time.time()
+        - (settings().recording.time_limit + RecordingService.STUCK_STATE_TIMEOUT_SECONDS + 1),
+    )
+    service.sessions["d3"] = dead
+    await service._self_heal()
+    assert dead.state == RecordingState.FAILED.value
+    mock_adb.rm_remote.assert_called_once_with("d3", dead.remote_path)
+
+
+async def test_stop_sets_phase_timestamps(service, mock_adb):
+    """E5：stop 进入 stopping/pulling 均打点 phase_started_at。"""
+    seen: list[float] = []
+    orig_stop = mock_adb.stop_recording
+
+    async def spy(device_id: str) -> str:
+        s = service.sessions[device_id]
+        seen.append(s.phase_started_at)  # 进 stopping 后、进 pulling 前
+        return await orig_stop(device_id)
+
+    mock_adb.stop_recording = AsyncMock(side_effect=spy)
+    s = await service.start("d1")
+    out = await service.stop("d1")
+    assert out.state == RecordingState.DONE.value
+    assert seen[0] >= s.started_at
+    assert out.phase_started_at >= seen[0] > 0
+
+
 async def test_self_heal_ignores_fresh_stopping(service, mock_adb):
     """Review Focus ③：正在收尾（started_at 未超阈）的 stopping 不得被误杀。"""
     fresh = RecordingSession(

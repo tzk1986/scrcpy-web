@@ -36,6 +36,8 @@ class RecordingSession:
     device_id: str
     started_at: float = field(default_factory=time.time)
     state: str = RecordingState.RECORDING.value
+    # 进入进行态（stopping/pulling 各自转换时覆写）的时刻；0=未打点（自愈回落 started_at）
+    phase_started_at: float = 0.0
     remote_path: str = ""
     # 主机落盘产物路径（pull 成功后由录制服务写入；空串=无产物）
     local_path: str = ""
