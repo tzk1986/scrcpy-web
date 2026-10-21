@@ -94,8 +94,17 @@ describe('SettingsHelp.vue', () => {
     expect(entry.text()).toContain('调小')
     expect(entry.text()).toContain('省带宽')
     expect(entry.text()).toContain('适合：')
-    expect(entry.text()).toContain('范围：0 ~ 65535')
+    expect(entry.text()).toContain('范围：0 ~ 4096')
     expect(entry.text()).toContain('生效时机：下次连接生效')
+  })
+
+  it('方案 51 F2-09：录屏时长上限手册无「不限时」话术，明示到期自动停止', async () => {
+    const wrapper = await mountHelp()
+    const entry = wrapper.find('#recording-time_limit')
+    expect(entry.exists()).toBe(true)
+    expect(entry.text()).not.toContain('不限时')
+    expect(entry.text()).toContain('到期自动停止')
+    expect(entry.text()).toContain('范围：1 ~ 1800 秒')
   })
 
   it('布尔/枚举参数用覆写方向词（codec 选 h265/选 h264、自适应码率 开/关）', async () => {

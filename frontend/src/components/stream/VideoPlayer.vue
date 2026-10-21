@@ -60,9 +60,9 @@
       <!-- 恢复角标：已出过画面后的空闲/配置期，保留下层冻结帧可见，仅右上角小字提示 -->
       <div v-if="recoveringBadge" class="recovering-tip">正在恢复画面…</div>
 
-      <!-- 截图模式只读提示徽标 -->
+      <!-- 截图模式提示徽标（方案 51 F1-06：ws 已连接、输入可用但帧走 HTTP，延迟较高） -->
       <div v-if="mode === 'screenshot' && state === 'streaming'" class="readonly-badge">
-        只读预览 · 输入不可用
+        截图预览 · 输入延迟较高
       </div>
     </div>
 

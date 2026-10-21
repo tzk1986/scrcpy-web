@@ -356,7 +356,7 @@ describe('VideoPlayer H264 状态机与回退', () => {
     const onVsState = vs.setStateChangeHandler.mock.calls[0][0]
     onVsState('streaming')
     await nextTick()
-    expect(wrapper.text()).toContain('只读预览 · 输入不可用')
+    expect(wrapper.text()).toContain('截图预览 · 输入延迟较高')
 
     // 截图流报错 → 错误覆盖层 + 重连按钮
     vs.stats.error = 'screenshot stream failed'
@@ -422,7 +422,7 @@ describe('VideoPlayer H264 状态机与回退', () => {
 
     vs.setStateChangeHandler.mock.calls[0][0]('streaming')
     await nextTick()
-    expect(wrapper.text()).toContain('只读预览 · 输入不可用')
+    expect(wrapper.text()).toContain('截图预览 · 输入延迟较高')
 
     vs.setStatsUpdateHandler.mock.calls[0][0]({ fps: 1, frameCount: 7 })
     await nextTick()
@@ -536,7 +536,7 @@ describe('VideoPlayer WS 重连恢复（方案 19 终审二轮 R1）', () => {
     // 恢复反馈：角标「正在恢复画面…」，无黑屏覆盖层、无截图只读徽标
     expect(wrapper.find('.recovering-tip').text()).toContain('正在恢复画面…')
     expect(wrapper.find('.status-overlay').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('只读预览')
+    expect(wrapper.text()).not.toContain('截图预览 · 输入延迟较高')
 
     // 新会话 config→streaming 既有路径完成恢复（stats.state 同步为新会话状态）
     h264.stats.state = 'streaming'

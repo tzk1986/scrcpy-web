@@ -63,7 +63,7 @@ export const PARAM_HELP: ParamHelp[] = [
       effect: '省带宽、解码更轻；远看细节发糊',
       scenario: '弱设备降规格；远程/弱网出现卡顿、花屏时降到 720 或 540',
     },
-    range: '0 ~ 65535（0 = 不缩放）',
+    range: '0 ~ 4096（0 = 不缩放）',
     when_effective: '下次连接生效',
   },
   {
@@ -156,8 +156,8 @@ export const PARAM_HELP: ParamHelp[] = [
     group: 'recording',
     name: '时长上限 time_limit',
     meaning:
-      '单次录屏的分段时长上限（秒）。0 表示不限时——靠手动停止 + ' +
-      '磁盘双限清理（方案 42）兜底。',
+      '单次录屏的分段时长上限（秒），到期自动停止并落盘产物；' +
+      '长过程可在停止后续录，磁盘由双限清理（方案 42）兜底。',
     larger: {
       effect: '单文件更长更大，减少手动续录次数',
       scenario: '完整长过程一次录完，磁盘充裕',
@@ -166,7 +166,7 @@ export const PARAM_HELP: ParamHelp[] = [
       effect: '单文件小、便于分段管理；长过程需手动续录',
       scenario: '分段留档、控制单文件体积',
     },
-    range: '1 ~ 1800 秒（0 = 不限时）',
+    range: '1 ~ 1800 秒，到期自动停止',
     when_effective: '每次开始录屏时读取',
   },
   {
