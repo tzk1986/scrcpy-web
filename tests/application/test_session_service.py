@@ -131,3 +131,17 @@ async def test_create_session_idempotent_returns_existing():
     assert second["participants"] == {"alice": "admin", "bob": "admin"}
     assert second["active_controller"] == "bob"
     assert len(svc.sessions) == 1
+
+
+async def test_create_session_rejects_invalid_identifiers():
+    """方案 51 C13：device_id 非法、user_id 空/含 | 或控制字符 → InvalidIdentifierError。"""
+    svc = SessionService()
+    with pytest.raises(InvalidIdentifierError):
+        await svc.create_session("bad id;rm -rf", "alice")   # 非法字符
+    with pytest.raises(InvalidIdentifierError):
+        await svc.create_session("dev1", "a|b")              # 拼接分隔符
+    with pytest.raises(InvalidIdentifierError):
+        await svc.create_session("dev1", "a\nb")             # 控制字符
+    with pytest.raises(InvalidIdentifierError):
+        await svc.create_session("dev1", "")                 # 空 user_id
+    assert svc.sessions == {}

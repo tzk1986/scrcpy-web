@@ -22,7 +22,7 @@ import io
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.application.debug_service import DebugService
@@ -90,7 +90,8 @@ async def get_logs(
     session_id: str,
     level: str | None = None,
     tag: str | None = None,
-    limit: int = 1000,
+    # 方案 51 C12：ge=1 消除 limit=0 全库直出；le 与 service 双保险同界
+    limit: int = Query(1000, ge=1, le=50000),
     service: DebugService = Depends(get_debug_service),
 ) -> dict[str, Any]:
     """
@@ -115,7 +116,7 @@ async def export_logs(
     level: str | None = None,
     tag: str | None = None,
     format: str = "json",
-    limit: int = 50000,
+    limit: int = Query(50000, ge=1, le=50000),
     service: DebugService = Depends(get_debug_service),
 ) -> StreamingResponse:
     """

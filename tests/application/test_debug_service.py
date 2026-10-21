@@ -487,3 +487,65 @@ async def test_logcat_error_broadcasts_stream_error_and_rebuilds():
     finally:
         await svc.close_session(session.id)
         await svc.writer.stop()
+
+
+async def test_set_subscriber_filter_returns_hit_or_miss(monkeypatch):
+    """方案 51 C16：命中订阅者 True；未订阅/会话不存在 False（WS 层回 filter_applied:false）。"""
+    monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.01)
+    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    session = await svc.create_session("dev1", "u1")
+    ws = object()
+    try:
+        assert await svc.set_subscriber_filter(session.id, ws, paused=True) is False
+        await svc.subscribe(session.id, ws)
+        assert await svc.set_subscriber_filter(session.id, ws, paused=True) is True
+        # C11 宽限任务完成后 discard 经 call_soon 落地；Windows 循环唤醒时机
+        # 不定，条件轮询而非固定 sleep
+        for _ in range(50):
+            if not svc._stop_grace_tasks:
+                break
+            await asyncio.sleep(0.01)
+        assert svc._stop_grace_tasks == set()  # done 回调已 discard
+    finally:
+        await svc.close_session(session.id)
+        await svc.writer.stop()
+
+
+async def test_get_logs_limit_clamped():
+    """方案 51 C12 服务侧双保险：limit 夹到 [1, MAX_LOG_QUERY_LIMIT]，0/负数不再全库切片。"""
+    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    session = await svc.create_session("dev1", "u1")
+    for i in range(5):
+        session.log_buffer.append({"level": "I", "tag": "T", "message": str(i), "seq": i})
+    try:
+        assert len(await svc.get_logs(session.id, limit=0)) == 1
+        assert len(await svc.get_logs(session.id, limit=-7)) == 1
+        assert len(await svc.get_logs(session.id, limit=10 ** 9)) == 5
+    finally:
+        await svc.close_session(session.id)
+        await svc.writer.stop()
+
+
+async def test_rate_window_boundary_entry_counted(monkeypatch):
+    """方案 51 C18：窗口重置后当条计为新窗首条——限额吞吐不再多放一条。"""
+    from app.core.config import settings as get_settings
+    monkeypatch.setattr(get_settings().debug, "min_log_level", "V")
+    monkeypatch.setattr(get_settings().debug, "log_rate_limit", 1)
+    clock = [0.0]
+    monkeypatch.setattr("app.application.debug_service.time.time", lambda: clock[0])
+
+    class StepAdb:
+        async def stream_logcat(self, device_id):
+            yield "09-08 14:23:45.678 1234 5678 I Tag: one"    # 初始窗 else 分支：count=1
+            clock[0] = 1.1
+            yield "09-08 14:23:46.778 1234 5678 I Tag: two"    # 窗口重置：count=1（C18 补计）
+            yield "09-08 14:23:46.778 1234 5678 I Tag: three"  # count=2>1 → 低级别丢弃
+            yield "09-08 14:23:46.778 1234 5678 I Tag: four"   # count=3>1 → 丢弃
+
+    svc = DebugService(adb=StepAdb(), repo=Repo())
+    session = await svc.create_session("dev1", "u1")
+    try:
+        await svc._collect_logcat(session)
+        assert [e["message"] for e in session.log_buffer] == ["one", "two"]
+    finally:
+        await svc.writer.stop()

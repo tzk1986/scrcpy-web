@@ -72,6 +72,8 @@ class DebugService:
     # 停采宽限（秒）：全部订阅者暂停后延迟这么久再取消采集，
     # 防录制开关抖动导致 logcat 子进程频繁启停（方案 17 实施项 5）
     LOGCOLLECT_STOP_GRACE = 0.5
+    # 方案 51 C12：日志查询条数上界（与 HTTP Query(ge=1, le=…) 双保险同界）
+    MAX_LOG_QUERY_LIMIT = 50_000
 
     def __init__(
         self,
@@ -105,6 +107,8 @@ class DebugService:
         self.shell_output_forwarding_tasks: dict[str, asyncio.Task[None]] = {}
         # 会话级命令锁：串行化同一会话的 shell 执行（HTTP exec 与 WS 流式 exec 共享）
         self._session_locks: dict[str, asyncio.Lock] = {}
+        # 方案 51 C11：宽限停采任务持引用（done 回调 discard），防 GC 提前回收停不掉
+        self._stop_grace_tasks: set[asyncio.Task[None]] = set()
         # 日志批量写入器（满批/定时 executemany 落库，摊薄逐条 commit 开销）
         from app.core.config import settings as get_settings
         self.writer = BatchLogWriter(repo, batch_size=get_settings().debug.log_batch_size)
@@ -185,10 +189,9 @@ class DebugService:
                 logger.warning("shell_stop_failed", session=session_id, error=str(e))
         await self.writer.flush()
         self.sessions.pop(session_id, None)
-        # 清理未被持有的会话锁；仍被命令持有时保留（避免等待者与新建锁不一致）
-        lock = self._session_locks.get(session_id)
-        if lock is not None and not lock.locked():
-            self._session_locks.pop(session_id, None)
+        # 方案 51 C17：无条件清理会话锁。会话已出表，旧锁持有者/等待者醒来
+        # 按会话不存在路径退出，不会被复用；原条件分支在锁被持有时永久泄漏 dict 条目。
+        self._session_locks.pop(session_id, None)
         # 清理订阅者
         if session_id in self.subscribers:
             # 通知订阅者会话已关闭
@@ -271,9 +274,9 @@ class DebugService:
                 # 策略 2: 速率限制 - 超过阈值时丢弃低级别日志
                 current_time = time.time()
                 if current_time - log_window_start >= 1.0:
-                    # 重置窗口
+                    # 重置窗口（方案 51 C18：当条计为新窗首条，不再漏边界）
                     log_window_start = current_time
-                    log_count_in_window = 0
+                    log_count_in_window = 1
                 else:
                     log_count_in_window += 1
                     if log_count_in_window > rate_limit:
@@ -362,7 +365,10 @@ class DebugService:
                 task.cancel()
             logger.info("logcat_collection_stopped_idle", session=session_id)
 
-        asyncio.create_task(stop_after_grace())
+        # 方案 51 C11：持引用至完成，防裸 create_task 被 GC 回收致停采丢失
+        grace = asyncio.create_task(stop_after_grace())
+        self._stop_grace_tasks.add(grace)
+        grace.add_done_callback(self._stop_grace_tasks.discard)
 
     async def subscribe(self, session_id: str, websocket: WebSocket) -> None:
         """
@@ -403,7 +409,7 @@ class DebugService:
         level: Optional[str] = None,
         tag: Optional[str] = None,
         paused: bool = False,
-    ) -> None:
+    ) -> bool:
         """
         设置订阅者的日志过滤条件。
 
@@ -416,6 +422,10 @@ class DebugService:
             level: 按日志级别过滤（V/D/I/W/E/F）。None = 所有级别。
             tag: 按标签子串过滤。None = 所有标签。
             paused: 是否暂停推送（暂停后不再推送新日志，但缓冲区保留）。
+
+        返回：
+            True=订阅者命中并已设置；False=未命中订阅者（方案 51 C16，
+            消除未订阅时的假确认，WS 层据此回 filter_applied:false）。
         """
         if session_id in self.subscribers and websocket in self.subscribers[session_id]:
             self.subscribers[session_id][websocket] = {"level": level, "tag": tag, "paused": paused}
@@ -436,6 +446,8 @@ class DebugService:
                 subs = self.subscribers[session_id]
                 if not any(not f.get("paused", True) for f in subs.values()):
                     self._schedule_logcat_stop(session_id)
+            return True
+        return False
 
     async def _notify_subscribers(self, session_id: str, entry: dict[str, Any]) -> None:
         """
@@ -531,6 +543,9 @@ class DebugService:
         返回：
             日志条目字典列表（键：ts, level, pid, tid, tag, message, raw）。
         """
+        # 方案 51 C12 双保险：与 HTTP Query(ge=1, le=50000) 同界，
+        # 防服务内部调用绕过路由校验（limit=0 不再等价全库切片）。
+        limit = max(1, min(limit, self.MAX_LOG_QUERY_LIMIT))
         session = self.sessions.get(session_id)
         if session:
             # 快速路径：从内存缓冲区过滤

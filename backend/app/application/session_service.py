@@ -34,6 +34,7 @@ from app.core.exceptions import (
     SessionNotFoundError,
 )
 from app.core.logging import get_logger
+from app.domain.identifiers import is_valid_device_id
 
 logger = get_logger(__name__)
 
@@ -70,8 +71,17 @@ class SessionService:
             会话字典，包含 id、device_id、owner、participants、active_controller。
 
         异常：
+            InvalidIdentifierError: device_id 格式非法，或 user_id 为空、
+                含 `|` 或控制字符（400，方案 51 C13——收紧派生哈希的入参面）。
             SessionLimitError: 活跃会话数已达上限（503）。
         """
+        if not is_valid_device_id(device_id):
+            raise InvalidIdentifierError("device_id")
+        # user_id 是 sha256 派生 ID 的拼接盐：拒分隔符与控制字符，杜绝拼接碰撞伪装
+        if not user_id or "|" in user_id or any(
+            ord(ch) < 0x20 or ord(ch) == 0x7F for ch in user_id
+        ):
+            raise InvalidIdentifierError("user_id")
         session_id = hashlib.sha256(f"{device_id}|{user_id}".encode("utf-8")).hexdigest()[:12]
         existing = self.sessions.get(session_id)
         if existing is not None:

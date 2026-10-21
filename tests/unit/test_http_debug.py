@@ -321,3 +321,17 @@ def test_export_logs_unicode_json(fake: FakeDebugService) -> None:
 
     assert json.loads(response.content.decode("utf-8")) == fake.logs
     assert "中文日志" in response.content.decode("utf-8")
+
+def test_logs_limit_out_of_range_422(fake: FakeDebugService) -> None:
+    """方案 51 C12：limit=0 或超 50000 在路由校验层 422，不再透传 service。"""
+    client = make_client()
+    with override(get_debug_service, fake):
+        zero = client.get(f"/api/debug/sessions/{SESSION}/logs", params={"limit": 0})
+        over = client.get(f"/api/debug/sessions/{SESSION}/logs", params={"limit": 50001})
+        export_zero = client.get(
+            f"/api/debug/sessions/{SESSION}/logs/export", params={"limit": 0})
+
+    assert zero.status_code == 422
+    assert over.status_code == 422
+    assert export_zero.status_code == 422
+    assert fake.calls == []

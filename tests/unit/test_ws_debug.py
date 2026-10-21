@@ -23,10 +23,12 @@ from app.interfaces.ws.debug import debug_stream
 class FakeDebugService:
     """WS 处理器所需方法的最小替身，记录清理调用次数。"""
 
-    def __init__(self, lines=("a", "b"), exec_error=None, subscribe_error=None):
+    def __init__(self, lines=("a", "b"), exec_error=None, subscribe_error=None,
+                 filter_hit=True):
         self._lines = list(lines)
         self._exec_error = exec_error
         self._subscribe_error = subscribe_error
+        self.filter_hit = filter_hit
         self.cleanup_calls = 0
         self.generators_closed = 0
         self.resizes = []
@@ -38,8 +40,10 @@ class FakeDebugService:
             raise self._subscribe_error
         self.subscribed += 1
 
-    async def set_subscriber_filter(self, session_id, websocket, level, tag, paused) -> None:
+    async def set_subscriber_filter(self, session_id, websocket, level, tag, paused) -> bool:
+        # 方案 51 C16：替身同步返回订阅者命中与否
         self.filters.append((level, tag, paused))
+        return self.filter_hit
 
     async def resize_shell(self, session_id, cols, rows):
         self.resizes.append((session_id, cols, rows))
@@ -204,6 +208,20 @@ async def test_filter_field_types_validated():
         await debug_stream(ws, "s1", svc)
         assert ws.sent[0]["code"] == "BAD_MESSAGE", f"应拒绝: {bad}"
         assert svc.filters == []
+
+
+async def test_filter_applied_flag_reflects_subscriber_hit():
+    """方案 51 C16：确认帧带 filter_applied 布尔；未命中订阅者回 False，消除假确认。"""
+    svc = FakeDebugService(filter_hit=True)
+    ws = FakeWebSocket([{"op": "filter", "level": "E", "paused": True}])
+    await debug_stream(ws, "s1", svc)
+    assert ws.sent[0] == {"type": "filter_applied", "filter_applied": True,
+                          "level": "E", "tag": None, "paused": True}
+
+    svc2 = FakeDebugService(filter_hit=False)
+    ws2 = FakeWebSocket([{"op": "filter", "paused": False}])
+    await debug_stream(ws2, "s1", svc2)
+    assert ws2.sent[0]["filter_applied"] is False
 
 
 async def test_exec_command_non_string_rejected():

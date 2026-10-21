@@ -15,6 +15,7 @@
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,18 @@ def _extract_timestamp(text: str, field: str) -> str:
     """
     match = re.search(rf"{field}=([^\r\n]+)", text)
     return match.group(1).strip() if match else ""
+
+
+# `dumpsys activity processes` 的进程行：ProcessRecord{<hex> <pid>:<package>/<user>}
+# hex 字符类 [0-9a-fA-F] 已覆盖大小写（方案 51 C15：双份解析合一；
+# 原两处「使用 re.IGNORECASE」失实注释——实际未传 flag——随之删除）。
+_PROCESS_RECORD_RE = re.compile(r"ProcessRecord\{[0-9a-fA-F]+ (\d+):([^/}]+)")
+
+
+def _iter_process_records(output: str) -> Iterable[tuple[int, str]]:
+    """按文本顺序产出 ProcessRecord 的 (pid, package)。"""
+    for match in _PROCESS_RECORD_RE.finditer(output):
+        yield int(match.group(1)), match.group(2).strip()
 
 
 @dataclass
@@ -233,14 +246,7 @@ class AppService:
         try:
             output = await self.adb.shell(device_id, "dumpsys activity processes")
             result: dict[str, int] = {}
-
-            # 匹配：ProcessRecord{abc123 1335:com.adups.fota.sysoper/u0a31}
-            # hex 可能包含大写字母，使用 re.IGNORECASE
-            for match in re.finditer(
-                r"ProcessRecord\{[0-9a-fA-F]+ (\d+):([^/\}]+)", output
-            ):
-                pid = int(match.group(1))
-                package = match.group(2).strip()
+            for pid, package in _iter_process_records(output):
                 if package and package not in result:
                     result[package] = pid
 
@@ -362,14 +368,10 @@ class AppService:
             # 直接获取完整输出，不用 grep（某些设备不支持）
             output = await self.adb.shell(device_id, "dumpsys activity processes")
 
-            # 查找包含该包名的 ProcessRecord
-            # 格式：ProcessRecord{abc123 1335:com.example.app/u0a123}
-            # hex 可能包含大写字母，使用 re.IGNORECASE
-            pattern = rf"ProcessRecord\{{[0-9a-fA-F]+ (\d+):{re.escape(package)}(?:/[^}}]+)?\}}"
-            match = re.search(pattern, output)
-
-            if match:
-                return True, int(match.group(1))
+            # 方案 51 C15：复用与 _get_running_processes 相同的单份解析
+            for pid, pkg in _iter_process_records(output):
+                if pkg == package:
+                    return True, pid
 
             return False, None
 

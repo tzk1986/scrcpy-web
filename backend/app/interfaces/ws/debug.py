@@ -146,9 +146,12 @@ async def debug_stream(websocket: WebSocket, session_id: str, debug_service: Deb
                 ):
                     await _send_bad_message(websocket)
                     continue
-                await debug_service.set_subscriber_filter(session_id, websocket, level, tag, paused)
+                applied = await debug_service.set_subscriber_filter(
+                    session_id, websocket, level, tag, paused)
                 await websocket.send_json({
                     "type": "filter_applied",
+                    # 方案 51 C16：未命中订阅者（未先 subscribe）回 false，消除假确认
+                    "filter_applied": applied,
                     "level": level,
                     "tag": tag,
                     "paused": paused,

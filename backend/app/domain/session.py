@@ -13,7 +13,8 @@ DebugSession 跟踪：
     - Shell 历史：在此会话中执行的 shell 命令的有序列表。
     - 活动时间戳：created_at 和 last_active 用于空闲检测。
 
-会话 ID 格式："{device_id}_{user_id}_{unix_timestamp}"
+会话 ID 格式：不透明随机标识（uuid4 前 12 位十六进制，方案 51 C14 勘误——
+旧文档的 device/user/时间戳拼接式早已废弃，设备与用户信息不进入 ID）。
 
 每次交互（收到日志、执行 shell 命令）都应调用 `touch()` 方法
 以保持会话"活跃"用于空闲超时检测。
