@@ -1,7 +1,7 @@
 """WS perf 端点（interfaces/ws/performance.py）消息形状测试（方案 24 §6-10 + 方案 37 D3）。
 
 样式沿用 test_ws_debug.py：手写 Fake（不依赖真机 / Starlette 运行时），直调 handler。
-方案 37 D3：handler 改走 service._metrics_to_dict 序列化——替身委托真实实现，
+方案 37 D3：handler 改走 service.metrics_to_dict 序列化——替身委托真实实现，
 锁定 12 键形状（旧 8 键相对序不变 + 新 4 键 + alerts 恒在末尾）。
 """
 
@@ -13,7 +13,7 @@ from app.interfaces.ws.performance import stream_metrics
 
 
 class FakeMetrics:
-    """PerformanceMetrics 最小替身（handler 经 _metrics_to_dict 读属性）。"""
+    """PerformanceMetrics 最小替身（handler 经 metrics_to_dict 读属性）。"""
 
     def __init__(self, ts: float = 1726000000.5) -> None:
         self.ts = ts
@@ -45,9 +45,9 @@ class FakePerfService:
         self.alert_calls.append((device_id, sample_ts))
         return self._alerts
 
-    def _metrics_to_dict(self, m) -> dict:
+    def metrics_to_dict(self, m) -> dict:
         """委托真实实现，保证替身序列化形状与生产一致。"""
-        return PerformanceService._metrics_to_dict(self, m)
+        return PerformanceService.metrics_to_dict(self, m)
 
 
 class FakeWebSocket:

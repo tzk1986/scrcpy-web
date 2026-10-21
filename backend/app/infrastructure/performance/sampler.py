@@ -44,7 +44,7 @@ class PerformanceMetrics:
     current_activity: str     # 当前前台 Activity 组件名
     top_package: str          # 当前前台应用包名
     # fps 是否为本轮实测值（沿用 _last_fps / 空窗为 False）。仅服务端告警判定用，
-    # 不进 _metrics_to_dict / WS 消息 / 落库（方案 24 §4.3）
+    # 不进 metrics_to_dict / WS 消息 / 落库（方案 24 §4.3）
     fps_fresh: bool = False
     # ---- 方案 37 D3 新增（带默认值保旧构造；辅助指标失败降级为默认值） ----
     cpu_processes: list[CpuProcessInfo] = field(default_factory=list)  # 进程级 CPU 明细

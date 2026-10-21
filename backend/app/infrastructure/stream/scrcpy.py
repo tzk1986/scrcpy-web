@@ -47,6 +47,7 @@ from app.core.config import settings
 from app.core.exceptions import ScrcpyOccupiedError
 from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
+from app.core.units import parse_bit_rate
 from app.domain.ports import EncoderOpts
 from app.scrcpy.server_manager import ServerManager
 from app.scrcpy.control_sender import ControlSender, ACTION_DOWN, ACTION_UP, ACTION_MOVE
@@ -203,15 +204,8 @@ class ScrcpyEncoder:
         except Exception:
             pass  # 忽略清理错误（可能本来就不存在）
 
-        # 3. 转换 bit_rate 格式
-        bit_rate_value: int | str = opts.bit_rate
-        if isinstance(bit_rate_value, str):
-            if bit_rate_value.endswith("M"):
-                bit_rate_value = int(float(bit_rate_value[:-1]) * 1000000)
-            elif bit_rate_value.endswith("K"):
-                bit_rate_value = int(float(bit_rate_value[:-1]) * 1000)
-            else:
-                bit_rate_value = int(bit_rate_value)
+        # 3. 转换 bit_rate 格式（方案 51 B12：复用 core.units 单点解析）
+        bit_rate_value: int = parse_bit_rate(opts.bit_rate)
 
         # 4. 设置端口转发（必须在 server 启动前完成）
         logger.info(

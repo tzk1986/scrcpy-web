@@ -73,10 +73,12 @@ def aggregate_aus(
         nalu_type = _nalu_type(nalu)
 
         if nalu_type == NALU_TYPE_AUD:
-            # 显式分界：闭合既有内容，AUD 成为新 AU 的首 NALU
-            if prefix or current:
+            # 显式分界（方案 51 B9）：仅闭合已含 VCL 的 current——纯悬空
+            # 前缀不再产出无 VCL 空 AU，保留在 prefix 随返回值携带
+            # （对齐模块 docstring「无 VCL 可挂靠的悬空前缀通过返回值携带」）。
+            if current:
                 aus.append(b''.join(prefix + current))
-            prefix = []
+                prefix = []
             current = [nalu]
             current_vcl = False
         elif nalu_type in _PREFIX_TYPES:

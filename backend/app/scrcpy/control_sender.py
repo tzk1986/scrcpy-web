@@ -7,7 +7,7 @@ scrcpy 二进制控制协议
 
 协议格式验证：
     - 触摸事件：32 字节（type + action + pointer_id + position + pressure + buttons）
-    - 按键事件：13 字节（type + action + keycode + repeat + metaState）
+    - 按键事件：14 字节（type + action + keycode + repeat + metaState）
     - 文本事件：5 + text 字节（type + length + text）
 
 与 scrcpy-server 控制协议兼容（v4.1~v5.0.1 一致）。
@@ -130,7 +130,7 @@ class ControlSender:
         meta_state: int = 0,
     ) -> None:
         """
-        发送按键事件（13 字节）。
+        发送按键事件（14 字节）。
 
         参数：
             keycode: Android keycode（如 KEYCODE_HOME=3, KEYCODE_BACK=4）
@@ -140,7 +140,7 @@ class ControlSender:
 
         格式：
             type(1) + action(1) + keycode(4) + repeat(4) + metaState(4)
-            = 13 字节
+            = 14 字节（方案 51 B11 勘误：1+1+4+4+4）
         """
         package = struct.pack(">B", TYPE_INJECT_KEYCODE)
         package += struct.pack(

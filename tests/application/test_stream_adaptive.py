@@ -15,8 +15,8 @@ import asyncio
 
 import pytest
 
-from app.application.bitrate_advisor import parse_bit_rate
 from app.application.stream_service import StreamService
+from app.core.units import parse_bit_rate
 from app.core.config import settings
 from app.infrastructure.stream.scrcpy import EncoderStalledError
 

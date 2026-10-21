@@ -435,7 +435,7 @@ data: {"type": "disconnected", "device_id": "..."}
 
 ### 2.6 性能（`/api/perf`）
 
-性能指标对象字段（`PerformanceService._metrics_to_dict`）：
+性能指标对象字段（`PerformanceService.metrics_to_dict`）：
 `ts`、`cpu_percent`、`total_memory_mb`、`used_memory_mb`、`fps`、`jank_count`、`current_activity`、`top_package`。
 
 #### GET /api/perf/{device_id}/metrics

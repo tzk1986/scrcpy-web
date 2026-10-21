@@ -15,7 +15,7 @@
 import asyncio
 import json
 from collections import deque
-from typing import Any, AsyncIterator
+from typing import Any, AsyncGenerator
 
 from app.application.alert_engine import AlertEngine, build_rules
 from app.core.config import settings
@@ -236,9 +236,10 @@ class PerformanceService:
 
         # 返回最新的 limit 条
         recent = list(buffer)[-limit:]
-        return [self._metrics_to_dict(m) for m in recent]
+        return [self.metrics_to_dict(m) for m in recent]
 
-    async def stream_metrics(self, device_id: str) -> AsyncIterator[PerformanceMetrics]:
+    async def stream_metrics(self, device_id: str) -> AsyncGenerator[PerformanceMetrics, None]:
+        # 方案 51 E15：返回类型改准为 AsyncGenerator——ws 侧 aclosing 需 aclose 契约
         """
         实时推送性能指标。
 
@@ -284,8 +285,10 @@ class PerformanceService:
             if not self._subscribers.get(device_id) and device_id not in self._recorders:
                 self._schedule_idle_guard(device_id)
 
-    def _metrics_to_dict(self, m: PerformanceMetrics) -> dict[str, Any]:
+    def metrics_to_dict(self, m: PerformanceMetrics) -> dict[str, Any]:
         """将 PerformanceMetrics 转为字典（用于 JSON 序列化）。
+
+        方案 51 E15：转公开——ws 层跨层直调私有方法的形态消除。
 
         方案 37 D3：旧 8 键相对序与值零变化，末尾追加 4 新键。
         cpu_processes 必须纯值 dict 化——dataclass 列表无法被
@@ -407,7 +410,7 @@ class PerformanceService:
             device_id, from_ts=from_ts, to_ts=to_ts, limit=limit
         )
         # 方案 37 D4：缓存源 cpu_processes 为 JSON 串（TEXT 列），parse 回
-        # list 使 cache 源与 buffer 源（_metrics_to_dict 纯值 list）JSON
+        # list 使 cache 源与 buffer 源（metrics_to_dict 纯值 list）JSON
         # 导出形态一致；坏数据/None/旧行缺列 → [] 容错，不炸导出。
         for row in rows:
             row["cpu_processes"] = self._parse_cpu_processes(

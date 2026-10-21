@@ -151,7 +151,7 @@ package += struct.pack(">Biii",
     keycode,   # i: 4 bytes
     repeat,    # i: 4 bytes
     0)         # i: 4 bytes (metaState)
-# 总计: 1 + (1+4+4+4) = 13 字节 ✓
+# 总计: 1 + (1+4+4+4) = 14 字节 ✓（方案 51 B11 勘误：原式子自算 14 却写 13）
 ```
 
 **验证结果**：✅ 格式完全匹配。

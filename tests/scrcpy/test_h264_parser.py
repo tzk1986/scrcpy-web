@@ -325,6 +325,38 @@ class TestBufferAndReset:
         # 两次解析结果应该相同
         assert nalus1[0] == nalus2[0]
 
+    def test_garbage_stream_over_limit_resets(self):
+        """方案 51 B8：无起始码垃圾流超 8MB 上限→复位缓冲，不再无界涨存"""
+        parser = H264Parser()
+        limit = H264Parser._BUFFER_LIMIT
+        # 超过上限的垃圾（0x01 填充，无 00 00 01 起始码模式）
+        garbage = b"\x01" * (limit + 1024)
+        nalus = parser.feed(garbage)
+        assert nalus == []
+        assert len(parser._buffer) == 0
+        # 复位后正常数据仍可解析
+        sc = b"\x00\x00\x00\x01\x65" + b"\x11" * 16 + b"\x00\x00\x00\x01\x41" + b"\x22" * 8
+        out = parser.feed(sc)
+        assert len(out) >= 1
+
+    def test_over_limit_warns_once_then_debug(self, monkeypatch):
+        """B8 告警纪律：首次复位 warn，后续复位降 debug"""
+        import app.scrcpy.h264_parser as mod
+
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(mod.logger, "warning",
+                            lambda event, **kw: calls.append(("warn", event)))
+        monkeypatch.setattr(mod.logger, "debug",
+                            lambda event, **kw: calls.append(("debug", event)))
+        parser = H264Parser()
+        limit = H264Parser._BUFFER_LIMIT
+        chunk = b"\x01" * (limit + 16)
+        parser.feed(chunk)
+        parser.feed(chunk)
+        reset_events = [c for c in calls if c[1] == "h264_buffer_overflow_reset"]
+        assert reset_events[0] == ("warn", "h264_buffer_overflow_reset")
+        assert ("debug", "h264_buffer_overflow_reset") in reset_events
+
 
 # ---------------------------------------------------------------------------
 # 边界情况测试

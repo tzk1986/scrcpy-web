@@ -107,6 +107,23 @@ class TestPendingCarry:
         assert aus == []
         assert pending == [sps, pps]
 
+    def test_aud_does_not_emit_prefix_only_empty_au(self):
+        """方案 51 B9：悬空前缀后到 AUD 不闭合空 AU——前缀随 AUD 进 pending"""
+        sps, pps, aud = (nalu(t) for t in (NALU_TYPE_SPS, NALU_TYPE_PPS, NALU_TYPE_AUD))
+        aus, pending = aggregate_aus([sps, pps, aud])
+        assert aus == []
+        assert pending == [sps, pps, aud]
+
+    def test_pending_prefix_with_aud_attaches_after_merge(self):
+        """B9 连带：pending=[前缀…,AUD] 与下批 VCL 合并后仅产出一个 AU"""
+        sps, pps, aud = (nalu(t) for t in (NALU_TYPE_SPS, NALU_TYPE_PPS, NALU_TYPE_AUD))
+        idr = nalu(NALU_TYPE_IDR)
+        aus1, pending = aggregate_aus([sps, pps, aud])
+        aus2, pending2 = aggregate_aus([idr], pending)
+        assert aus1 == []
+        assert pending2 == []
+        assert aus2 == [aud + sps + pps + idr]
+
     def test_pending_attaches_to_next_batch_vcl(self):
         """上一批 pending 前缀挂靠下一批首个 VCL"""
         sps, pps, idr = (nalu(t) for t in (NALU_TYPE_SPS, NALU_TYPE_PPS, NALU_TYPE_IDR))

@@ -7,7 +7,7 @@
 提供实时性能指标推送：
 - WS /ws/perf/{device_id}  实时推送性能指标
 
-消息格式（前 12 键来自 service._metrics_to_dict，方案 37 D3 追加 4 键）：
+消息格式（前 12 键来自 service.metrics_to_dict，方案 37 D3 追加 4 键）：
     服务端 → 客户端：
         {
             "ts": 1726045200.123,
@@ -29,6 +29,8 @@
 
 参考方案文档：方案/14-调试面板其他标签完善.md
 """
+
+from contextlib import aclosing
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 
@@ -65,12 +67,15 @@ async def stream_metrics(
     logger.info("performance_ws_connected", device=device_id)
 
     try:
-        # 实时推送指标：序列化收敛到 service._metrics_to_dict（方案 37 D3 DRY），
-        # 新键自动携带；alerts 语义与旧实现一致（取样本 ts 的活动快照）
-        async for metrics in service.stream_metrics(device_id):
-            data = service._metrics_to_dict(metrics)
-            data["alerts"] = service.get_alerts(device_id, metrics.ts)
-            await websocket.send_json(data)
+        # 实时推送指标：序列化收敛到 service.metrics_to_dict（方案 37 D3 DRY），
+        # 新键自动携带；alerts 语义与旧实现一致（取样本 ts 的活动快照）。
+        # 方案 51 E15：aclosing 显式收口上游 asyncgen——客户端断开时
+        # 立即执行其 finally（退订/释放），不再残留至 GC。
+        async with aclosing(service.stream_metrics(device_id)) as agen:
+            async for metrics in agen:
+                data = service.metrics_to_dict(metrics)
+                data["alerts"] = service.get_alerts(device_id, metrics.ts)
+                await websocket.send_json(data)
 
     except WebSocketDisconnect:
         logger.info("performance_ws_disconnected", device=device_id)

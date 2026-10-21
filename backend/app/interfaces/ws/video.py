@@ -485,9 +485,9 @@ async def _handle_input(device_id: str, data: dict[str, Any], stream_service: St
         logger.warning("no_encoder_for_input", device=device_id)
         return
 
-    # 方案 33：输入热路径（拖动可秒级数十条）降 debug 防刷屏
+    # 方案 33：输入热路径（拖动可秒级数十条）降 debug 防刷屏。
+    # 方案 51 B13：撤 encoder._control_sender 私有直读，仅留公开字段。
     logger.debug("sending_input_via_encoder", device=device_id,
-                resolution=encoder.resolution,
-                has_control_sender=encoder._control_sender is not None)
+                resolution=encoder.resolution)
     await encoder.send_input(data)
     logger.debug("input_sent", device=device_id)

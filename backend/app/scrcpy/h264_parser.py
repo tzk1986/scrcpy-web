@@ -106,9 +106,12 @@ class H264Parser:
     将连续的字节流解析为独立的 NALU 单元。
     """
 
+    _BUFFER_LIMIT = 8 * 1024 * 1024  # 垃圾流缓冲上限（方案 51 B8）
+
     def __init__(self) -> None:
         """初始化解析器，创建空缓冲区。"""
         self._buffer = bytearray()
+        self._overflow_warned = False
 
     def feed(self, data: bytes) -> list[bytes]:
         """
@@ -131,6 +134,16 @@ class H264Parser:
             5. 重复直到没有完整的 NALU
         """
         self._buffer.extend(data)
+        # 方案 51 B8：垃圾流（始终找不到起始码）防御——超上限复位缓冲，
+        # 避免无界涨存；首次复位 warn，后续降 debug。
+        if len(self._buffer) > self._BUFFER_LIMIT:
+            if not self._overflow_warned:
+                self._overflow_warned = True
+                logger.warning("h264_buffer_overflow_reset", size=len(self._buffer))
+            else:
+                logger.debug("h264_buffer_overflow_reset", size=len(self._buffer))
+            self._buffer = bytearray()
+            return []
         nalus: list[bytes] = []
         buf = self._buffer
 

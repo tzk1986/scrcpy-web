@@ -284,7 +284,7 @@ async def test_sampling_loop_evaluates_each_round():
 # ---------------------------------------------------------------------------
 
 def test_metrics_to_dict_includes_new_keys():
-    """_metrics_to_dict 追加 4 新键；旧 8 键相对序与值零变化。"""
+    """metrics_to_dict 追加 4 新键；旧 8 键相对序与值零变化。"""
     m = PerformanceMetrics(
         ts=1726045200.123, cpu_percent=23.5, total_memory_mb=4096.0,
         used_memory_mb=2048.0, fps=60.0, jank_count=0,
@@ -295,7 +295,7 @@ def test_metrics_to_dict_includes_new_keys():
     )
     service = PerformanceService(DeadAdb())
 
-    d = service._metrics_to_dict(m)
+    d = service.metrics_to_dict(m)
 
     # 旧 8 键相对序零变化
     assert list(d.keys())[:8] == [
@@ -325,4 +325,4 @@ def test_metrics_to_dict_output_json_serializable():
     )
     service = PerformanceService(DeadAdb())
 
-    json.dumps(service._metrics_to_dict(m))  # 不抛
+    json.dumps(service.metrics_to_dict(m))  # 不抛

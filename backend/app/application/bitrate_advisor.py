@@ -25,18 +25,6 @@ from collections import deque
 from dataclasses import dataclass
 
 
-def parse_bit_rate(value: str | int) -> int:
-    """解析码率配置值："4M"→4000000、"512K"→512000、int 原样返回。"""
-    if isinstance(value, int):
-        return value
-    s = str(value).strip()
-    if s.upper().endswith("M"):
-        return int(float(s[:-1]) * 1_000_000)
-    if s.upper().endswith("K"):
-        return int(float(s[:-1]) * 1_000)
-    return int(s)
-
-
 @dataclass(frozen=True)
 class AdvisorConfig:
     tiers_bps: tuple[int, ...]   # 降序档位阶梯，如 (8M,4M,2M,1M)
@@ -70,7 +58,7 @@ class BitrateAdvisor:
         )
         self._start_idx = start_idx
         self._idx = start_idx
-        self._samples: deque[float] = deque(maxlen=cfg.window)
+        self._samples: deque[tuple[float, float]] = deque(maxlen=cfg.window)
         self._last_switch: float | None = None
         self._down_baseline: int | None = None   # 最近一次降档前窗口坏样本数
         self._down_from_idx: int | None = None   # 最近一次降档前档位下标
@@ -82,7 +70,8 @@ class BitrateAdvisor:
         return self._tiers[self._idx]
 
     def add_sample(self, now: float, fps: float) -> None:
-        self._samples.append(fps)
+        # 方案 51 B7：存 (now, fps) 对，decide 按时效窗淘汰陈旧样本
+        self._samples.append((now, fps))
 
     def reset(self) -> None:
         """stall 重启后样本作废（方案 34 D3b）：清空样本窗与降档复核态。
@@ -97,6 +86,11 @@ class BitrateAdvisor:
     def decide(self, now: float) -> int | None:
         """返回应切换到的新码率（bps），无需动作返回 None。"""
         cfg = self._cfg
+        # 方案 51 B7：时效窗淘汰——页面隐藏期 fps 上报停摆，回归后不得
+        # 凭旧时刻样本立即换挡。1s 节奏下 cutoff 长度 ≈2×窗口时长。
+        cutoff = now - 2.0 * cfg.window
+        while self._samples and self._samples[0][0] < cutoff:
+            self._samples.popleft()
         if len(self._samples) < cfg.window:
             return None
         if (
@@ -107,8 +101,8 @@ class BitrateAdvisor:
 
         bad_line = cfg.bad_ratio * cfg.target_fps
         good_line = cfg.good_ratio * cfg.target_fps
-        bad = sum(1 for f in self._samples if f < bad_line)
-        good = sum(1 for f in self._samples if f >= good_line)
+        bad = sum(1 for _, f in self._samples if f < bad_line)
+        good = sum(1 for _, f in self._samples if f >= good_line)
 
         # 无效降档复核（方案 21 候选 a）：降档前统计已记录、新窗口已填满。
         # 降档的隐含假设是「码率是瓶颈」；若降档后坏样本未显著下降，假设

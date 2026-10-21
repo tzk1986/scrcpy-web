@@ -75,7 +75,7 @@ NET_ROWS: list[dict[str, Any]] = [
     },
 ]
 
-# 带方案 37 D4 新键的行：模拟 D3 _metrics_to_dict / parse-back 后的两源同形态输出
+# 带方案 37 D4 新键的行：模拟 D3 metrics_to_dict / parse-back 后的两源同形态输出
 PERF_ROWS_NEW: list[dict[str, Any]] = [
     {
         **PERF_ROWS[0],

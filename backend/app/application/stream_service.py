@@ -30,9 +30,10 @@ import time
 from collections import deque
 from typing import Any, AsyncIterator, Callable
 
-from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor, parse_bit_rate
+from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.units import parse_bit_rate
 from app.domain.ports import EncoderOpts
 from app.infrastructure.stream.scrcpy import EncoderStalledError, ScrcpyEncoder
 from config.settings import device_stream_settings

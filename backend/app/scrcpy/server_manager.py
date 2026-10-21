@@ -116,11 +116,12 @@ class ServerManager:
             True 表示推送成功，False 表示失败。
 
         实现：
-            1. 优先从 .bak 恢复（大小校验通过则 mv，~0.1s，恒定）
-            2. 无 bak / 校验失败 / mv 失败 → adb push（D3 回退）
+            1. 优先从 .bak 恢复（大小校验通过则 cp，~0.1s，恒定；
+               bak 常驻不删，0cad4ea 修订）
+            2. 无 bak / 校验失败 / cp 失败 → adb push（D3 回退）
             3. push 成功后 cp 刷新 .bak（cp 失败不阻塞）
         """
-        # D1：bak 常驻设备端，主 JAR 被 server 退出自删后可 mv 秒级恢复，
+        # D1：bak 常驻设备端，主 JAR 被 server 退出自删后可 cp 秒级恢复，
         # 只有首次部署 / JAR 升级 / bak 损坏 / 设备重启清 tmp 才真正 push。
         try:
             expected_size = self._jar_path.stat().st_size
