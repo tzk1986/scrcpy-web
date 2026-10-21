@@ -5,7 +5,6 @@
 测试 InteractiveShell（infrastructure/adb/shell.py）的会话逻辑。
 
 测试内容：
-    - 纯逻辑：prompt 检测正则（_is_prompt_line / _is_empty_prompt）
     - is_alive 属性
     - 生命周期：start（读取初始 prompt / 回调 / 错误处理）
     - _read_until_prompt（EOF / root prompt / 超时吞掉）
@@ -99,36 +98,6 @@ def _feed_marker_responses(shell: InteractiveShell, *chunks: str):
         for chunk in chunks:
             shell._exec_queue.put_nowait(chunk.replace("{marker}", marker))
     return on_write
-
-
-# ---------------------------------------------------------------------------
-# 纯逻辑：prompt 检测正则
-# ---------------------------------------------------------------------------
-
-class TestPromptDetection:
-    """_is_prompt_line / _is_empty_prompt 为纯正则函数。"""
-
-    def test_is_prompt_line_matches_command_echo(self):
-        shell = InteractiveShell()
-        assert shell._is_prompt_line("rk3288:/ $ pwd") is True
-        assert shell._is_prompt_line("shell@rk3288:~ $ ls -l") is True
-        assert shell._is_prompt_line("rk3288:/sdcard $ cat x") is True
-
-    def test_is_prompt_line_rejects_non_prompt(self):
-        shell = InteractiveShell()
-        assert shell._is_prompt_line("just some output") is False
-        # 空命令（$ 后无内容）不匹配 `.+`
-        assert shell._is_prompt_line("rk3288:/ $ ") is False
-
-    def test_is_empty_prompt_matches(self):
-        shell = InteractiveShell()
-        assert shell._is_empty_prompt("rk3288:/ $ ") is True
-        assert shell._is_empty_prompt("shell@rk3288:~ $ ") is True
-
-    def test_is_empty_prompt_rejects_command(self):
-        shell = InteractiveShell()
-        assert shell._is_empty_prompt("rk3288:/ $ pwd") is False
-        assert shell._is_empty_prompt("plain output") is False
 
 
 # ---------------------------------------------------------------------------

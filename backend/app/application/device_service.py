@@ -516,7 +516,8 @@ class DeviceService:
         """
         停止后台设备状态刷新。
 
-        应在应用关闭时调用（如 lifespan.py）。
+        应在应用关闭时调用（如 lifespan.py）。方案 51 A10：同时 cancel
+        `_info_tasks` 全部在途查询，停机不再留孤儿任务。
         """
         if self._refresh_task is None:
             logger.debug("device_refresh_not_running")
@@ -524,6 +525,9 @@ class DeviceService:
 
         logger.info("stopping_device_refresh")
         self._refresh_task.cancel()
+        for task in self._info_tasks.values():
+            task.cancel()
+        self._info_tasks.clear()
         try:
             await self._refresh_task
         except asyncio.CancelledError:

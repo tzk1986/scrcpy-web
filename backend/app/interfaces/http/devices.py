@@ -478,18 +478,20 @@ async def disconnect_device(
         {"success": True}。
 
     异常：
-        InvalidIdentifierError: 端口段非数字或越界（400，A1 L3；
-        原裸 int() 会落 500 兜底）。
+        InvalidIdentifierError: 无冒号（USB 序列号，方案 51 A06——本端点仅
+        TCP 断开，USB 下线走 DELETE /devices/{id}）、端口段非数字或越界
+        （400，A1 L3；原裸 int() 会落 500 兜底）。
     """
-    # 从 device_id 解析 ip 和 port
-    if ":" in device_id:
-        ip, _, port_text = device_id.partition(":")
-        if port_text:
-            # isdecimal 而非 isdigit：后者放行 "²" 等 int() 不可解析字符（A1 L3）
-            if not port_text.isdecimal() or not 1 <= int(port_text) <= 65535:
-                raise InvalidIdentifierError("port")
-            port = int(port_text)
-        else:
-            port = 5555
-        await service.disconnect_tcp(ip, port)
+    # 方案 51 A06：无冒号即 400，消除 USB 序列号假成功 no-op
+    if ":" not in device_id:
+        raise InvalidIdentifierError("device_id")
+    ip, _, port_text = device_id.partition(":")
+    if port_text:
+        # isdecimal 而非 isdigit：后者放行 "²" 等 int() 不可解析字符（A1 L3）
+        if not port_text.isdecimal() or not 1 <= int(port_text) <= 65535:
+            raise InvalidIdentifierError("port")
+        port = int(port_text)
+    else:
+        port = 5555
+    await service.disconnect_tcp(ip, port)
     return {"success": True}

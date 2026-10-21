@@ -227,15 +227,6 @@ class AdbDriver(Protocol):
     所有方法都是异步的，因为 ADB 操作涉及 I/O（USB/WiFi）。
     """
 
-    async def list_devices(self) -> list[str]:
-        """
-        列出已连接设备的序列号。
-
-        返回：
-            ADB 序列字符串列表（如 ["emulator-5554", "192.168.1.5:5555"]）。
-        """
-        ...
-
     async def list_device_states(self) -> dict[str, str]:
         """
         列出 adb 设备表全部行的 {序列号: 状态}。

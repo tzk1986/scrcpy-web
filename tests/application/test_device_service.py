@@ -45,7 +45,6 @@ def mock_adb():
         MagicMock: 所有方法都是 AsyncMock 的 ADB 驱动模拟。
     """
     adb = MagicMock()
-    adb.list_devices = AsyncMock(return_value=[])
     adb.list_device_states = AsyncMock(return_value={})
     adb.get_device_info = AsyncMock()
     adb.shell = AsyncMock(return_value="")

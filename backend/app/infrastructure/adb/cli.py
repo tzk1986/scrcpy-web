@@ -473,22 +473,6 @@ class AdbCliDriver:
             "-s", device_id, *args, timeout=timeout, decode_errors=decode_errors
         )
 
-    async def list_devices(self) -> list[str]:
-        """
-        列出已连接设备的序列号。
-
-        解析 `adb devices` 的输出，格式如：
-            List of devices attached
-            emulator-5554    device
-            192.168.1.5:5555 device
-
-        返回：
-            序列号列表（只包含有 "device" 的行）。
-        """
-        output = await self._run("devices")
-        lines = output.split("\n")[1:]  # 跳过标题行
-        return [line.split()[0] for line in lines if "device" in line]
-
     async def get_device_info(self, device_id: str) -> DeviceInfo:
         """
         通过 ADB shell 查询设备属性并构建 DeviceInfo。
@@ -671,25 +655,6 @@ class AdbCliDriver:
             stderr_task.cancel()
             if proc.returncode is None:
                 proc.kill()
-
-    async def check_connection(self, device_id: str) -> bool:
-        """
-        检查设备是否仍然连接。
-
-        通过执行一个简单的 shell 命令来检测设备是否在线。
-
-        参数：
-            device_id: ADB 序列号。
-
-        返回：
-            True 表示设备在线，False 表示设备离线。
-        """
-        try:
-            await self._run_serial(device_id, "shell", "echo", "ping")
-            return True
-        except AdbError:
-            logger.debug("device_not_connected", device=device_id)
-            return False
 
     async def connect_tcp(self, ip: str, port: int = 5555, timeout: int | None = None) -> str:
         """
@@ -1416,7 +1381,8 @@ class AdbCliDriver:
         设备端删除文件（方案 37 B2）。
 
         `adb shell rm -f <remote>`，设备端即清；失败仅打警告不抛
-        （幂等语义，删除失败不是严重错误）。
+        （幂等语义，删除失败不是严重错误）。方案 51 E14：兜 Exception
+        保 stop 收尾不炸——CancelledError 先 re-raise，取消语义不变。
 
         参数：
             device_id: ADB 序列号。
@@ -1424,8 +1390,12 @@ class AdbCliDriver:
         """
         try:
             await self._run_serial(device_id, "shell", "rm", "-f", remote_path)
-        except AdbError:
-            logger.warning("rm_remote_failed", device=device_id, remote=remote_path)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "rm_remote_failed", device=device_id, remote=remote_path, error=str(exc)
+            )
 
     async def get_runtime_info(self, device_id: str) -> RuntimeInfo:
         """

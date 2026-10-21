@@ -75,7 +75,6 @@ def mock_adb():
     from app.domain.ports import AdbDriver
 
     mock = MagicMock(spec=AdbDriver)
-    mock.list_devices = AsyncMock(return_value=["emulator-5554"])
     mock.get_device_info = AsyncMock()
     mock.shell = AsyncMock(return_value="mock output")
     return mock

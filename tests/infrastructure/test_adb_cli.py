@@ -81,49 +81,6 @@ class TestAdbRun:
 
 
 # ---------------------------------------------------------------------------
-# 设备列表测试
-# ---------------------------------------------------------------------------
-
-class TestListDevices:
-    """测试 list_devices 方法"""
-
-    @pytest.mark.asyncio
-    async def test_list_devices_success(self, mock_device_id, mock_adb_success):
-        """测试成功列出设备"""
-        async def mock_proc(*args, **kwargs):
-            proc = MagicMock()
-            proc.returncode = 0
-            proc.communicate = AsyncMock(return_value=(
-                b"List of devices attached\nemulator-5554    device\n",
-                b""
-            ))
-            return proc
-
-        with patch('asyncio.create_subprocess_exec', side_effect=mock_proc):
-            driver = AdbCliDriver()
-            devices = await driver.list_devices()
-            assert len(devices) == 1
-            assert devices[0] == "emulator-5554"
-
-    @pytest.mark.asyncio
-    async def test_list_devices_empty(self, mock_adb_success):
-        """测试没有连接设备"""
-        async def mock_proc(*args, **kwargs):
-            proc = MagicMock()
-            proc.returncode = 0
-            proc.communicate = AsyncMock(return_value=(
-                b"List of devices attached\n",
-                b""
-            ))
-            return proc
-
-        with patch('asyncio.create_subprocess_exec', side_effect=mock_proc):
-            driver = AdbCliDriver()
-            devices = await driver.list_devices()
-            assert len(devices) == 0
-
-
-# ---------------------------------------------------------------------------
 # 设备信息测试
 # ---------------------------------------------------------------------------
 
@@ -220,30 +177,6 @@ class TestGetDeviceInfo:
 
         assert info.battery == 85
         assert peak >= 2
-
-
-# ---------------------------------------------------------------------------
-# 连接稳定性测试
-# ---------------------------------------------------------------------------
-
-class TestCheckConnection:
-    """测试 check_connection 方法"""
-
-    @pytest.mark.asyncio
-    async def test_check_connection_online(self, mock_device_id, mock_adb_success):
-        """测试设备在线"""
-        with patch('asyncio.create_subprocess_exec', side_effect=mock_adb_success):
-            driver = AdbCliDriver()
-            result = await driver.check_connection(mock_device_id)
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_check_connection_offline(self, mock_device_id, mock_adb_failure):
-        """测试设备离线"""
-        with patch('asyncio.create_subprocess_exec', side_effect=mock_adb_failure):
-            driver = AdbCliDriver()
-            result = await driver.check_connection(mock_device_id)
-            assert result is False
 
 
 # ---------------------------------------------------------------------------

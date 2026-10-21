@@ -121,7 +121,7 @@ async def main() -> int:
     v = Verdicts()
     tmp_root = Path(tempfile.mkdtemp(prefix="s39_local_"))
 
-    devices = await adb.list_devices()
+    devices = await adb.list_device_states()
     if dev not in devices:
         print(f"设备 {dev} 不在线（在线：{devices}）", flush=True)
         return 2

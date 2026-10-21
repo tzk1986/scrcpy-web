@@ -34,7 +34,6 @@
 """
 
 import asyncio
-import re
 import sys
 import uuid
 from typing import AsyncGenerator, Callable
@@ -399,25 +398,3 @@ class InteractiveShell:
                         pass
             self._proc = None
             logger.info("shell_stopped", device=self._device_id)
-
-    def _is_prompt_line(self, text: str) -> bool:
-        """
-        检测是否为 shell prompt 行（命令回显）。
-
-        示例：
-          - `rk3288:/ $ pwd`
-          - `shell@rk3288:~ $ pwd`
-          - `rk3288:/sdcard $ ls`
-        """
-        # Prompt 格式：<hostname>:<path> $ <command>
-        return bool(re.match(r'^[^\$]+\$ .+$', text))
-
-    def _is_empty_prompt(self, text: str) -> bool:
-        """
-        检测是否为空 prompt 行。
-
-        示例：
-          - `rk3288:/ $ `
-          - `shell@rk3288:~ $ `
-        """
-        return bool(re.match(r'^[^\$]+\$ $', text))

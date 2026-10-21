@@ -11,7 +11,7 @@
     - POST /api/devices/connect                ip/port 透传 + 默认端口
     - POST /api/devices/pair                   无线调试配对（方案 47 T4：参数校验 400 / 失败分类）
     - POST /api/devices/scan                   CIDR 校验（422）/ 互斥（409）/ 序列化（方案 36）
-    - POST /api/devices/{id}/disconnect        "ip:port" 解析 / 无冒号不过滤
+    - POST /api/devices/{id}/disconnect        "ip:port" 解析 / 无冒号 400（A06）
     - GET  /api/devices/events                 SSE 响应头、事件负载、断连回调清理
 
 SSE 端点不通过 HTTP 层测试：本环境 starlette TestClient / httpx ASGITransport
@@ -501,14 +501,14 @@ def test_disconnect_device_with_port(fake: FakeDeviceService) -> None:
     assert fake.calls == [("disconnect_tcp", "192.168.1.5", 5555)]
 
 
-def test_disconnect_device_without_port(fake: FakeDeviceService) -> None:
-    """device_id 无冒号（USB 序列号）→ 不调用 disconnect_tcp，仍返回 success。"""
+def test_disconnect_device_without_port_400(fake: FakeDeviceService) -> None:
+    """device_id 无冒号（USB 序列号）→ 400（方案 51 A06：消除假成功 no-op）。"""
     client = make_client()
     with override(get_device_service, fake):
         response = client.post(f"/api/devices/{DEV}/disconnect")
 
-    assert response.status_code == 200
-    assert response.json() == {"success": True}
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_IDENTIFIER"
     assert fake.calls == []
 
 
