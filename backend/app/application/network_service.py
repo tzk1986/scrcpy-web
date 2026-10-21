@@ -19,8 +19,8 @@ from collections import deque
 from typing import Any
 
 from app.application.alert_engine import AlertEngine, build_rules
+from app.application.recording_support import RecordingSupportMixin
 from app.core.config import settings
-from app.core.exceptions import RecordingDisabledError
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver, MetricsRepository
 from app.infrastructure.network.sampler import (
@@ -34,7 +34,7 @@ from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 logger = get_logger(__name__)
 
 
-class NetworkService:
+class NetworkService(RecordingSupportMixin):
     """
     网络监控服务。
 
@@ -69,6 +69,13 @@ class NetworkService:
         self._record_reasons: dict[str, str] = {}
         # 告警引擎挂点（方案 24）：按设备实例化，随采样任务释放
         self._alert_engines: dict[str, AlertEngine] = {}
+
+    # 录制/守卫三件套/清理的公共实现挂在 RecordingSupportMixin（方案 51 E11），
+    # 事件名前缀与采样统计表由此声明。
+    _recording_domain = "network"
+
+    async def _sample_stats(self, device_id: str) -> tuple[int, float | None, float | None]:
+        return await self._metrics_repo.network_sample_stats(device_id)
 
     # ------------------------------------------------------------------
     # 监控生命周期
@@ -160,10 +167,8 @@ class NetworkService:
             # cancel 路径由 stop_monitoring 统一 finalize。
             if not cancelled:
                 await self._finalize_recording(device_id, "device_lost")
-            self._tasks.pop(device_id, None)
-            self._samplers.pop(device_id, None)
-            self._buffers.pop(device_id, None)
-            self._alert_engines.pop(device_id, None)
+            # 方案 51 E11：释放改走 _release_device 单点（对齐 Perf，§3.1 即用即清）
+            self._release_device(device_id)
 
     async def stop_monitoring(self, device_id: str, record_reason: str = "stopped") -> None:
         """
@@ -185,11 +190,20 @@ class NetworkService:
                 pass
 
         await self._finalize_recording(device_id, record_reason)
+        self._release_device(device_id)
+
+        logger.info("network_monitoring_stopped", device=device_id)
+
+    def _release_device(self, device_id: str) -> None:
+        """统一释放设备的采样任务、采样器与暂存缓冲（幂等，方案 51 E11）。
+
+        stop_monitoring 与采样循环 finally（失联自然结束路径）都走这里，
+        保证暂存态即用即清（方案 18 §3.1，口径对齐 PerformanceService）。
+        """
+        self._tasks.pop(device_id, None)
         self._samplers.pop(device_id, None)
         self._buffers.pop(device_id, None)
         self._alert_engines.pop(device_id, None)
-
-        logger.info("network_monitoring_stopped", device=device_id)
 
     # ------------------------------------------------------------------
     # 读取（HTTP 层入口）
@@ -272,81 +286,9 @@ class NetworkService:
             "wifi_ssid": s.wifi_ssid,
         }
 
-    # ------------------------------------------------------------------
-    # 录制（缓存态落盘，方案 18 Step 3）
-    # ------------------------------------------------------------------
-
-    async def _finalize_recording(self, device_id: str, reason: str) -> int:
-        """结束录制：stop 录制器（final flush）并记录停止原因（幂等）。
-
-        返回本次录制落盘行数；未在录制时返回 0。
-        """
-        recorder = self._recorders.pop(device_id, None)
-        if recorder is None:
-            return 0
-        rows = await recorder.stop()
-        self._record_reasons[device_id] = reason
-        logger.info(
-            "network_recording_stopped",
-            device=device_id,
-            reason=reason,
-            rows=rows,
-        )
-        return rows
-
-    async def record_start(self, device_id: str) -> dict[str, Any]:
-        """
-        开启录制（幂等）：已录制时返回现状态；未录制时拉起采样循环
-        并挂接批写录制器。metrics.recording=false 时抛
-        RecordingDisabledError（不静默，§3.6）。
-        """
-        if not settings().metrics.recording:
-            raise RecordingDisabledError()
-        if device_id in self._recorders:
-            return await self.record_status(device_id)
-        if device_id not in self._tasks:
-            await self.start_monitoring(device_id)
-
-        recorder = MetricRecorder(self._metrics_repo)
-        await recorder.start()
-        self._recorders[device_id] = recorder
-        self._record_reasons.pop(device_id, None)
-        logger.info("network_recording_started", device=device_id)
-        return await self.record_status(device_id)
-
-    async def record_stop(self, device_id: str) -> dict[str, Any]:
-        """
-        停止录制并停采（幂等）。返回 {recording, reason, rows}，
-        rows 为本次录制落盘行数；未在录制时 rows=0。
-        """
-        rows = await self._finalize_recording(device_id, "stopped")
-        await self.stop_monitoring(device_id)
-        return {
-            "recording": False,
-            "reason": self._record_reasons.get(device_id),
-            "rows": rows,
-        }
-
-    async def record_status(self, device_id: str) -> dict[str, Any]:
-        """
-        录制状态：{recording, reason, rows, oldest_ts, newest_ts}。
-
-        rows/oldest_ts/newest_ts 为跨批次聚合值（§3.3 S13）；
-        进程重启后运行态丢失 → recording:false。
-        录制中先 flush 批写缓冲，保证行数与区间口径准确。
-        """
-        recording = device_id in self._recorders
-        if recording:
-            recorder = self._recorders[device_id]
-            await recorder.flush()
-        rows, oldest, newest = await self._metrics_repo.network_sample_stats(device_id)
-        return {
-            "recording": recording,
-            "reason": None if recording else self._record_reasons.get(device_id),
-            "rows": rows,
-            "oldest_ts": oldest,
-            "newest_ts": newest,
-        }
+    # 录制三态（record_start/stop/status）与 _finalize_recording 走
+    # RecordingSupportMixin 公共实现（方案 51 E11），本域差异仅
+    # _sample_stats / _recording_domain（见类头）。
 
     # ------------------------------------------------------------------
     # 导出（交付态，方案 18 Step 4）
@@ -373,35 +315,8 @@ class NetworkService:
     # ------------------------------------------------------------------
     # 空闲守卫（暂存态清零）
     # ------------------------------------------------------------------
-
-    def _schedule_idle_guard(self, device_id: str) -> None:
-        """安排空闲守卫任务（同设备已有未完成守卫时跳过）。"""
-        existing = self._idle_guards.get(device_id)
-        if existing is not None and not existing.done():
-            return
-        self._idle_guards[device_id] = asyncio.create_task(
-            self._idle_guard(device_id)
-        )
-
-    async def _cancel_idle_guard(self, device_id: str) -> None:
-        """取消并回收空闲守卫任务（幂等）。
-
-        守卫复查路径的调用者就是守卫任务自身：此时只注销、不取消，
-        否则 cancel 自身再 await 自身会自死锁。
-
-        等待守卫退出时不用 await guard：Py 3.10 会把调用者的取消经
-        _fut_waiter 转嫁给被等待的 guard 任务，其 CancelledError 抛回
-        调用者后若被吞掉，调用者的取消请求也随之丢失。改为轮询 done，
-        挂起点是 sleep(0) 而非 guard 任务，取消可正常注入调用者。
-        """
-        guard = self._idle_guards.pop(device_id, None)
-        if guard is None or guard.done():
-            return
-        if guard is asyncio.current_task():
-            return
-        guard.cancel()
-        while not guard.done():
-            await asyncio.sleep(0)
+    # schedule/cancel/requeue 三件套走 RecordingSupportMixin（方案 51 E11）；
+    # 复查谓词按域特化（HTTP 轮询时间戳），保留于此。
 
     async def _idle_guard(self, device_id: str) -> None:
         """空闲复查：idle_ttl 后仍无录制且无访问 → stop_monitoring。"""
@@ -425,30 +340,3 @@ class NetworkService:
             if self._idle_guards.get(device_id) is current:
                 self._idle_guards.pop(device_id, None)
 
-    def _requeue_idle_guard(self, device_id: str) -> None:
-        """守卫自查路径的重安排：先注销自身注册，否则 schedule 的去重判断
-        会被「自己仍在注册表且未完成」挡住，导致守卫链断裂。"""
-        current = asyncio.current_task()
-        if self._idle_guards.get(device_id) is current:
-            self._idle_guards.pop(device_id, None)
-        self._schedule_idle_guard(device_id)
-
-    # ------------------------------------------------------------------
-    # 关闭
-    # ------------------------------------------------------------------
-
-    async def cleanup(self) -> None:
-        """清理所有监控任务并释放暂存（服务关闭时调用，幂等）。
-
-        录制中设备 → stopped(reason='shutdown')（§3.6），final flush
-        挂在此处（§3.7）。
-        """
-        for device_id in list(self._tasks.keys()):
-            await self.stop_monitoring(device_id, record_reason="shutdown")
-        # 兜底：无采样任务但仍在录制的孤儿状态
-        for device_id in list(self._recorders.keys()):
-            await self._finalize_recording(device_id, "shutdown")
-        for device_id in list(self._idle_guards.keys()):
-            await self._cancel_idle_guard(device_id)
-
-        logger.info("network_service_cleaned_up")
