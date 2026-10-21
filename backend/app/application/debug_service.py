@@ -58,6 +58,10 @@ logger = get_logger(__name__)
 # 活跃调试会话上限（A1 L2：无鉴权下防会话无界堆积耗尽内存/日志缓冲）
 _MAX_DEBUG_SESSIONS = 32
 
+# 空转会话回收 TTL（秒）：last_active 超此时长且无订阅者即关闭会话。
+# 与 _MAX_DEBUG_SESSIONS 联动——死满 32 槽的锁死由 idle reaper 解除（方案 51 C1）。
+_SESSION_IDLE_TTL_SECONDS = 3600.0
+
 
 class DebugService:
     """无限调试用例。"""
@@ -808,8 +812,37 @@ class DebugService:
                         "cleanup_loop_iteration_failed",
                         error=str(exc),
                     )
+                # 空转会话回收与数据清理并轮执行，各自兜底互不拖累（方案 51 C1）
+                try:
+                    await self._reap_idle_sessions()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "reap_idle_sessions_failed",
+                        error=str(exc),
+                    )
         except asyncio.CancelledError:
             logger.info("cleanup_loop_cancelled")
+
+    async def _reap_idle_sessions(self) -> None:
+        """回收过期空转会话（方案 05 Step 5 / 方案 51 C1）。
+
+        判定：now - last_active > _SESSION_IDLE_TTL_SECONDS 且无 WS 订阅者。
+        有订阅者的会话不回收——前端可能正在看，误杀即断流。
+        close_session 幂等，逐会话兜底防单点异常中断整轮。
+        """
+        now = time.time()
+        expired = [
+            sid
+            for sid, s in self.sessions.items()
+            if now - s.last_active > _SESSION_IDLE_TTL_SECONDS
+            and not self.subscribers.get(sid)
+        ]
+        for sid in expired:
+            try:
+                await self.close_session(sid)
+                logger.info("session_cleaned", session=sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("session_clean_failed", session=sid, error=str(exc))
 
     async def run_cleanup(self) -> dict[str, Any]:
         """

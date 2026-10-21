@@ -270,3 +270,44 @@ async def test_create_session_active_limit():
         await svc.create_session("dev1", "u1")
     assert len(svc.sessions) == _MAX_DEBUG_SESSIONS
     await svc.writer.stop()
+
+
+# ---- 方案 51 C1：idle reaper（空转会话回收，解除 32 槽死锁） ----
+
+
+async def test_reap_idle_expired_no_subscriber_closed():
+    """过期且无订阅者的会话应被回收（close_session 全清理）。"""
+    from app.application.debug_service import _SESSION_IDLE_TTL_SECONDS
+
+    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    session = await svc.create_session("dev1", "u1")
+    session.last_active = time.time() - _SESSION_IDLE_TTL_SECONDS - 1
+    await svc._reap_idle_sessions()
+    assert session.id not in svc.sessions
+    await svc.writer.stop()
+
+
+async def test_reap_idle_expired_with_subscriber_kept():
+    """虽过期但仍有订阅者：不回收（避免掐断在看的会话）。"""
+    from app.application.debug_service import _SESSION_IDLE_TTL_SECONDS
+
+    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    session = await svc.create_session("dev1", "u1")
+    ws = object()
+    await svc.subscribe(session.id, ws)
+    session.last_active = time.time() - _SESSION_IDLE_TTL_SECONDS - 1
+    await svc._reap_idle_sessions()
+    assert session.id in svc.sessions
+    await svc.unsubscribe(session.id, ws)
+    await svc.close_session(session.id)
+    await svc.writer.stop()
+
+
+async def test_reap_idle_fresh_session_kept():
+    """未过期的会话不受影响。"""
+    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    session = await svc.create_session("dev1", "u1")
+    await svc._reap_idle_sessions()
+    assert session.id in svc.sessions
+    await svc.close_session(session.id)
+    await svc.writer.stop()
