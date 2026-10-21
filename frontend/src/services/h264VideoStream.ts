@@ -281,6 +281,9 @@ export class H264VideoStream {
   start() {
     if (this._state === 'streaming' || this._state === 'configuring') return
 
+    // 复位探测态：suspend 后未经 resume/stop 直接 start 时，若留下 _suspended=true，
+    // 后续 config 只暂存、帧只计数不解码 → 永久黑屏（方案 51 F1-01）
+    this._suspended = false
     this._state = 'configuring'
     this._error = null
     this._frameCount = 0

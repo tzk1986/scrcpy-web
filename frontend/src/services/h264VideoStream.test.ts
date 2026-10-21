@@ -1049,6 +1049,28 @@ describe('WS 重连接线（方案 19 终审）', () => {
   })
 })
 
+describe('挂起态重新 start（方案 51 F1-01）', () => {
+  it('suspend 后再 start 复位探测态，config 与帧恢复解码路径', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+    stream.suspend()
+
+    stream.start()
+
+    expect(stream.suspended).toBe(false)
+    // start 后不再处于探测态：config 应直接重建解码器而非只暂存
+    ws.handler!(CONFIG_MSG)
+    expect(FakeVideoDecoder.instances).toHaveLength(2)
+    const rebuilt = FakeVideoDecoder.instances.at(-1)!
+
+    ws.handler!(KEY_FRAME)
+    expect(rebuilt.decode).toHaveBeenCalledTimes(1)
+
+    stream.stop()
+  })
+})
+
 // ---------------------------------------------------------------------------
 // h265（HEVC）解码链路泛化（方案 45 T4）
 // ---------------------------------------------------------------------------
