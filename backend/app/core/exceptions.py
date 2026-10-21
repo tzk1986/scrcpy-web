@@ -322,7 +322,8 @@ class RecordingDeleteError(OpenScrcpyException):
     status_code = 500
 
     def __init__(self, filename: str) -> None:
-        super().__init__(f"录屏产物 {filename} 删除失败", code="RECORDING_DELETE_FAILED")
+        # 方案 51 D07：filename 来自用户输入，回显须走 _clip（与其它回显类统一）
+        super().__init__(f"录屏产物 {_clip(filename)} 删除失败", code="RECORDING_DELETE_FAILED")
 
 
 class InvalidPathError(OpenScrcpyException):

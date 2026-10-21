@@ -7,6 +7,7 @@
 
 import asyncio
 import os
+import shlex
 import shutil
 import tempfile
 import time
@@ -47,7 +48,11 @@ def make_entry(
 
 
 class FakeAdb:
-    """AdbDriver 替身：entries 驱动 stat/list；pull 落假内容；push/rename/delete 记录。"""
+    """AdbDriver 替身：entries 驱动 stat/list；pull 落假内容；push/rename/delete 记录。
+
+    shell 为方案 51 E7 readlink -f 替身：real_paths 未配置的键回显原路径
+    （即无软链语义，存量用例行为不变）。
+    """
 
     def __init__(self) -> None:
         self.entries: dict[str, FileEntry] = {}
@@ -59,6 +64,31 @@ class FakeAdb:
         self.deleted: list[tuple[str, bool]] = []
         self.pull_gate: asyncio.Event | None = None
         self.push_gate: asyncio.Event | None = None
+        self.real_paths: dict[str, str] = {}
+        self.shells: list[str] = []
+        self.shell_raises = False
+        self.readlink_f_broken = False
+
+    async def shell(self, device_id: str, cmd: str) -> str:
+        self.shells.append(cmd)
+        if self.shell_raises:
+            raise AdbError("readlink: command not found")
+        tokens = shlex.split(cmd)
+        path = tokens[-1]
+        if "-f" in tokens:
+            if self.readlink_f_broken:  # A7.1 形态：-f 连真实路径也 rc=1
+                raise AdbError("readlink: rc=1")
+            if path in self.real_paths:
+                return self.real_paths[path]
+            # 模拟 readlink -f 全链解析：父目录命中登记项则前缀替换
+            for k, v in self.real_paths.items():
+                if path.startswith(k + "/"):
+                    return v + path[len(k):]
+            return path  # GNU 语义：非链接也规范化回显
+        # 单级 readlink：仅链接本体有输出，非链接 rc≠0
+        if path in self.real_paths:
+            return self.real_paths[path]
+        raise AdbError("readlink: rc=1 (not a symlink)")
 
     async def list_dir(self, device_id: str, path: str) -> list[FileEntry]:
         self.listed.append(path)
@@ -352,6 +382,98 @@ async def test_delete_mixed_results(svc: FileService, adb: FakeAdb) -> None:
     assert results[0]["ok"] is True
     assert results[3]["ok"] is False and results[3]["error"]
     assert adb.deleted == [("/sdcard/a", False), ("/sdcard/dir", True), ("/sdcard/link", False)]
+
+
+# ---------- 方案 51 E7：设备端 readlink -f 真实路径复核（软链逃逸治理）----------
+
+
+async def test_delete_symlink_escape_403(svc: FileService, adb: FakeAdb) -> None:
+    """/sdcard/link 解析到白名单外 → 预检整体 403，一项不执行。"""
+    adb.entries["/sdcard/link"] = make_entry("link", is_symlink=True)
+    adb.real_paths["/sdcard/link"] = "/system/app/x"
+    with pytest.raises(PermissionDeniedError):
+        await svc.delete("d", ["/sdcard/link"])
+    assert adb.deleted == []
+
+
+async def test_delete_link_targeting_inside_whitelist_ok(svc: FileService, adb: FakeAdb) -> None:
+    """链接解析后仍在白名单内（/sdcard 内互链）→ 放行，rm 语义同旧。"""
+    adb.entries["/sdcard/link"] = make_entry("link", is_symlink=True)
+    adb.real_paths["/sdcard/link"] = "/sdcard/other"
+    results = await svc.delete("d", ["/sdcard/link"])
+    assert results[0]["ok"] is True
+    assert adb.deleted == [("/sdcard/link", False)]
+
+
+async def test_delete_escaped_parent_component_403(svc: FileService, adb: FakeAdb) -> None:
+    """父目录经软链逃逸：/sdcard/ld → /data，删 /sdcard/ld/f 解析出白名单外 → 403。"""
+    adb.entries["/sdcard/ld/f"] = make_entry("f")
+    adb.real_paths["/sdcard/ld/f"] = "/data/f"
+    with pytest.raises(PermissionDeniedError):
+        await svc.delete("d", ["/sdcard/ld/f"])
+    assert adb.deleted == []
+
+
+async def test_rename_source_or_target_escape_403(svc: FileService, adb: FakeAdb) -> None:
+    """重命名源解析到白名单外 → 403，不发 mv。"""
+    adb.entries["/sdcard/link"] = make_entry("link", is_symlink=True)
+    adb.real_paths["/sdcard/link"] = "/system/app/x"
+    with pytest.raises(PermissionDeniedError):
+        await svc.rename("d", "/sdcard/link", "b")
+    assert adb.renamed == []
+
+
+async def test_upload_dest_dir_escape_403(svc: FileService, adb: FakeAdb) -> None:
+    """上传目标目录本身是逃逸软链 → 403，不 push。"""
+    adb.real_paths["/sdcard/up"] = "/system/etc"
+    with pytest.raises(PermissionDeniedError):
+        await svc.upload("d", "/sdcard/up", "n.txt", _chunk_reader([b"x"]))
+    assert adb.pushed == []
+
+
+async def test_upload_name_collision_with_escape_link_403(svc: FileService, adb: FakeAdb) -> None:
+    """落点文件位已是逃逸软链（push 会跟随写目标）→ 复核完整落点 403。"""
+    adb.real_paths["/sdcard/Download/n.txt"] = "/system/app/n.txt"
+    with pytest.raises(PermissionDeniedError):
+        await svc.upload(
+            "d", "/sdcard/Download", "n.txt", _chunk_reader([b"x"])
+        )
+    assert adb.pushed == []
+
+
+async def test_write_ops_pass_with_normal_paths(svc: FileService, adb: FakeAdb) -> None:
+    """正常真实路径（readlink 回显原路径）→ 复核不改变既有行为。"""
+    adb.entries["/sdcard/a"] = make_entry("a")
+    await svc.rename("d", "/sdcard/a", "b")
+    assert adb.renamed == [("/sdcard/a", "/sdcard/b")]
+    job = await svc.upload("d", "/sdcard", "m", _chunk_reader([b"x"]))
+    assert job.status == "done"
+
+
+async def test_readlink_f_broken_falls_back_to_single_level(svc: FileService, adb: FakeAdb) -> None:
+    """.25 实测 A7.1 形态：-f rc=1 → 单级 readlink 兜底仍拦逃逸；非链接降级放行。"""
+    adb.readlink_f_broken = True
+    adb.entries["/data/local/tmp/link"] = make_entry("link", is_symlink=True)
+    adb.real_paths["/data/local/tmp/link"] = "/system/app"
+    with pytest.raises(PermissionDeniedError):
+        await svc.delete("d", ["/data/local/tmp/link"])
+    assert adb.deleted == []
+    # 非链接（-f 与单级皆 rc=1）→ 回显原路径，白名单内照常执行
+    adb.entries["/sdcard/ok.txt"] = make_entry("ok.txt")
+    results = await svc.delete("d", ["/sdcard/ok.txt"])
+    assert results[0]["ok"] is True
+    assert adb.deleted == [("/sdcard/ok.txt", False)]
+
+
+async def test_readlink_unavailable_degrades_to_text_check(svc: FileService, adb: FakeAdb) -> None:
+    """ROM 无 readlink（shell 抛 AdbError）→ 降级保留原文本防线，不阻断写。"""
+    adb.shell_raises = True
+    adb.entries["/sdcard/a"] = make_entry("a")
+    await svc.rename("d", "/sdcard/a", "b")
+    assert adb.renamed == [("/sdcard/a", "/sdcard/b")]
+    # 白名单外的文本拒绝仍然生效（降级不放行越界）
+    with pytest.raises(PermissionDeniedError):
+        await svc.rename("d", "/system/a", "b")
 
 
 # ---------- 任务表 ----------

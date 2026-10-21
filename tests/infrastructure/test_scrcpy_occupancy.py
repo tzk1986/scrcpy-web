@@ -7,6 +7,7 @@
 检测工具缺失降级放行（rc>1 / spawn 异常）、命令模板含防自匹配正则。
 """
 
+import time
 from collections import deque
 from typing import Any
 
@@ -172,3 +173,59 @@ async def test_stop_without_pids_skips_kill(fake_adb) -> None:
     await encoder.stop()
     joined = [" ".join(c) for c in fake_adb.calls]  # type: ignore[attr-defined]
     assert not any("kill -9" in cmd for cmd in joined)
+
+
+# ---------------------------------------------------------------------------
+# 方案 51 B2：收尾中 pids 注册表——重连收尾窗误检「设备残留占用」防御性跳过
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clear_finalizing_registry():
+    """隔离全局注册表，避免用例间互污（stop 用例会写入）。"""
+    scrcpy_module._FINALIZING_PIDS.clear()
+    yield
+    scrcpy_module._FINALIZING_PIDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_stop_registers_finalizing_pids(fake_adb) -> None:
+    """stop() 设备侧 kill 前把本会话 PID 登记为「收尾中」（带过期时刻）。"""
+    encoder = ScrcpyEncoder()
+    encoder._device_id = DEV
+    encoder._remote_pids = ["2256", "2258"]
+    await encoder.stop()
+    entry = scrcpy_module._FINALIZING_PIDS[DEV]
+    assert set(entry) == {"2256", "2258"}
+    assert all(v > time.monotonic() for v in entry.values())
+
+
+@pytest.mark.asyncio
+async def test_stray_all_pids_finalizing_skips(fake_adb) -> None:
+    """命中 PID 全属收尾会话 → 跳过检测放行（不抛、不再读 cmdline）。"""
+    scrcpy_module._FINALIZING_PIDS[DEV] = {"2258": time.monotonic() + 10}
+    fake_adb.append(FakeProc(0, b"/proc/2258/cmdline\n"))
+    encoder = ScrcpyEncoder()
+    await encoder._detect_stray_server(DEV)  # 不抛即通过
+    assert len(fake_adb.calls) == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_stray_partial_finalizing_still_raises(fake_adb) -> None:
+    """命中含注册表外 PID（真实他占并存）→ 仍按原逻辑阻断。"""
+    scrcpy_module._FINALIZING_PIDS[DEV] = {"2258": time.monotonic() + 10}
+    fake_adb.append(FakeProc(0, b"/proc/2258/cmdline\n/proc/2259/cmdline\n"))
+    fake_adb.append(FakeProc(0, OWN_CMDLINE.encode()))
+    encoder = ScrcpyEncoder()
+    with pytest.raises(ScrcpyOccupiedError):
+        await encoder._detect_stray_server(DEV)
+
+
+@pytest.mark.asyncio
+async def test_stray_finalizing_entry_expired_still_raises(fake_adb) -> None:
+    """注册表条目已过期（长残留不再是本会话收尾）→ 正常阻断，并惰性清理。"""
+    scrcpy_module._FINALIZING_PIDS[DEV] = {"2258": time.monotonic() - 1}
+    _queue_hit(fake_adb, OWN_CMDLINE.encode())
+    encoder = ScrcpyEncoder()
+    with pytest.raises(ScrcpyOccupiedError):
+        await encoder._detect_stray_server(DEV)
+    assert DEV not in scrcpy_module._FINALIZING_PIDS

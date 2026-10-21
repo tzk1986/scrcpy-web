@@ -88,6 +88,13 @@ class EncoderStalledError(RuntimeError):
         self.reason = reason
 
 
+# 方案 51 B2：收尾中 pids 注册表 device_id -> {pid: 过期 monotonic 时刻}。
+# stop() 设备侧 kill 后进程未必立死；该窗内重连起流会误检「残留占用」。
+# _detect_stray_server 命中 PID 全属未过期登记 → 跳过；TTL 后按真实残留阻断。
+_FINALIZING_PIDS: dict[str, dict[str, float]] = {}
+_FINALIZING_TTL_S = 10.0
+
+
 class ScrcpyEncoder:
     """
     基于 scrcpy-server.jar 的视频编码器。
@@ -888,10 +895,13 @@ class ScrcpyEncoder:
             return
         stdout = out.decode(errors="replace").strip()
         if proc.returncode == 0 and stdout:
-            pid_match = re.search(r"/proc/(\d+)/", stdout)
+            hit_pids = re.findall(r"/proc/(\d+)/", stdout)
+            if hit_pids and self._all_finalizing(device_id, hit_pids):
+                logger.debug("stray_server_finalizing_skip", device=device_id, pids=hit_pids)
+                return
             cmdline = (
-                await self._read_remote_cmdline(device_id, pid_match.group(1))
-                if pid_match
+                await self._read_remote_cmdline(device_id, hit_pids[0])
+                if hit_pids
                 else None
             )
             raise ScrcpyOccupiedError.classify(device_id, cmdline)
@@ -902,6 +912,20 @@ class ScrcpyEncoder:
                 returncode=proc.returncode,
                 stderr=err.decode(errors="replace").strip(),
             )
+
+    @staticmethod
+    def _all_finalizing(device_id: str, hit_pids: list[str]) -> bool:
+        """命中 PID 是否全属该设备未过期的「收尾中」登记；惰性清理过期项。"""
+        reg = _FINALIZING_PIDS.get(device_id)
+        if not reg:
+            return False
+        now = time.monotonic()
+        for pid in [p for p, exp in reg.items() if exp <= now]:
+            del reg[pid]
+        if not reg:
+            _FINALIZING_PIDS.pop(device_id, None)
+            return False
+        return all(pid in reg for pid in hit_pids)
 
     async def _read_remote_cmdline(self, device_id: str, pid: str) -> str | None:
         """读设备侧 /proc/<pid>/cmdline（\\0 换空格）；失败回 None（归因降级）。"""
@@ -976,6 +1000,11 @@ class ScrcpyEncoder:
         # 方案 48 D2：先终止本会话设备端进程（原实现仅杀本地 adb 子进程，
         # 设备端 app_process 不保证随退 → 残留根因）
         if self._device_id and self._remote_pids:
+            # 方案 51 B2：kill 前登记「收尾中」，收尾窗内重连不误检为外部占用
+            reg = _FINALIZING_PIDS.setdefault(self._device_id, {})
+            deadline = time.monotonic() + _FINALIZING_TTL_S
+            for pid in self._remote_pids:
+                reg[pid] = deadline
             await self._kill_remote_pids(self._device_id, self._remote_pids)
         self._remote_pids = []
 

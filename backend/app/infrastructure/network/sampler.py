@@ -335,9 +335,13 @@ class NetworkSampler:
 
         返回：
             (connected, ssid) 元组。
+
+        方案 51 E9：命令尾 `|| true` 吸收设备侧 grep 无匹配 rc=1（wifi 关闭/
+        dumpsys 无 mWifiInfo 段）——空输出按「无 wifi 信息」记 (False, None)，
+        不计失联；仅 adb 传输级失败（离线等，rc≠0 于 shell 调用本身）仍上抛。
         """
         try:
-            output = await self.adb.shell(device_id, "dumpsys wifi | grep 'mWifiInfo'")
+            output = await self.adb.shell(device_id, "dumpsys wifi | grep 'mWifiInfo' || true")
 
             if "SSID:" not in output:
                 return False, None

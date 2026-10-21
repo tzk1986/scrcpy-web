@@ -542,6 +542,20 @@ async def test_get_stats_strict_raises_on_wifi_failure():
         await sampler.get_stats(DEV, strict=True)
 
 
+async def test_wifi_off_rc1_absorbed_not_failure(monkeypatch):
+    """方案 51 E9：无 mWifiInfo 匹配（wifi 关闭，设备端 grep rc=1）由命令尾
+    `|| true` 吸收——strict 下记空值不抛、不计失联；传输级异常仍上抛（见上例）。"""
+    install_clock(monkeypatch, [1000.0])
+    adb, sampler = make_sampler(wifi="")
+
+    stats = await sampler.get_stats(DEV, strict=True)
+
+    assert stats.wifi_connected is False
+    assert stats.wifi_ssid is None
+    wifi_cmd = next(c for c in adb.cmds if c.startswith("dumpsys wifi"))
+    assert "|| true" in wifi_cmd
+
+
 async def test_get_stats_non_strict_keeps_defaults_on_failure():
     """strict=False（默认）仍吞异常回默认值（HTTP 即时快照契约不变）。"""
     adb, sampler = make_sampler()

@@ -115,6 +115,11 @@ class BitrateAdvisor:
         # 被证伪（瓶颈在内容/端侧），回弹纠正之，避免永久停在最低档。
         if self._down_baseline is not None:
             assert self._down_from_idx is not None
+            if bad > self._down_baseline:
+                # 方案 51 B3（方案 21 边界句保守口径）：比降档前更差可能是
+                # 瞬时抖动/内容变化，不判无效不回弹——清窗保留复核状态待下一窗。
+                self._samples.clear()
+                return None
             if bad <= self._down_baseline * cfg.bad_improve_ratio:
                 # 有效：坏样本显著下降（拥塞真实存在），保留新档，
                 # 复位复核状态与冷静期递增计数（探测纪律回初始）

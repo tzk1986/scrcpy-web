@@ -13,6 +13,7 @@ from app.core.exceptions import (
     JobNotFoundError,
     NotAFileError,
     PathNotFoundError,
+    RecordingDeleteError,
     RecordingNotFoundError,
     SessionNotFoundError,
     TargetExistsError,
@@ -49,6 +50,7 @@ def test_all_echoing_exceptions_clip_input() -> None:
         DeviceNotFoundError(payload),
         SessionNotFoundError(payload),
         RecordingNotFoundError(payload),
+        RecordingDeleteError(payload),  # 方案 51 D07：第 13 类
         PathNotFoundError(payload),
         TargetExistsError(payload),
         JobNotFoundError(payload),

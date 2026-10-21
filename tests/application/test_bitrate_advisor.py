@@ -183,6 +183,30 @@ class TestDowngradeReview:
             t += 1.0
         assert a.decide(39.0) == 4_000_000   # 回弹 4M
 
+    def test_worse_than_baseline_defers_rebound(self):
+        """方案 51 B3（方案 21 边界句保守口径）：bad 比 baseline 更差
+        不判无效、不回弹，清窗待下一窗复核。"""
+        a = BitrateAdvisor(make_cfg())
+        fps_seq = [10] * 6 + [25] * 2        # bad_old=6
+        t = 0.0
+        for f in fps_seq:
+            a.add_sample(t, f)
+            t += 1.0
+        assert a.decide(9.0) == 2_000_000
+        fps_seq2 = [10] * 7 + [25] * 1       # bad=7 > 6：更差
+        for f in fps_seq2:
+            a.add_sample(t, f)
+            t += 1.0
+        assert a.decide(39.0) is None        # 不回弹
+        assert a.current_bps == 2_000_000
+        assert a._down_baseline == 6         # 复核状态保留
+        # 下一窗显著改善 → 判有效保留新档并复位复核状态
+        feed(a, 50.0, 30, 8)
+        assert a.decide(69.0) is None
+        assert a.current_bps == 2_000_000
+        assert a._down_baseline is None
+        assert a._down_from_idx is None
+
 
 class TestCooldownEscalation:
     """方案 30：无效降档回弹后冷静期按退化序列递增，有效降档/升档复位。"""

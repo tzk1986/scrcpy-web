@@ -22,6 +22,7 @@ application 层不 import fastapi：上传字节流经 read_chunk 回调注入
 """
 
 import posixpath
+import shlex
 import shutil
 import tempfile
 import time
@@ -80,6 +81,37 @@ class FileService:
             if path == root or path.startswith(root + "/"):
                 return
         raise PermissionDeniedError(f"写操作仅限白名单目录：{', '.join(self.WRITABLE_ROOTS)}")
+
+    async def _resolve_real(self, device_id: str, path: str) -> str:
+        """设备端真实路径解析（方案 51 E7：软链逃逸治理）。
+
+        首选 `readlink -f`（GNU/toybox 新版全链解析）；A7.1 toybox -f 不
+        兼容（.25 实测连真实目录也 rc=1，2026-10-21），退单级 `readlink`
+        覆盖「操作目标本体是软链」主逃逸面（相对目标按 dirname 拼接）。
+        两式皆失败（非链接/能力缺失）→ 回显原路径，保留 normalize+前缀
+        文本防线（方案 48 检测能力降级同型）。
+        """
+        q = shlex.quote(path)
+        try:
+            real = (await self._adb.shell(device_id, f"readlink -f {q}")).strip()
+            if real.startswith("/"):
+                return real
+        except AdbError:
+            pass
+        try:
+            link = (await self._adb.shell(device_id, f"readlink {q}")).strip()
+        except AdbError:
+            return path
+        if not link:
+            return path
+        if not link.startswith("/"):
+            link = posixpath.join(posixpath.dirname(path), link)
+        return posixpath.normpath(link)
+
+    async def _ensure_writable_real(self, device_id: str, path: str) -> None:
+        """写操作前置复核：文本白名单校验 + 设备端真实路径复核（软链解析后仍须在白名单内）。"""
+        self._ensure_writable(path)
+        self._ensure_writable(await self._resolve_real(device_id, path))
 
     @staticmethod
     def _check_name(name: str) -> str:
@@ -219,8 +251,11 @@ class FileService:
         target_dir = self.normalize_path(dir_path)
         self._ensure_writable(target_dir)
         name = self._check_name(posixpath.basename(filename or ""))
+        target = posixpath.join(target_dir, name)
+        # 方案 51 E7：落点全链解析复核（父目录与同名逃逸软链一并覆盖）
+        await self._ensure_writable_real(device_id, target)
         self._acquire(device_id)
-        job = self._new_job(device_id, "upload", [posixpath.join(target_dir, name)])
+        job = self._new_job(device_id, "upload", [target])
         tmp = Path(tempfile.mkdtemp(prefix="scrcpy-filejob-"))
         self._workdirs[job.id] = tmp
         job.substage = "http"
@@ -242,7 +277,7 @@ class FileService:
             job.total_size = written
             job.substage = "pushing"
             await self._adb.push(
-                device_id, str(local), posixpath.join(target_dir, name),
+                device_id, str(local), target,
                 timeout=self.TRANSFER_TIMEOUT,
             )
             job.status = "done"
@@ -265,8 +300,11 @@ class FileService:
         normed = self.normalize_path(path)
         self._ensure_writable(normed)
         name = self._check_name(new_name)
-        await self._stat_or_raise(device_id, normed)
         target = posixpath.join(posixpath.dirname(normed), name)
+        # 方案 51 E7：源与落点设备端真实路径复核（拦父组件/本体软链逃逸）
+        await self._ensure_writable_real(device_id, normed)
+        await self._ensure_writable_real(device_id, target)
+        await self._stat_or_raise(device_id, normed)
         try:
             await self._adb.stat_size(device_id, target)
         except AdbError:
@@ -279,7 +317,8 @@ class FileService:
         """删除：先全量白名单预检（任一越界整体 403），再逐项执行汇总。"""
         normed = [self.normalize_path(p) for p in paths]
         for p in normed:
-            self._ensure_writable(p)
+            # 方案 51 E7：预检含设备端真实路径复核（软链逃逸整体 403）
+            await self._ensure_writable_real(device_id, p)
         results: list[dict[str, object]] = []
         for p in normed:
             try:
