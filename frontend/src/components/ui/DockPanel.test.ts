@@ -51,7 +51,7 @@ describe('DockPanel', () => {
     expect(bare.find('.dock-header').exists()).toBe(false)
   })
 
-  it('右侧模式拖拽改宽：宽度实时更新、超上限钳制、mouseup 后 emit', async () => {
+  it('右侧模式拖拽改宽：宽度实时更新、超上限钳制、mouseup 后无回写 emit（方案 51 F2-17）', async () => {
     const wrapper = mountPanel()
 
     await wrapper.find('.dock-resize-handle').trigger('mousedown', { clientX: 500, clientY: 100 })
@@ -68,11 +68,12 @@ describe('DockPanel', () => {
 
     releaseMouse()
     await nextTick()
-    expect(wrapper.emitted('update:width')?.at(-1)).toEqual([800])
+    // 非受控：拖拽只改内部态，不再 emit 回写尺寸
+    expect(wrapper.emitted('update:width')).toBeUndefined()
     expect(document.body.style.cursor).toBe('')
   })
 
-  it('底部模式拖拽改高：height 样式更新并在 mouseup 后 emit update:height', async () => {
+  it('底部模式拖拽改高：height 样式更新且 mouseup 后无回写 emit（方案 51 F2-17）', async () => {
     const wrapper = mountPanel({ position: 'bottom', height: 400 })
 
     expect(wrapper.classes()).toContain('position-bottom')
@@ -92,7 +93,7 @@ describe('DockPanel', () => {
 
     releaseMouse()
     await nextTick()
-    expect(wrapper.emitted('update:height')?.at(-1)).toEqual([800])
+    expect(wrapper.emitted('update:height')).toBeUndefined()
 
     // 拖拽结束后不再响应 document mousemove
     moveMouse(10, 500)

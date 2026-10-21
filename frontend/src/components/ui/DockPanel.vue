@@ -8,7 +8,8 @@
     - 支持底部（bottom）或右侧（right）停靠
     - 拖拽调整大小（高度或宽度）
     - 最小/最大尺寸限制
-    - 通过 v-model:height 和 v-model:width 双向绑定尺寸
+    - 尺寸非受控（方案 51 F2-17）：width/height 仅作初始值，拖拽只更新内部态，
+      不再 emit 回写——旧实现初始化后不 watch props，双向绑定名不副实
 
   Props:
     - position: 'bottom' | 'right'（停靠位置）
@@ -23,8 +24,8 @@
     - header: 面板头部（拖拽手柄区域）
     - default: 面板内容
 
-  使用方式：
-    <DockPanel position="right" v-model:width="panelWidth">
+   使用方式：
+    <DockPanel position="right" :width="panelWidth">
       <template #header>Header</template>
       <div>Content</div>
     </DockPanel>
@@ -78,14 +79,9 @@ const props = withDefaults(defineProps<{
   maxWidth: 800,
 })
 
-const emit = defineEmits<{
-  (e: 'update:height', value: number): void
-  (e: 'update:width', value: number): void
-}>()
-
-/** 当前面板高度。 */
+/** 当前面板高度（初始值来自 props，此后内部自治）。 */
 const currentHeight = ref(props.height)
-/** 当前面板宽度。 */
+/** 当前面板宽度（初始值来自 props，此后内部自治）。 */
 const currentWidth = ref(props.width)
 
 /**
@@ -128,9 +124,6 @@ function startResize(e: MouseEvent) {
     document.removeEventListener('mouseup', onMouseUp)
     document.body.style.cursor = ''
     document.body.style.userSelect = ''
-
-    emit('update:height', currentHeight.value)
-    emit('update:width', currentWidth.value)
   }
 
   // 设置光标和禁止文本选择

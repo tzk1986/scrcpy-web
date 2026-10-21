@@ -236,7 +236,7 @@ describe('鼠标手势', () => {
     expect(ws.send).not.toHaveBeenCalled()
   })
 
-  it('长按后进行移动拖拽释放发送 swipe（长按已取消）', () => {
+  it('长按触发后再移动释放不再注入 swipe：单手势（方案 51 F1-03）', () => {
     vi.useFakeTimers()
     const ws = makeWs()
     const ic = new InputController(ws, 100, 100)
@@ -247,9 +247,9 @@ describe('鼠标手势', () => {
     ic.handleMouseMove(makeMouseEvent(90, 50), canvas)
     ic.handleMouseUp(makeMouseEvent(90, 50), canvas)
 
-    expect(ws.send).toHaveBeenCalledTimes(2)
-    expect(ws.send).toHaveBeenLastCalledWith({
-      action: 'swipe', x1: 50, y1: 50, x2: 90, y2: 50, duration: 600,
+    expect(ws.send).toHaveBeenCalledTimes(1)
+    expect(ws.send).toHaveBeenCalledWith({
+      action: 'long_press', x: 50, y: 50, duration: 1000,
     })
   })
 
@@ -376,6 +376,23 @@ describe('触摸手势', () => {
     ic.handleTouchEnd(makeTouchEvent([], [[50, 50]]), canvas)
 
     expect(ws.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('触摸长按触发后再移动释放不再注入 swipe（方案 51 F1-03）', () => {
+    vi.useFakeTimers()
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const canvas = makeCanvas()
+
+    ic.handleTouchStart(makeTouchEvent([[50, 50]]), canvas)
+    vi.advanceTimersByTime(600)
+    ic.handleTouchMove(makeTouchEvent([[90, 50]]), canvas)
+    ic.handleTouchEnd(makeTouchEvent([], [[90, 50]]), canvas)
+
+    expect(ws.send).toHaveBeenCalledTimes(1)
+    expect(ws.send).toHaveBeenCalledWith({
+      action: 'long_press', x: 50, y: 50, duration: 1000,
+    })
   })
 })
 

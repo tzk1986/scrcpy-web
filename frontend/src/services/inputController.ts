@@ -49,6 +49,9 @@ export class InputController {
   private ws: WebSocketService
   private touchState: TouchState | null = null
   private longPressTimer: number | null = null
+  /** 本次手势是否已触发长按：触发后释放不再注入 swipe（方案 51 F1-03，
+   *  修复「长按后移出再释放」长按+滑动双手势并存） */
+  private longPressFired = false
   private readonly LONG_PRESS_THRESHOLD = 500  // ms
   private readonly MOVE_THRESHOLD = 20         // px
   /** 是否启用输入处理（Page Visibility 隐藏时停用，方案 17 实施项 4） */
@@ -160,6 +163,7 @@ export class InputController {
       lastY: y,
       isTracking: true,
     }
+    this.longPressFired = false
 
     // 长按检测
     this.longPressTimer = window.setTimeout(() => {
@@ -167,6 +171,7 @@ export class InputController {
         const dx = Math.abs(this.touchState.lastX - this.touchState.startX)
         const dy = Math.abs(this.touchState.lastY - this.touchState.startY)
         if (dx < this.MOVE_THRESHOLD && dy < this.MOVE_THRESHOLD) {
+          this.longPressFired = true
           this.sendLongPress(this.touchState.startX, this.touchState.startY)
         }
       }
@@ -209,7 +214,7 @@ export class InputController {
     if (duration < this.LONG_PRESS_THRESHOLD && distance < this.MOVE_THRESHOLD) {
       // 点击
       this.sendTap(this.touchState.startX, this.touchState.startY)
-    } else if (distance >= this.MOVE_THRESHOLD) {
+    } else if (distance >= this.MOVE_THRESHOLD && !this.longPressFired) {
       // 滑动
       this.sendSwipe(
         this.touchState.startX,
@@ -239,12 +244,14 @@ export class InputController {
       lastY: y,
       isTracking: true,
     }
+    this.longPressFired = false
 
     this.longPressTimer = window.setTimeout(() => {
       if (this.touchState && this.touchState.isTracking) {
         const dx = Math.abs(this.touchState.lastX - this.touchState.startX)
         const dy = Math.abs(this.touchState.lastY - this.touchState.startY)
         if (dx < this.MOVE_THRESHOLD && dy < this.MOVE_THRESHOLD) {
+          this.longPressFired = true
           this.sendLongPress(this.touchState.startX, this.touchState.startY)
         }
       }
@@ -288,7 +295,7 @@ export class InputController {
 
     if (duration < this.LONG_PRESS_THRESHOLD && distance < this.MOVE_THRESHOLD) {
       this.sendTap(this.touchState.startX, this.touchState.startY)
-    } else if (distance >= this.MOVE_THRESHOLD) {
+    } else if (distance >= this.MOVE_THRESHOLD && !this.longPressFired) {
       this.sendSwipe(
         this.touchState.startX,
         this.touchState.startY,

@@ -69,9 +69,17 @@ async function onExitClick() {
     exiting.value = true
     ElMessage.info('服务正在退出…')
     startExitPolling()
-  } catch {
-    // 请求未送达即已断连：服务先于响应退出（如 stop.bat 抢先），视为已退出
-    ElMessage.success('服务已退出，请关闭此页面')
+  } catch (e) {
+    // 方案 51 F2-20：退出失败不再一律误报成功。仅「服务没答话」（无响应=
+    // 先于响应退出，如 stop.bat 抢先）才判已退出；有响应按状态区分。
+    const status = (e as { response?: { status?: number } }).response?.status
+    if (status === undefined) {
+      ElMessage.success('服务已退出，请关闭此页面')
+    } else if (status === 403) {
+      ElMessage.error('无权限退出服务')
+    } else {
+      ElMessage.error(`退出服务失败（${status}），服务可能仍在运行`)
+    }
   }
 }
 

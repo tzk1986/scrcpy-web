@@ -1063,6 +1063,51 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
+  it('批量连接落盘异常：汇总仍出、按钮态复位不误禁行级连接（方案 51 F1-18）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30', '192.168.8.31'], connect_results: [] })
+    )
+    mockApi.connectDevice.mockResolvedValue({ success: true, device_id: '192.168.8.30:5555' })
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    const checkboxes = wrapper.findAll('.scan-record-row input[type="checkbox"]')
+    await checkRowCheckbox(checkboxes[0]) // 只选 30，31 留在记录行做按钮态锚点
+
+    // 落盘异常驱动采同源 poison：向组件自身状态塞不可序列化值，令
+    // persistScanRecord 内 JSON.stringify 抛错。不用 Storage.prototype spy——
+    // 组件运行 realm 的 localStorage 与测试文件全局不同源，跨 realm spy 拦不到
+    // （实证：spyOn(Storage.prototype,'setItem') 对组件调用零拦截）。
+    const vm = wrapper.vm as unknown as {
+      scanRecord: { hosts: Array<{ ip: string; failed?: number }> }
+    }
+    // BigInt 而非 Symbol：Symbol 值会被 JSON.stringify 静默丢弃，BigInt 必抛 TypeError
+    vm.scanRecord.hosts[1].failed = BigInt(1) as never
+
+    await wrapper
+      .find('.record-batch-bar')
+      .findAll('button')
+      .find((b) => b.text() === '连接所选')!
+      .trigger('click')
+    await flushPromises()
+
+    // 成功台照常汇总；落盘失败仅补告警不逃逸
+    expect(h.ElMessage.success).toHaveBeenCalledWith('已连接 1 台设备')
+    expect(h.ElMessage.warning).toHaveBeenCalledWith('扫描记录保存失败（不影响已连接设备）')
+
+    // batchConnectingIps 已随 finally 复位：未连接行的「连接」按钮不再禁用
+    const rowB = wrapper
+      .findAll('.scan-record-row')
+      .find((r) => r.text().includes('192.168.8.31'))!
+    expect(rowB.find('button').attributes('disabled')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
   it('批量工具条「取消选择」清空勾选不发起连接（第三批）', async () => {
     mockApi.listDevices.mockResolvedValue([])
     mockApi.scanSubnet.mockResolvedValue(

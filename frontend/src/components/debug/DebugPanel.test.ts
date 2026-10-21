@@ -163,27 +163,25 @@ describe('DebugPanel', () => {
     wrapper.unmount()
   })
 
-  it('DockPanel 尺寸变化通过 v-model 回写', async () => {
+  it('DockPanel 尺寸为非受控初始值，父端不再绑定回写（方案 51 F2-17）', async () => {
     const wrapper = mountPanel()
     await nextTick()
     const dock = wrapper.findComponent(DockPanel)
 
-    dock.vm.$emit('update:width', 640)
-    dock.vm.$emit('update:height', 320)
-    await nextTick()
-
-    expect(wrapper.findComponent(DockPanel).props('width')).toBe(640)
-    expect(wrapper.findComponent(DockPanel).props('height')).toBe(320)
+    expect(dock.props('width')).toBe(500)
+    expect(dock.props('height')).toBe(400)
+    expect(dock.emitted('update:width')).toBeUndefined()
+    expect(dock.emitted('update:height')).toBeUndefined()
 
     wrapper.unmount()
   })
 
-  it('键盘快捷键切换位置与标签页，并阻止默认行为', async () => {
+  it('键盘快捷键切换位置与标签页，并阻止默认行为（反引号按 code 判定，方案 51 F2-14）', async () => {
     const wrapper = mountPanel()
     await nextTick()
 
-    // Ctrl+` → 切换停靠位置
-    const ev1 = pressKey({ key: '`', ctrlKey: true })
+    // Ctrl+` → 切换停靠位置（key 给 '~' 模拟 Shift 布局漂移，判定不依赖 key）
+    const ev1 = pressKey({ code: 'Backquote', ctrlKey: true })
     await nextTick()
     expect(ev1.defaultPrevented).toBe(true)
     expect(wrapper.emitted('position-change')?.[0]).toEqual(['bottom'])
@@ -196,8 +194,8 @@ describe('DebugPanel', () => {
     expect(ev2.defaultPrevented).toBe(true)
     expect(wrapper.find('.view-LogcatView').exists()).toBe(true)
 
-    // Ctrl+Shift+` → Shell 标签
-    const ev3 = pressKey({ key: '`', ctrlKey: true, shiftKey: true })
+    // Ctrl+Shift+` → Shell 标签（US 布局下 key 为 '~'，旧 key==='`' 判定永不触发）
+    const ev3 = pressKey({ key: '~', code: 'Backquote', ctrlKey: true, shiftKey: true })
     await nextTick()
     expect(ev3.defaultPrevented).toBe(true)
     expect(wrapper.find('.view-ShellView').exists()).toBe(true)
@@ -206,6 +204,27 @@ describe('DebugPanel', () => {
     const ev4 = pressKey({ key: 'a' })
     expect(ev4.defaultPrevented).toBe(false)
     expect(wrapper.find('.view-ShellView').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('Shell 标签活动时快捷键全部让位：不 preventDefault、不切标签/位置（方案 51 F2-14）', async () => {
+    const wrapper = mountPanel()
+    await nextTick()
+    wrapper.findComponent(ElTabs).vm.$emit('update:modelValue', 'shell')
+    await nextTick()
+
+    // Ctrl+L 交还终端（不清屏被抢走切到 Logcat）
+    const ev1 = pressKey({ key: 'l', ctrlKey: true })
+    await nextTick()
+    expect(ev1.defaultPrevented).toBe(false)
+    expect(wrapper.find('.view-ShellView').exists()).toBe(true)
+
+    // Ctrl+` 不切面板位置
+    const ev2 = pressKey({ code: 'Backquote', ctrlKey: true })
+    await nextTick()
+    expect(ev2.defaultPrevented).toBe(false)
+    expect(wrapper.emitted('position-change')).toBeUndefined()
 
     wrapper.unmount()
   })
@@ -235,7 +254,7 @@ describe('DebugPanel', () => {
     await nextTick()
     wrapper.unmount()
 
-    pressKey({ key: '`', ctrlKey: true })
+    pressKey({ code: 'Backquote', ctrlKey: true })
     setDebugTab('shell')
     await nextTick()
 

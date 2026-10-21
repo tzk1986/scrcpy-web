@@ -716,31 +716,42 @@ async function batchConnectHosts() {
   )
   if (targets.length === 0) return
   batchConnectingIps.value = true
-  let okCount = 0
-  let failedCount = 0
-  for (const h of targets) {
-    try {
-      await store.connectDevice(h.ip, scanPort.value)
-      hostConnectedIps.value = new Set([...hostConnectedIps.value, h.ip])
-      const nextFailed = new Map(hostFailedIps.value)
-      nextFailed.delete(h.ip)
-      hostFailedIps.value = nextFailed
-      okCount++
-    } catch (e) {
-      const msg = extractApiError(e, '未知错误')
-      failedCount++
-      const nextFailed = new Map(hostFailedIps.value)
-      nextFailed.set(h.ip, msg)
-      hostFailedIps.value = nextFailed
-      ElMessage.error(`连接失败 ${h.ip}: ${msg}`)
+  try {
+    let okCount = 0
+    let failedCount = 0
+    for (const h of targets) {
+      try {
+        await store.connectDevice(h.ip, scanPort.value)
+        hostConnectedIps.value = new Set([...hostConnectedIps.value, h.ip])
+        const nextFailed = new Map(hostFailedIps.value)
+        nextFailed.delete(h.ip)
+        hostFailedIps.value = nextFailed
+        okCount++
+      } catch (e) {
+        const msg = extractApiError(e, '未知错误')
+        failedCount++
+        const nextFailed = new Map(hostFailedIps.value)
+        nextFailed.set(h.ip, msg)
+        hostFailedIps.value = nextFailed
+        ElMessage.error(`连接失败 ${h.ip}: ${msg}`)
+      }
     }
+    recordSelected.value = new Set()
+    if (failedCount === 0) ElMessage.success(`已连接 ${okCount} 台设备`)
+    else if (okCount > 0) ElMessage.warning(`成功 ${okCount} 台，失败 ${failedCount} 台`)
+    else ElMessage.error(`连接失败 ${failedCount} 台`)
+    // 落盘异常（localStorage 满/禁用）不逃逸：单独兜底，汇总提示已发出后再补告警
+    if (okCount > 0) {
+      try {
+        persistScanRecord()
+      } catch {
+        ElMessage.warning('扫描记录保存失败（不影响已连接设备）')
+      }
+    }
+  } finally {
+    // 复位入 finally：任何未预见异常都不再永久禁用批连按钮（方案 51 F1-18）
+    batchConnectingIps.value = false
   }
-  recordSelected.value = new Set()
-  if (failedCount === 0) ElMessage.success(`已连接 ${okCount} 台设备`)
-  else if (okCount > 0) ElMessage.warning(`成功 ${okCount} 台，失败 ${failedCount} 台`)
-  else ElMessage.error(`连接失败 ${failedCount} 台`)
-  if (okCount > 0) persistScanRecord()
-  batchConnectingIps.value = false
 }
 
 /** 第三批：待连接清单（记录中剔除已连接主机；卡片为空时整体隐藏） */

@@ -428,7 +428,10 @@ onMounted(() => {
         overrideDeviceId.value = q
       }
     })
-    .catch(() => {})
+    .catch(() => {
+      // 设备列表仅服务覆盖卡选择，失败降级为提示（与 getRuntimeEnv 拉取对称，方案 51 F2-16）
+      ElMessage.warning('设备列表加载失败，设备级覆盖暂不可选')
+    })
   // 运行环境信息（T6）：只读展示，与设置拉取并行
   api
     .getRuntimeEnv()

@@ -7,7 +7,8 @@
  *   - ?device= 过滤：仅该设备 + 「仅看」条 + 清除恢复全量；「返回设备」链接
  *     + 点击智能导航（上一条恰为设备页时 back 不垫栈，否则回落 push）
  *   - 下载 href：recordingFileUrl 编码文件名
- *   - 播放弹层：video src 指向文件端点；webm 导出按钮随支持面启用/禁用
+ *   - 播放弹层：video src 指向文件端点；webm 导出按钮随支持面启用/禁用；
+ *     关窗（closed）停声 pause+清 src（方案 51 F2-08）
  *   - 删除：二次确认 → api → 重拉；失败 → error toast 且列表不消失
  *   - 列表加载失败：error toast + 空态；空态含回 Dashboard 引导
  */
@@ -76,7 +77,14 @@ function mountPage(deviceQuery?: string) {
         // 注意：不可在 stub 内 $emit('click')——父级 @click 会经 attrs 合并到根
         // <button> 上，重复 emit 会令处理器双击生效（仓库既有 stub 范式：不含 emit）
         'el-button': { template: '<button><slot /></button>' },
-        'el-dialog': { props: ['modelValue'], template: '<div v-if="modelValue"><slot /></div>' },
+        // 关闭钮自测驱动：同步 emit 两事件（update:modelValue 收窗 + closed 通知），
+        // 组件用法处无 @click 绑定，不触发 attrs 合并双击陷阱（见上注释）
+        'el-dialog': {
+          props: ['modelValue'],
+          emits: ['update:modelValue', 'closed'],
+          template:
+            '<div v-if="modelValue"><button class="stub-dialog-close" @click="$emit(\'update:modelValue\', false); $emit(\'closed\')"></button><slot /></div>',
+        },
         'el-empty': { template: '<div><slot /></div>' },
         // stubs 按组件使用名匹配：'RouterLinkStub' 作 key 不会命中 <router-link>，
         // 须用 'router-link'，否则 shallowMount 走 auto-stub（渲染 router-link-stub 元素）
@@ -176,6 +184,20 @@ describe('Recordings 页', () => {
     exporter.isWebmRecorderSupported.mockReturnValue(true)
     await w.find('.btn-play').trigger('click') // 触发重开以走支持分支——组件在点击时读支持面
     expect(w.find('.btn-webm').attributes('disabled')).toBeUndefined()
+  })
+
+  it('关窗即停声：closed 后 video pause + src 置空，playing 复位（方案 51 F2-08）', async () => {
+    const w = mountPage()
+    await flushPromises()
+    await w.find('.btn-play').trigger('click')
+    const video = w.find('video')
+    const pauseSpy = vi.spyOn(video.element, 'pause')
+    await w.find('.stub-dialog-close').trigger('click')
+    await flushPromises()
+    expect(pauseSpy).toHaveBeenCalled()
+    expect(video.element.getAttribute('src')).toBe('')
+    // playing 置空 → 弹层与 video 随 modelValue/closed 双双收起
+    expect(w.find('video').exists()).toBe(false)
   })
 
   it('删除：确认后调 api 并重拉列表；失败仅 toast 不消失行', async () => {

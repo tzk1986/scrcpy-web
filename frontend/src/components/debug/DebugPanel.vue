@@ -27,13 +27,7 @@
                    → AppsView.vue
 -->
 <template>
-  <DockPanel
-    :position="position"
-    :width="panelWidth"
-    :height="panelHeight"
-    @update:width="panelWidth = $event"
-    @update:height="panelHeight = $event"
-  >
+  <DockPanel :position="position" :width="500" :height="400">
     <template #header>
       <div class="debug-header">
         <el-tabs v-model="activeTab" type="card" class="debug-tabs">
@@ -86,10 +80,7 @@ const emit = defineEmits<{
 
 /** 停靠位置：底部或右侧。 */
 const position = ref<'bottom' | 'right'>('right')
-/** 面板宽度（right 模式）。 */
-const panelWidth = ref(500)
-/** 面板高度（bottom 模式）。 */
-const panelHeight = ref(400)
+// 尺寸改由 DockPanel 内部自治（方案 51 F2-17），此处只传初始值 500/400
 /** 当前激活的标签页。 */
 const activeTab = ref('logcat')
 
@@ -103,23 +94,26 @@ function togglePosition() {
 }
 
 /**
- * 键盘快捷键处理。
+ * 键盘快捷键处理（方案 51 F2-14）：
  *   - Ctrl+` : 切换面板位置
  *   - Ctrl+L : 聚焦 Logcat 标签
  *   - Ctrl+Shift+` : 聚焦 Shell 标签
+ * Shell 标签活动时一律让位（不 preventDefault、不动作），Ctrl+L 等交还终端；
+ * 反引号统一按物理键 e.code==='Backquote' 判定并以 shiftKey 区分两分支——
+ * e.key 随布局漂移（Shift+` 多为 '~'）会漏触发或双触发两个分支。
  */
 function handleKeydown(e: KeyboardEvent) {
-  if (e.ctrlKey && e.key === '`') {
-    e.preventDefault()
-    togglePosition()
-  }
-  if (e.ctrlKey && e.key === 'l') {
-    e.preventDefault()
-    activeTab.value = 'logcat'
-  }
-  if (e.ctrlKey && e.shiftKey && e.key === '`') {
+  if (!e.ctrlKey || activeTab.value === 'shell') return
+  const backquote = e.code === 'Backquote'
+  if (backquote && e.shiftKey) {
     e.preventDefault()
     activeTab.value = 'shell'
+  } else if (backquote) {
+    e.preventDefault()
+    togglePosition()
+  } else if (e.key === 'l') {
+    e.preventDefault()
+    activeTab.value = 'logcat'
   }
 }
 

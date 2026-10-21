@@ -594,6 +594,15 @@ describe('Settings.vue', () => {
     wrapper.unmount()
   })
 
+  it('设备列表拉取失败：ElMessage.warning 提示覆盖暂不可选（方案 51 F2-16）', async () => {
+    mockApi.listDevices.mockRejectedValue(new Error('boom'))
+    const wrapper = await mountSettings()
+
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith('设备列表加载失败，设备级覆盖暂不可选')
+
+    wrapper.unmount()
+  })
+
   it('保存失败：ElMessage.error 透传且 loading 复位', async () => {
     mockApi.putSettings.mockRejectedValue(axiosError('SETTINGS_STORE_ERROR', '写入用户设置失败'))
     const wrapper = await mountSettings()

@@ -8,6 +8,8 @@
  *   /device/:id/files   → FileManager.vue（设备文件管理，方案 39）
  *   /settings           → Settings.vue（独立设置页，方案 45）
  *   /settings/help      → SettingsHelp.vue（参数说明手册，方案 47）
+ *   /recordings         → Recordings.vue（录屏产物页，方案 46）
+ *   其余任意路径        → NotFound.vue（兜底轻页，方案 51 F2-07）
  *
  * 路由模式：HTML5 History（无 # 号）
  * 懒加载：所有页面组件使用 import() 动态导入，优化首屏加载速度
@@ -54,6 +56,12 @@ const router = createRouter({
       path: '/recordings',
       name: 'recordings',
       component: () => import('@/views/Recordings.vue'),
+    },
+    {
+      // 兜底：未匹配路径渲染轻页而非空白（方案 51 F2-07）
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFound.vue'),
     },
   ],
 })

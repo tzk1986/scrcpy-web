@@ -8,13 +8,14 @@ import { describe, expect, it } from 'vitest'
 import router from '@/router'
 
 describe('router 路由表', () => {
-  it('包含 dashboard / device-detail / device-files / recordings / settings / settings-help 六条路由', () => {
+  it('包含 dashboard / device-detail / device-files / recordings / settings / settings-help / not-found 七条路由', () => {
     const routes = router.getRoutes()
     const byName = new Map(routes.map((r) => [r.name, r]))
     expect([...byName.keys()].sort()).toEqual([
       'dashboard',
       'device-detail',
       'device-files',
+      'not-found',
       'recordings',
       'settings',
       'settings-help',
@@ -43,6 +44,7 @@ describe('router 路由表', () => {
     expect(byName.href).toBe('/device/x')
 
     expect(router.resolve('/').name).toBe('dashboard')
-    expect(router.resolve('/no-such-page').matched).toHaveLength(0)
+    // 未知路径经 /:pathMatch(.*)* 兜底命中 not-found（方案 51 F2-07，不再零匹配）
+    expect(router.resolve('/no-such-page').name).toBe('not-found')
   })
 })

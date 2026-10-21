@@ -244,6 +244,34 @@ describe('FileManager', () => {
     wrapper.unmount()
   })
 
+  it('A→B 直跳（props.id 变更）：整页重核设备并重列 /sdcard（方案 51 F2-15）', async () => {
+    const wrapper = await mountView()
+    expect(mockApi.listFiles).toHaveBeenCalledTimes(1)
+
+    await wrapper.setProps({ id: 'dev2' })
+    await flushPromises()
+
+    expect(mockApi.getDevice).toHaveBeenLastCalledWith('dev2')
+    // 路径复位 /sdcard，列表按新设备重拉
+    expect(mockApi.listFiles).toHaveBeenLastCalledWith('dev2', '/sdcard')
+    expect(mockApi.listFiles).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+  })
+
+  it('id 变更且新设备离线：显示离线 alert 且不拉列表', async () => {
+    const wrapper = await mountView()
+    mockApi.getDevice.mockResolvedValue({ id: 'dev2', status: 'offline' })
+
+    await wrapper.setProps({ id: 'dev2' })
+    await flushPromises()
+
+    expect(wrapper.find('.fm-offline').exists()).toBe(true)
+    expect(mockApi.listFiles).toHaveBeenCalledTimes(1) // 仅首挂那次，切换不拉列表
+
+    wrapper.unmount()
+  })
+
   it('点击目录名进入子目录，面包屑出现 .. 与逐级节点', async () => {
     const wrapper = await mountView()
 

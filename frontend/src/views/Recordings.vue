@@ -51,7 +51,7 @@
       <router-link to="/">回设备列表</router-link>
     </div>
 
-    <el-dialog v-model="playerVisible" :title="playing?.filename" width="640px">
+    <el-dialog v-model="playerVisible" :title="playing?.filename" width="640px" @closed="stopPlayback">
       <video ref="videoEl" class="player-video" :src="playingUrl" controls autoplay />
       <div class="player-actions">
         <a :href="playingUrl" :download="playing?.filename">下载</a>
@@ -153,6 +153,17 @@ function openPlayer(f: RecordingFileItem) {
   playing.value = f
   webmSupported.value = isWebmRecorderSupported()
   playerVisible.value = true
+}
+
+/** 关窗即停声：不 pause + 清 src，ESC/点遮罩关闭后 video 仍在后台出声
+ *  （方案 51 F2-08）。playing 置空同步解除 playingUrl 绑定。 */
+function stopPlayback() {
+  const el = videoEl.value
+  if (el) {
+    el.pause()
+    el.src = ''
+  }
+  playing.value = null
 }
 
 /** Blob 下载（RecordingPanel 同款范式）。 */

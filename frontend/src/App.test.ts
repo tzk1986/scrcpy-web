@@ -104,6 +104,46 @@ describe('App 退出服务按钮', () => {
     wrapper.unmount()
   })
 
+  it('shutdown 抛 403：提示无权限，不误报已退出（方案 51 F2-20）', async () => {
+    vi.clearAllMocks()
+    h.ElMessageBox.confirm.mockResolvedValue('confirm')
+    mockApi.shutdownSystem.mockRejectedValue({ response: { status: 403 } })
+
+    const wrapper = mountApp()
+    await wrapper.find('[data-test="exit-btn"]').trigger('click')
+
+    expect(h.ElMessage.error).toHaveBeenCalledWith('无权限退出服务')
+    expect(h.ElMessage.success).not.toHaveBeenCalled()
+    expect(mockApi.getHealth).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shutdown 抛其他状态码：提示可能仍在运行，不误报已退出（方案 51 F2-20）', async () => {
+    vi.clearAllMocks()
+    h.ElMessageBox.confirm.mockResolvedValue('confirm')
+    mockApi.shutdownSystem.mockRejectedValue({ response: { status: 500 } })
+
+    const wrapper = mountApp()
+    await wrapper.find('[data-test="exit-btn"]').trigger('click')
+
+    expect(h.ElMessage.error).toHaveBeenCalledWith('退出服务失败（500），服务可能仍在运行')
+    expect(h.ElMessage.success).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shutdown 无响应（断连）：仍判服务已退出（方案 51 F2-20 保留原语义）', async () => {
+    vi.clearAllMocks()
+    h.ElMessageBox.confirm.mockResolvedValue('confirm')
+    mockApi.shutdownSystem.mockRejectedValue(new Error('conn refused'))
+
+    const wrapper = mountApp()
+    await wrapper.find('[data-test="exit-btn"]').trigger('click')
+
+    expect(h.ElMessage.success).toHaveBeenCalledWith('服务已退出，请关闭此页面')
+    expect(h.ElMessage.error).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('health 轮询失败后提示已退出并停止轮询', async () => {
     vi.clearAllMocks()
     vi.useFakeTimers()

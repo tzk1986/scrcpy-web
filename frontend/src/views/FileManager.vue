@@ -114,12 +114,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type FileEntry } from '@/services/api'
 
+// 设备间直跳（A→B）时组件复用，全部设备引用必须走 props.id 动态读取，
+// 不能启动期捕获（方案 51 F2-15）
 const props = defineProps<{ id: string }>()
-const id = props.id
 
 /** 传输进度行（两段诚实进度：http 真实百分比 / adb 条纹不伪造） */
 interface TransferRow {
@@ -194,7 +195,7 @@ const crumbs = computed<{ label: string; path: string }[]>(() => {
 async function loadList(): Promise<void> {
   errorText.value = ''
   try {
-    entries.value = await api.listFiles(id, currentPath.value)
+    entries.value = await api.listFiles(props.id, currentPath.value)
   } catch (e) {
     const { code, message } = errOf(e)
     entries.value = []
@@ -251,7 +252,7 @@ async function doDownload(): Promise<void> {
   const t = newTransfer('download', multi ? `${paths[0]} 等 ${paths.length} 项` : paths[0])
   t.text = multi ? '打包中…' : '拉取中…'
   try {
-    const { blob } = await api.downloadFiles(id, paths, (pct) => {
+    const { blob } = await api.downloadFiles(props.id, paths, (pct) => {
       t.phase = 'http'
       t.percent = pct
       t.text = `下载中 ${pct}%`
@@ -286,7 +287,7 @@ async function onUploadChange(e: Event): Promise<void> {
     const t = newTransfer('upload', f.name)
     t.text = '上传中 0%'
     try {
-      const job = await api.uploadFile(id, currentPath.value, f, (pct) => {
+      const job = await api.uploadFile(props.id, currentPath.value, f, (pct) => {
         t.percent = pct
         if (pct >= 100) {
           t.phase = 'adb'
@@ -332,7 +333,7 @@ async function saveRename(): Promise<void> {
     return
   }
   try {
-    await api.renameFile(id, joinPath(currentPath.value, target.name), n)
+    await api.renameFile(props.id, joinPath(currentPath.value, target.name), n)
     renameVisible.value = false
     ElMessage.success('重命名成功')
     await loadList()
@@ -358,7 +359,7 @@ async function doDelete(): Promise<void> {
     return
   }
   try {
-    const results = await api.deleteFiles(id, paths)
+    const results = await api.deleteFiles(props.id, paths)
     const okN = results.filter((r) => r.ok).length
     const failN = results.length - okN
     if (failN) ElMessage.warning(`成功 ${okN} / 失败 ${failN}`)
@@ -370,9 +371,15 @@ async function doDelete(): Promise<void> {
   await loadList()
 }
 
-;(async () => {
+/** 设备核验 + 列目录的整页重载：挂载首跑与 props.id 变更共用（方案 51 F2-15） */
+async function reload(): Promise<void> {
+  offline.value = false
+  errorText.value = ''
+  entries.value = []
+  selected.value = []
+  currentPath.value = '/sdcard'
   try {
-    const dev = await api.getDevice(id)
+    const dev = await api.getDevice(props.id)
     if (dev?.status !== 'online') {
       offline.value = true
       return
@@ -382,7 +389,11 @@ async function doDelete(): Promise<void> {
     return
   }
   await loadList()
-})()
+}
+
+watch(() => props.id, () => void reload())
+
+void reload()
 </script>
 
 <style scoped>
