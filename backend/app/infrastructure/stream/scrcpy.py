@@ -40,6 +40,7 @@ scrcpy-server 视频编码器
 import asyncio
 import re
 import time
+import zlib
 from typing import Any, AsyncIterator, Callable
 
 from app.core.config import settings
@@ -67,6 +68,15 @@ from app.scrcpy.stream_protocol import (
 logger = get_logger(__name__)
 
 _QUEUE_FULL_PUT_TIMEOUT = 1.0  # 队列满时 put 超时（秒），反压恢复路径（P0-2/P0-3）
+
+
+def _local_port_for(device_id: str) -> int:
+    """device_id → 本地 forward 端口（27183 + 0..999，方案 51 B4）。
+
+    内建 hash() 随 PYTHONHASHSEED 每进程不同（同设备重启换端口），且 %100
+    碰撞率高；crc32 跨进程确定，%1000 碰撞率降一个量级。
+    """
+    return 27183 + zlib.crc32(device_id.encode()) % 1000
 
 
 class EncoderStalledError(RuntimeError):
@@ -163,9 +173,8 @@ class ScrcpyEncoder:
         # 检测能力缺失降级放行）
         await self._detect_stray_server(device_id)
 
-        # 基于 device_id 计算唯一端口
-        port_offset = hash(device_id) % 100
-        self._local_port = 27183 + port_offset
+        # 基于 device_id 计算唯一端口（跨进程确定，方案 51 B4）
+        self._local_port = _local_port_for(device_id)
 
         # socket 名称使用固定的 "scrcpy"（py-scrcpy-client 的做法）
         self._socket_name = "scrcpy"
@@ -520,6 +529,7 @@ class ScrcpyEncoder:
         # 慢恢复误判为卡死。真卡死时自愈多等 ~5s，由前端截图兜底覆盖。
         stall_grace = max(2.0 * idle_reset, 10.0)
         last_data_at = self._clock()
+        stream_started_at = last_data_at
         reset_sent_at: float | None = None
         probe_failures = 0  # 发针连续失败计数（方案 34 D2 有界兜底）
         try:
@@ -547,9 +557,25 @@ class ScrcpyEncoder:
                                     device=device_id,
                                     returncode=self.process.returncode)
                         break
-                    if idle_reset <= 0 or self._control_sender is None:
-                        continue
                     now = self._clock()
+                    if idle_reset <= 0:
+                        continue
+                    if self._control_sender is None:
+                        # 12B 协议下无 sender = session 包从未出现：启动级卡死
+                        # （server 起了但流头不来）。若沿用「无 sender 整体跳过」，
+                        # 生成器永不判死、服务侧 token 永久占用——超 3×idle_reset
+                        # 抛错走自愈重启（方案 51 B5）。raw 兜底无 session 概念，
+                        # 不适用此判据。
+                        if (
+                            not raw_fallback
+                            and now - stream_started_at > 3 * idle_reset
+                        ):
+                            raise EncoderStalledError(
+                                f"no session packet "
+                                f"{now - stream_started_at:.1f}s after start",
+                                reason="no_session_after_start",
+                            )
+                        continue
                     if reset_sent_at is None:
                         if now - last_data_at >= idle_reset:
                             reset_sent_at = now

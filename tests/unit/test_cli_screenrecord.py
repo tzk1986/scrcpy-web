@@ -172,11 +172,31 @@ async def test_stop_no_product_returns_empty(monkeypatch):
         if "pkill" in args:
             # rc≠0 且 stderr 空 = 无匹配特征
             raise AdbError("ADB command failed: ")
+        if "ls" in args:
+            # 方案 51 A04 探产物：设备端确无文件
+            raise AdbError("ADB command failed: ls: /sdcard/r.mp4: No such file or directory")
         return ""
     monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
     d = AdbCliDriver()
     await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
     assert await d.stop_recording("d") == ""
+
+
+async def test_stop_pkill_nomatch_product_in_place_returns_path(monkeypatch):
+    """方案 51 A04：pkill 无匹配但产物在位（自然完成与 stop 竞态）→ 返回路径供
+    pull 收尾，不再白录。"""
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        if "pkill" in args:
+            raise AdbError("ADB command failed: ")
+        return ""  # ls -ld 命中：产物在位
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    remote = "/sdcard/r.mp4"
+    await d.start_recording("d", remote, "4M", 60)
+    assert await d.stop_recording("d") == remote
+    assert ("d", "shell", "ls", "-ld", remote) in calls
 
 
 async def test_stop_falls_back_to_kill_pid(monkeypatch):

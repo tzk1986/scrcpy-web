@@ -62,6 +62,27 @@ async def test_get_pool_singleton_per_path(db_path):
     assert p1 is p2
 
 
+async def test_get_pool_concurrent_first_init_single_pool(db_path, monkeypatch):
+    """方案 51 D06：并发首次 get_pool 只建一个池——旧实现双 create+initialize，
+    被弃池整套 aiosqlite 连接泄漏且不关闭。"""
+    import app.infrastructure.persistence.sqlite as sqlite_mod
+
+    created: list[DatabasePool] = []
+    orig_cls = sqlite_mod.DatabasePool
+
+    class TrackingPool(orig_cls):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    monkeypatch.setattr(sqlite_mod, "DatabasePool", TrackingPool)
+
+    pools = await asyncio.gather(*(get_pool(db_path) for _ in range(5)))
+
+    assert all(p is pools[0] for p in pools)
+    assert len(created) == 1  # 仅一池被创建，无弃池泄漏
+
+
 async def test_repo_works_through_pool(db_path):
     repo = SqliteDebugRepository(db_path)
     await repo.init_db()

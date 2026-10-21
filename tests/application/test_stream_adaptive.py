@@ -620,3 +620,60 @@ async def test_release_with_stale_token_is_noop(stream_settings):
 
     await svc.release_stream("dev1", new_token)  # 持有者释放 → 置停
     assert svc.active_streams.get("dev1") is False
+
+
+# ---------------------------------------------------------------------------
+# 方案 51 B1：伪唤醒不得对同一 agen 并发 __anext__
+# ---------------------------------------------------------------------------
+
+class GateEncoder:
+    """第 1 帧立产、第 2 帧挂在 gate 上——编排伪唤醒时 frame_task 在飞的窗口。"""
+
+    created: list["GateEncoder"] = []
+
+    def __init__(self):
+        self.opts = None
+        self.stop_called = False
+        self.gate = asyncio.Event()
+        GateEncoder.created.append(self)
+
+    async def start(self, device_id, opts):
+        self.opts = opts
+        yield 0, b"f0"
+        await self.gate.wait()
+        yield 0, b"f1"
+
+    async def stop(self):
+        self.stop_called = True
+
+
+@pytest.mark.asyncio
+async def test_spurious_wake_keeps_inflight_frame_task(stream_settings):
+    """pending 与当前档相同 → 伪唤醒 continue。旧实现在 frame_task 仍在飞时
+    回loop顶重新 ensure_future(agen.__anext__())，同一 agen 并发生成触发
+    RuntimeError 杀流；修复后在飞帧保留、放行 gate 即正常产出。"""
+    GateEncoder.created.clear()
+    svc = StreamService(encoder_factory=GateEncoder)
+
+    token = await svc.acquire_stream("dev1")
+    assert token is not None
+    gen = svc.start_stream("dev1", token)
+    assert await gen.__anext__() == (0, b"f0")
+    enc = GateEncoder.created[0]
+
+    # 注入伪唤醒：pending 与当前起始档（4M）相同 → 消费后为 no-op
+    svc._pending_bitrate["dev1"] = 4_000_000
+    svc._restart_events["dev1"].set()
+
+    next_frame = asyncio.ensure_future(gen.__anext__())
+    await asyncio.sleep(0.05)  # 事件赛跑胜出 → 伪唤醒分支
+
+    assert len(GateEncoder.created) == 1  # 未触发重启
+    enc.gate.set()
+    assert await asyncio.wait_for(next_frame, timeout=2.0) == (0, b"f1")
+
+    await svc.stop_stream("dev1")
+    try:
+        await gen.aclose()
+    except Exception:
+        pass

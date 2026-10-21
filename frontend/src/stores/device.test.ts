@@ -40,6 +40,7 @@ const h = vi.hoisted(() => {
     static instances: FakeEventSource[] = []
     url: string
     onmessage: ((event: { data: string }) => void) | null = null
+    onopen: (() => void) | null = null
     onerror: (() => void) | null = null
     close = vi.fn()
 
@@ -816,5 +817,72 @@ describe('device store - 流帧缩略图写入（方案 40 消费点 2）', () =
     await store.loadThumbnail('a')
 
     expect(mockApi.screenshot).not.toHaveBeenCalled()
+  })
+})
+
+describe('SSE await 窗兜底重拉（方案 51 F1-02）', () => {
+  it('fetch 挂起窗内到达的 unreachable 行在落表后找回', async () => {
+    const store = useDeviceStore()
+    store.startSSE()
+
+    let resolveList!: (v: DeviceInfo[]) => void
+    mockApi.listDevices
+      .mockImplementationOnce(
+        () =>
+          new Promise<DeviceInfo[]>((r) => {
+            resolveList = r
+          }),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve([dev('a'), dev('x', { status: 'offline' })]),
+      )
+
+    const p = store.fetchDevices()
+    // await 窗内 SSE 把 x 推入本地表
+    lastEventSource().onmessage!({
+      data: JSON.stringify({ type: 'unreachable', device_id: 'x', state: 'offline' }),
+    })
+    resolveList([dev('a')]) // 整表覆盖此刻落表：旧实现会吞掉 x 行
+    await p
+
+    // dirty 兜底：静默重拉一次，以后端真值 [a, x] 收敛
+    await vi.waitFor(() => {
+      expect(store.devices.map((d) => d.id)).toEqual(['a', 'x'])
+    })
+    expect(mockApi.listDevices).toHaveBeenCalledTimes(2)
+  })
+
+  it('无 SSE 变更时落表不多重拉（dirty 未置位）', async () => {
+    const store = useDeviceStore()
+    store.startSSE()
+
+    await store.fetchDevices()
+
+    expect(mockApi.listDevices).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('SSE 断线重连全量重同步（方案 51 F1-04）', () => {
+  it('error 后重连 open 触发静默 fetchDevices 重同步', async () => {
+    const store = useDeviceStore()
+    store.startSSE()
+    await store.fetchDevices() // 建立初始列表
+    mockApi.listDevices.mockClear()
+
+    lastEventSource().onerror!()
+    lastEventSource().onopen!()
+
+    await vi.waitFor(() => expect(mockApi.listDevices).toHaveBeenCalledTimes(1))
+  })
+
+  it('首次 open（未发生过 error）不触发重拉', async () => {
+    const store = useDeviceStore()
+    store.startSSE()
+    mockApi.listDevices.mockClear()
+
+    lastEventSource().onopen!()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockApi.listDevices).not.toHaveBeenCalled()
   })
 })

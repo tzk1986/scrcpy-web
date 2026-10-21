@@ -1660,3 +1660,116 @@ async def test_request_idr_throttled_swallows_send_failure():
     await encoder._request_idr_throttled()  # 不抛
 
     assert encoder._last_idr_request_at > 0.0
+
+# ---------------------------------------------------------------------------
+# 端口计算（方案 51 B4）
+# ---------------------------------------------------------------------------
+
+def test_local_port_for_deterministic_and_in_range():
+    """crc32 跨进程稳定（内建 hash 随 PYTHONHASHSEED 变），端口落 27183..28182。"""
+    import zlib
+
+    from app.infrastructure.stream.scrcpy import _local_port_for
+
+    assert _local_port_for(DEVICE_ID) == _local_port_for(DEVICE_ID)
+    assert _local_port_for(DEVICE_ID) == 27183 + zlib.crc32(DEVICE_ID.encode()) % 1000
+    for i in range(16, 30):
+        port = _local_port_for(f"192.168.8.{i}:5555")
+        assert 27183 <= port <= 27183 + 999
+
+
+def test_local_port_for_sample_devices_distinct():
+    """14 台网段设备抽样端口互异（%1000 空间碰撞率较 %100 降一个量级）。"""
+    from app.infrastructure.stream.scrcpy import _local_port_for
+
+    ports = {_local_port_for(f"192.168.8.{i}:5555") for i in range(16, 30)}
+    assert len(ports) == 14
+
+
+# ---------------------------------------------------------------------------
+# 启动级卡死判死（方案 51 B5）
+# ---------------------------------------------------------------------------
+
+def _b5_env(monkeypatch, clock: dict):
+    """B5 两用例共用编排：idle=0.2s（tick=0.1s 真实时间）+ 可变假时钟。"""
+    import types
+
+    from app.infrastructure.stream.scrcpy import EncoderStalledError
+
+    fake = types.SimpleNamespace(
+        stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
+        adb=types.SimpleNamespace(path="adb"),
+    )
+    monkeypatch.setattr("app.infrastructure.stream.scrcpy.settings", lambda: fake)
+    return EncoderStalledError
+
+
+async def test_no_session_packet_raises_stalled(monkeypatch):
+    """server 只发 handshake 不发 session 包：无 sender 探针被整体跳过时
+    生成器永不判死、服务侧 token 永久占用（方案 51 B5）。假时钟越过
+    3×idle_reset → 抛 EncoderStalledError(no_session_after_start)。"""
+    Err = _b5_env(monkeypatch, {})
+    clock = {"t": 100.0}
+    encoder = ScrcpyEncoder(clock=lambda: clock["t"])
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(make_handshake(), eof=False))  # 永不来 session
+
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+
+    async def consume() -> None:
+        async for _ in encoder.start(DEVICE_ID, EncoderOpts()):
+            pass
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        task = asyncio.create_task(consume())
+        try:
+            await asyncio.sleep(0.05)  # 让循环起步
+            clock["t"] = 100.7  # > 3×idle_reset(0.6)
+            assert await wait_until(lambda: task.done(), timeout=1.5)
+            exc = task.exception()
+            assert isinstance(exc, Err)
+            assert exc.reason == "no_session_after_start"
+        finally:
+            if not task.done():
+                encoder._running = False
+                await task
+            else:
+                task.exception()
+    assert harness.server_process.terminate_called
+
+
+async def test_session_present_not_killed_by_no_session_probe(monkeypatch):
+    """正常启动（session 包已建立 sender）：假时钟越过 3×idle_reset 不误抛。"""
+    _b5_env(monkeypatch, {})
+    clock = {"t": 100.0}
+    encoder = ScrcpyEncoder(clock=lambda: clock["t"])
+    payload = b"\x00\x00\x00\x01a" + b"\xee" * 4
+    stream = (
+        make_handshake()
+        + make_session(1080, 1920)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))
+
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    received: list[tuple[int, bytes]] = []
+
+    async def consume() -> None:
+        async for chunk in encoder.start(DEVICE_ID, EncoderOpts()):
+            received.append(chunk)
+
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        task = asyncio.create_task(consume())
+        try:
+            assert await wait_until(lambda: len(received) == 1)
+            clock["t"] = 100.7
+            await asyncio.sleep(0.3)  # 数个真实 tick
+            assert not task.done()
+        finally:
+            encoder._running = False
+            await task

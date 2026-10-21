@@ -102,6 +102,9 @@ class RecordingService:
         self.cleanup_task: asyncio.Task[None] | None = None
         # 自动收尾协程引用集：防事件循环 GC 中途回收 pending 任务（asyncio 官方告诫）
         self._finalize_tasks: set[asyncio.Task[None]] = set()
+        # 启动中的设备占位集（方案 51 E4）：查态与落表之间隔着 adb 启动的
+        # await 窗，并发二启会双开 screenrecord 留下互踩孤段
+        self._pending_starts: set[str] = set()
         # 自然结束 → 自动收尾监听器（方案 42 §1，依赖倒置注册，协议见 AdbDriver）
         adb.set_recording_natural_end_listener(self._on_recording_natural_end)
 
@@ -127,27 +130,36 @@ class RecordingService:
             AdbError: 设备端 screenrecord 启动失败。
         """
         existing = self.sessions.get(device_id)
-        if existing is not None and existing.state in _IN_PROGRESS_STATES:
+        if (existing is not None and existing.state in _IN_PROGRESS_STATES) or (
+            # 原子占位与查态同临界（asyncio 单线程下检查-添加无 await 即原子）：
+            # 并发二启的后到者在此得 409，不再落入查态-落表 await 窗（方案 51 E4）
+            device_id in self._pending_starts
+        ):
             raise ConflictError()
-        # 设备级覆盖合并视图（方案 45 T8）：无覆盖的设备即全局 recording 对象本身
-        cfg = device_recording_settings(device_id)
-        session_id = uuid4().hex[:12]
-        remote_path = (
-            f"{self.REMOTE_PREFIX}{self._sanitize_device(device_id)}__{session_id}.mp4"
-        )
-        # 先启动设备端再落表：失败时本 start 无副作用（表内无会话可收敛）
-        await self.adb.start_recording(
-            device_id, remote_path, cfg.bit_rate, cfg.time_limit
-        )
-        session = RecordingSession(
-            id=session_id,
-            device_id=device_id,
-            state=RecordingState.RECORDING.value,
-            remote_path=remote_path,
-        )
-        self.sessions[device_id] = session
-        logger.info("recording_started", session=session_id, device=device_id)
-        return session
+        self._pending_starts.add(device_id)
+        try:
+            # 设备级覆盖合并视图（方案 45 T8）：无覆盖的设备即全局 recording 对象本身
+            cfg = device_recording_settings(device_id)
+            session_id = uuid4().hex[:12]
+            remote_path = (
+                f"{self.REMOTE_PREFIX}{self._sanitize_device(device_id)}__{session_id}.mp4"
+            )
+            # 先启动设备端再落表：失败时本 start 无副作用（表内无会话可收敛）
+            await self.adb.start_recording(
+                device_id, remote_path, cfg.bit_rate, cfg.time_limit
+            )
+            session = RecordingSession(
+                id=session_id,
+                device_id=device_id,
+                state=RecordingState.RECORDING.value,
+                remote_path=remote_path,
+            )
+            # 落表先于让位：finally 释位时 sessions 已可见进行态，互斥无缝衔接
+            self.sessions[device_id] = session
+            logger.info("recording_started", session=session_id, device=device_id)
+            return session
+        finally:
+            self._pending_starts.discard(device_id)
 
     async def stop(self, device_id: str) -> RecordingSession | None:
         """

@@ -184,6 +184,25 @@ describe('debug store', () => {
       vi.useRealTimers()
     }
   })
+
+  it('意外断线先 close 旧实例停其内部自动重拨，store 级重连为单一路径（方案 51 F2-01）', async () => {
+    const store = await connectStore(true)
+    vi.useFakeTimers()
+    try {
+      const dying = lastInstance()
+      dying.closeHandler!()
+      // 旧实例被主动 close：其内部 onclose→scheduleReconnect 路径随之熄灭
+      expect(dying.close).toHaveBeenCalled()
+      expect(store.wsConnected).toBe(false)
+      // 断线与 close 之间不并存第二实例
+      const before = h.MockWebSocketService.instances.length
+      vi.advanceTimersByTime(2000)
+      // 重连只由 store 定时器发起：恰好新建一个
+      expect(h.MockWebSocketService.instances.length).toBe(before + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('debug store - 会话生命周期', () => {
@@ -326,6 +345,8 @@ describe('debug store - WebSocket 连接', () => {
       expect(store.wsConnected).toBe(false)
       expect(lastInstance().send).not.toHaveBeenCalled()
       expect(console.error).toHaveBeenCalledWith('[DebugStore] WebSocket connection timeout')
+      // 方案 51 F2-18：超时路径必须先 close 再置 null，消除 CONNECTING 僵尸 socket
+      expect(lastInstance().close).toHaveBeenCalled()
 
       // debugWs 已重置：恢复连接能力后重新连接会新建实例
       lastInstance().ws.readyState = 1

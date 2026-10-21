@@ -591,6 +591,50 @@ class TestDisconnectTcp:
 
         assert "192.168.1.5:5555" not in service._rotation_cache
 
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_inflight_fetch_info(self, service, mock_adb, mock_repo):
+        """方案 51 A02：断开须 cancel 在飞 _fetch_info——晚到 save 不得复活已删行。"""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_info(device_id):
+            started.set()
+            await release.wait()
+            return _make_device(device_id)
+
+        mock_adb.get_device_info = AsyncMock(side_effect=slow_info)
+        waiter = asyncio.create_task(service._get_info_cached("192.168.1.5:5555"))
+        await started.wait()
+
+        await service.disconnect_tcp("192.168.1.5", 5555)
+        release.set()
+        await asyncio.sleep(0.05)  # 给在飞任务响应 cancel 的窗口
+
+        mock_repo.save.assert_not_called()
+        # 等待者不被误取消：内务任务被回收时回落 None 走兜底
+        assert await asyncio.wait_for(waiter, timeout=2.0) is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_waiter_not_cancelled_by_reclaim(self, service, mock_adb, mock_repo):
+        """方案 51 A02 对偶：cancel 的是内务任务而非等待者本身——
+        并发 list 的 await 应拿到 None 兜底而非 CancelledError 炸穿请求。"""
+        started = asyncio.Event()
+
+        async def slow_info(device_id):
+            started.set()
+            await asyncio.Event().wait()  # 永不自然完成，只能被 cancel
+            return _make_device(device_id)
+
+        mock_adb.get_device_info = AsyncMock(side_effect=slow_info)
+        waiter = asyncio.create_task(service._get_info_cached("192.168.1.5:5555"))
+        await started.wait()
+
+        await service.disconnect_tcp("192.168.1.5", 5555)
+
+        # 等待者存活且拿到 None：若被 cancel 误伤，wait_for 会抛 CancelledError
+        result = await asyncio.wait_for(waiter, timeout=2.0)
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # 网段扫描连接测试（方案 36）

@@ -93,16 +93,24 @@ class DatabasePool:
 
 
 _POOLS: dict[str, DatabasePool] = {}
+# 按 dsn 的首建锁（方案 51 D06）：查无与 initialize 之间隔着 connect 的
+# await 窗，并发首建会双池——弃池的 aiosqlite 后台线程连接不关、阻塞进程退出
+_POOL_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 async def get_pool(db_path: str) -> DatabasePool:
-    """按 db_path 返回共享连接池（首次调用创建并初始化）。"""
+    """按 db_path 返回共享连接池（首次调用创建并初始化，并发首建锁内 double-check）。"""
     pool = _POOLS.get(db_path)
-    if pool is None:
-        pool = DatabasePool(db_path, settings().debug.db_pool_size)
-        await pool.initialize()
-        _POOLS[db_path] = pool
-    return pool
+    if pool is not None:
+        return pool
+    lock = _POOL_LOCKS.setdefault(db_path, asyncio.Lock())
+    async with lock:
+        pool = _POOLS.get(db_path)
+        if pool is None:
+            pool = DatabasePool(db_path, settings().debug.db_pool_size)
+            await pool.initialize()
+            _POOLS[db_path] = pool
+        return pool
 
 
 class SqliteDebugRepository(DebugRepository):

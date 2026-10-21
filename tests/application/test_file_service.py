@@ -7,6 +7,7 @@
 
 import asyncio
 import os
+import shutil
 import tempfile
 import time
 import zipfile
@@ -26,7 +27,7 @@ from app.core.exceptions import (
     TargetExistsError,
     TransferBusyError,
 )
-from app.domain.files import FileEntry
+from app.domain.files import FileEntry, TransferJob
 
 
 def make_entry(
@@ -390,3 +391,52 @@ async def test_orphan_tempdir_sweep(svc: FileService) -> None:
         for d in (stale, fresh):
             if d.exists():
                 d.rmdir()
+
+
+# ---------- running 超时强制回收（方案 51 E8）----------
+
+
+async def test_sweep_reclaims_stale_running_job(svc: FileService) -> None:
+    """background 收尾被跳过等原因滞留 running 的任务：超 TRANSFER_TIMEOUT+120
+    由 sweep 强制置 failed，释放设备互斥并清暂存目录（否则该设备永久 TransferBusy）。"""
+    job = TransferJob(
+        id="j1",
+        device_id="d",
+        direction="download",
+        paths=["/sdcard/a"],
+        total_size=0,
+        status="running",
+        substage="pulling",
+        created_at=time.time() - svc.TRANSFER_TIMEOUT - 121,
+    )
+    svc._jobs["j1"] = job
+    wd = Path(tempfile.mkdtemp(prefix="scrcpy-filejob-"))
+    svc._workdirs["j1"] = wd
+    svc._busy.add("d")
+    svc._sweep()
+    assert job.status == "failed"
+    assert job.error
+    assert job.finished_at is not None
+    assert "d" not in svc._busy
+    assert not wd.exists()
+    assert "j1" not in svc._workdirs
+
+
+async def test_sweep_keeps_fresh_running_job(svc: FileService) -> None:
+    job = TransferJob(
+        id="j2",
+        device_id="d",
+        direction="download",
+        paths=["/sdcard/a"],
+        total_size=0,
+        status="running",
+        substage="pulling",
+        created_at=time.time() - svc.TRANSFER_TIMEOUT - 60,  # +120 宽限窗内
+    )
+    svc._jobs["j2"] = job
+    svc._busy.add("d")
+    svc._sweep()
+    assert job.status == "running"
+    assert job.finished_at is None
+    assert "d" in svc._busy
+    assert svc.get_job("d", "j2") is job

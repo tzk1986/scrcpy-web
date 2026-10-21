@@ -90,6 +90,40 @@ async def test_start_failure_no_session_recorded(service, mock_adb):
     assert service.list_all() == []
 
 
+async def test_concurrent_start_single_instance(service, mock_adb):
+    """方案 51 E4：查态与落表之间的 await 窗内，并发二启不得双开 screenrecord。
+    后进者须得 ConflictError（与既有进行态互斥同语义）。"""
+    gate = asyncio.Event()
+    real_start = mock_adb.start_recording
+
+    async def slow_start(*args, **kwargs):
+        await gate.wait()
+        return await real_start(*args, **kwargs)
+
+    mock_adb.start_recording = AsyncMock(side_effect=slow_start)
+
+    first = asyncio.create_task(service.start("d1"))
+    await asyncio.sleep(0)  # 让 first 停在 start_recording 的 await 窗内
+    with pytest.raises(ConflictError):
+        await asyncio.wait_for(service.start("d1"), timeout=1.0)
+
+    gate.set()
+    s = await asyncio.wait_for(first, timeout=1.0)
+    assert s.state == RecordingState.RECORDING.value
+    assert mock_adb.start_recording.await_count == 1
+    assert service.get("d1") is s
+
+
+async def test_failed_start_releases_pending_slot(service, mock_adb):
+    """方案 51 E4 对偶：前进者启动失败必须释放占位，设备可立即重试。"""
+    mock_adb.start_recording.side_effect = AdbError("boom")
+    with pytest.raises(AdbError):
+        await service.start("d1")
+    mock_adb.start_recording.side_effect = None
+    s = await service.start("d1")  # 占位未泄漏：重试可成功
+    assert s.state == RecordingState.RECORDING.value
+
+
 # ---------------------------------------------------------------------------
 # stop：五态状态机与设备端兜底清理
 # ---------------------------------------------------------------------------

@@ -200,7 +200,8 @@ class StreamService:
                         # 不清除，让本回合立即走重启分支
                         if self._pending_bitrate.get(device_id) is None:
                             restart_event.clear()
-                        frame_task = asyncio.ensure_future(agen.__anext__())
+                        if frame_task is None:
+                            frame_task = asyncio.ensure_future(agen.__anext__())
                         event_task = asyncio.ensure_future(restart_event.wait())
                         done, _ = await asyncio.wait(
                             {frame_task, event_task},
@@ -214,11 +215,18 @@ class StreamService:
                                 frame = frame_task.result()
                             except StopAsyncIteration:
                                 break
+                            frame_task = None
                             yield frame
                         else:
                             pend = self._pending_bitrate.pop(device_id, None)
                             if pend is None or pend == current_bps:
-                                continue  # 伪唤醒（pending 已被消费），回到取帧
+                                # 伪唤醒（pending 已被消费）：在飞 frame_task 是同
+                                # agen 的续体，弃而重建会并发 __anext__ 触发
+                                # RuntimeError 杀流（方案 51 B1）。复用它，仅回顶
+                                # 重挂事件等待。不 cancel 亦是有意：cancel 在飞
+                                # __anext__ 会把 CancelledError 投进 encoder 生成
+                                # 器、触发其 finally 全量 teardown 杀流。
+                                continue
                             restart_bitrate = pend
                             break
                 except EncoderStalledError as e:

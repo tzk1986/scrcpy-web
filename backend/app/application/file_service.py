@@ -315,8 +315,19 @@ class FileService:
         return job
 
     def _sweep(self) -> None:
-        """惰性回收：过期任务条目出表；超时孤儿暂存目录删除（background 被跳过兜底）。"""
+        """惰性回收：running 超时强制收敛；过期任务条目出表；超时孤儿暂存目录删除。"""
         now = time.time()
+        # 滞留 running（如 FileResponse background 收尾被跳过）会永久占设备互斥，
+        # 超 TRANSFER_TIMEOUT+120 宽限窗强制置 failed 并释放（方案 51 E8）
+        for j in self._jobs.values():
+            if j.status == "running" and now - j.created_at > self.TRANSFER_TIMEOUT + 120:
+                j.status = "failed"
+                j.error = "传输超时未回收（已强制收敛）"
+                j.finished_at = now
+                self._release(j.device_id)
+                workdir = self._workdirs.pop(j.id, None)
+                if workdir is not None:
+                    shutil.rmtree(workdir, ignore_errors=True)
         expired = [
             jid
             for jid, j in self._jobs.items()

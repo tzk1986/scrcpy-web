@@ -177,7 +177,12 @@ export const useDebugStore = defineStore('debug', () => {
     debugWs.setCloseHandler(() => {
       console.log('[DebugStore] WebSocket closed')
       wsConnected.value = false
+      // 方案 51 F2-01：丢弃旧实例前先 close()——WebSocketService.onclose 内含
+      // 自动重拨（!manualClose 时 scheduleReconnect），不关会与下方 store 级
+      // 重连并存成双连接。close 后 store 定时器是单一路径。
+      const dying = debugWs
       debugWs = null
+      dying?.close()
       // 意外断线（非主动断开）且录制开启时才自动重连，按 from_seq 补发缺口日志；
       // 未录制时无需重连（也不再重启后端采集，实施项 5）
       if (!manualClose && isRecording.value && sessionId.value) {
@@ -223,6 +228,9 @@ export const useDebugStore = defineStore('debug', () => {
       console.log('[DebugStore] WebSocket connected and subscribed, paused:', !isRecording.value)
     } else {
       console.error('[DebugStore] Failed to connect WebSocket')
+      // 方案 51 F2-18：先 close 再丢弃，消除 CONNECTING 僵尸 socket
+      // （超时后仍可能完成握手，留下无人管理的连接）
+      debugWs?.close()
       debugWs = null
     }
   }

@@ -180,7 +180,14 @@ class DeviceService:
         if task is None or task.done():
             task = asyncio.create_task(self._fetch_info(device_id))
             self._info_tasks[device_id] = task
-        return await task
+        try:
+            return await task
+        except asyncio.CancelledError:
+            # 内务任务被断开流程回收（方案 51 A02）时，等待者不得被误杀——
+            # 回落 None 走兜底；自身被取消（task 未 cancelled）照常传播。
+            if task.cancelled():
+                return None
+            raise
 
     async def _fetch_info(self, device_id: str) -> Optional[DeviceInfo]:
         """
@@ -484,7 +491,10 @@ class DeviceService:
         await self.repo.delete(device_id)
         # 清理查询缓存（方案 35 D4）：防止断开后残留冷却/任务占用内存
         self._info_cooldown.pop(device_id, None)
-        self._info_tasks.pop(device_id, None)
+        # 在飞查询必须回收：只 pop 引用会让晚到的 save 复活已删行（方案 51 A02）
+        fetch_task = self._info_tasks.pop(device_id, None)
+        if fetch_task is not None and not fetch_task.done():
+            fetch_task.cancel()
         # 方案 41：断开即清 rotation 缓存，失败收敛值不跨生命周期存活
         self._rotation_cache.pop(device_id, None)
 

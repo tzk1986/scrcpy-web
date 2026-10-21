@@ -88,6 +88,13 @@ export const useDeviceStore = defineStore('device', () => {
   // 覆盖新状态（例如把刚本地移除的断开设备复活）
   let fetchGeneration = 0
 
+  // SSE 变更感知（方案 51 F1-02）：fetchDevices 的 await 窗内到达的 SSE
+  // 变更会被落表整表覆盖吞掉；置 dirty，落表后静默重拉一次与后端对账。
+  // 仅在飞（fetchInflight>0）才置脏——事件早已直写 store、之后才发生的
+  // fetch 其响应必然包含该变更，重复对账只会多拉一次
+  let sseDirty = false
+  let fetchInflight = 0
+
   /**
    * 从后端获取设备列表。
    * 设置 loading 状态，捕获错误。
@@ -97,6 +104,7 @@ export const useDeviceStore = defineStore('device', () => {
    */
   async function fetchDevices(opts: { silent?: boolean } = {}) {
     const generation = ++fetchGeneration
+    fetchInflight++
     if (!opts.silent) loading.value = true
     error.value = null
     try {
@@ -114,10 +122,17 @@ export const useDeviceStore = defineStore('device', () => {
       for (const id of stale) {
         if (!alive.has(id)) removeThumbnail(id)
       }
+      if (sseDirty) {
+        // await 窗内有 SSE 变更被整表覆盖吞掉：静默重拉对账（方案 51 F1-02）。
+        // 先清位再重拉——重拉本身也走本逻辑，无新事件则不再递归
+        sseDirty = false
+        void fetchDevices({ silent: true })
+      }
     } catch (e) {
       if (generation !== fetchGeneration) return
       error.value = (e as Error).message
     } finally {
+      fetchInflight--
       if (!opts.silent) loading.value = false
     }
   }
@@ -241,6 +256,9 @@ export const useDeviceStore = defineStore('device', () => {
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
+        // 在途 fetch 的 await 窗内到达的事件才会被落表覆盖吞掉（方案 51 F1-02）：
+        // 置 dirty 供落表后对账；无在飞 fetch 时事件已直写 store，无需对账
+        if (fetchInflight > 0) sseDirty = true
         if (data.type === 'connected') {
           // 新设备连接添加到列表；已有行（B5 失联后恢复）整体替换为最新信息
           const device = data.device as DeviceInfo
@@ -274,9 +292,20 @@ export const useDeviceStore = defineStore('device', () => {
       }
     }
 
+    // 断线标记（方案 51 F1-04）：EventSource 自动重连期间事件会漏，
+    // 重连成功（onopen）时静默全量重同步，防状态滞留
+    let hadError = false
+    es.onopen = () => {
+      if (hadError) {
+        hadError = false
+        void fetchDevices({ silent: true })
+      }
+    }
+
     es.onerror = () => {
+      hadError = true
       console.error('SSE connection error')
-      // EventSource 会自动重连，不需要手动处理
+      // EventSource 会自动重连，重连成功后由 onopen 补重同步
     }
   }
 

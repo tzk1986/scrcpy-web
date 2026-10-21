@@ -1308,13 +1308,23 @@ class AdbCliDriver:
 
         return _cb
 
+    async def _recording_product_exists(self, device_id: str, remote_path: str) -> bool:
+        """设备端录屏产物在位探测（ls -ld）。方案 42 §1 / 方案 51 A04 共用口径。"""
+        try:
+            await self._run_serial(device_id, "shell", "ls", "-ld", remote_path)
+        except AdbError:
+            logger.debug("recording_product_missing", device=device_id, remote=remote_path)
+            return False
+        return True
+
     async def stop_recording(self, device_id: str) -> str:
         """
         停止录屏并返回设备端产物路径（方案 37 B2）。
 
         主路径 `adb shell pkill -INT screenrecord`（SIGINT 触发 screenrecord
-        收尾写 MP4）；pkill 无匹配（rc≠0 且 stderr 空）不算错，返回空串表示
-        无产物。pkill 不可用/异常时 toybox 兜底：pidof screenrecord 取 pid，
+        收尾写 MP4）；pkill 无匹配（rc≠0 且 stderr 空）不算错：先 ls 探测产物
+        在位则返回路径（自然完成竞态保留，方案 51 A04），确无产物才返回空串。
+        pkill 不可用/异常时 toybox 兜底：pidof screenrecord 取 pid，
         非空则 `kill -INT <pid>`，pid 为空返回空串。收尾信号发出后等待后台
         任务退出（try/except 捕一切异常——SIGINT 收尾 MP4 时 screenrecord
         可能非零退出，不算错）并返回 start 时记录的 remote_path。
@@ -1333,18 +1343,18 @@ class AdbCliDriver:
                 return ""
             # 方案 42 §1：任务已自然终结（回调已弹任务表）。设备端产物仍在则
             # 返回路径供服务端 pull 收尾；探测失败/不存在 → 无产物。
-            try:
-                await self._run_serial(device_id, "shell", "ls", "-ld", remote_path)
-            except AdbError:
-                logger.debug("recording_product_missing", device=device_id, remote=remote_path)
-                return ""
-            return remote_path
+            return remote_path if await self._recording_product_exists(device_id, remote_path) else ""
 
         try:
             await self._run_serial(device_id, "shell", "pkill", "-INT", "screenrecord")
         except AdbError as e:
             if str(e).endswith("failed: "):
-                # rc≠0 且 stderr 空 = 无匹配进程：无产物，不算错
+                # rc≠0 且 stderr 空 = 无匹配进程：screenrecord 已退出。但可能
+                # 是自然完成收尾写 MP4 恰与本次 stop 竞态——先探产物，在位则
+                # 返回路径交 pull 收尾（自然完成竞态不再白录，方案 51 A04），
+                # 确无产物才返回 ""。
+                if remote_path and await self._recording_product_exists(device_id, remote_path):
+                    return remote_path
                 logger.debug("screenrecord_not_running", device=device_id)
                 return ""
             # pkill 不可用/异常 → toybox 兜底：pidof 取 pid
