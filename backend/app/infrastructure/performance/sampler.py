@@ -271,7 +271,7 @@ class PerformanceSampler:
         """
         try:
             return list(await self.adb.get_cpu_usage(self.device_id))
-        except (AdbError, asyncio.TimeoutError, Exception) as e:
+        except Exception as e:  # 方案 51 E13：冗余元组化简；CancelledError 是 BaseException 不被吞
             logger.warning("get_cpu_processes_failed", device=self.device_id, error=str(e))
             return []
 
@@ -284,7 +284,7 @@ class PerformanceSampler:
         """
         try:
             return await self.adb.get_battery_info(self.device_id)
-        except (AdbError, asyncio.TimeoutError, Exception) as e:
+        except Exception as e:  # 方案 51 E13：同上，swallow 语义不变
             logger.warning("get_battery_info_failed", device=self.device_id, error=str(e))
             return BatteryInfo(level=0, temperature=None, voltage=None, health="UNKNOWN")
 

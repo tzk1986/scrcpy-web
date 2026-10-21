@@ -279,6 +279,22 @@ async def test_download_multi_zip(svc: FileService, adb: FakeAdb) -> None:
     assert not artifact.exists()
 
 
+async def test_download_multi_zip_dedup_arcnames(svc: FileService, adb: FakeAdb) -> None:
+    # 方案 51 E10：不同目录同名文件多选下载，arcname 追加 _1/_2 序号，互不吞条目
+    for i, size in ((1, 3), (2, 5), (3, 7)):
+        path = f"/sdcard/{i}/a.txt"
+        adb.entries[path] = make_entry("a.txt", size=size)
+        adb.pull_contents[path] = b"x" * size
+    job, artifact, _ = await svc.prepare_download(
+        "d", ["/sdcard/1/a.txt", "/sdcard/2/a.txt", "/sdcard/3/a.txt"]
+    )
+    with zipfile.ZipFile(artifact) as zf:
+        assert zf.namelist() == ["a.txt", "a_1.txt", "a_2.txt"]
+        assert zf.read("a_2.txt") == b"x" * 7
+    assert job.total_size == 15
+    svc.finalize_download(job.id)
+
+
 async def test_download_pull_failure_releases_lock(svc: FileService, adb: FakeAdb) -> None:
     adb.entries["/sdcard/a.txt"] = make_entry("a.txt")
     # pull_contents 缺失 → pull 抛 AdbError

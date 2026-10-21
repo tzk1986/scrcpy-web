@@ -15,13 +15,11 @@
 - /proc/net/tcp、/proc/net/udp：TCP/UDP 连接表
 """
 
-import asyncio
 import ipaddress
 import re
 import struct
 import time
 from dataclasses import dataclass
-from typing import AsyncIterator
 
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
@@ -361,26 +359,3 @@ class NetworkSampler:
             logger.warning("get_wifi_status_failed", device=device_id, error=str(e))
             return False, None
 
-    async def stream_stats(
-        self,
-        device_id: str,
-        interval: float = 1.0,
-    ) -> AsyncIterator[NetworkStats]:
-        """
-        周期性采集网络统计。
-
-        参数：
-            device_id: 设备 ID。
-            interval: 采样间隔（秒）。
-
-        产出：
-            NetworkStats 对象。
-        """
-        while True:
-            try:
-                stats = await self.get_stats(device_id)
-                yield stats
-            except Exception as e:
-                logger.error("network_sample_failed", device=device_id, error=str(e))
-
-            await asyncio.sleep(interval)

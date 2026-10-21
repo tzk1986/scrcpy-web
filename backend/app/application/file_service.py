@@ -165,6 +165,20 @@ class FileService:
     def _release(self, device_id: str) -> None:
         self._busy.discard(device_id)
 
+    @staticmethod
+    def _unique_arcname(name: str, used: set[str]) -> str:
+        """zip arcname 去重：重名在扩展名前插入 _1/_2… 序号（方案 51 E10）。"""
+        if name not in used:
+            used.add(name)
+            return name
+        stem, ext = posixpath.splitext(name)
+        i = 1
+        while f"{stem}_{i}{ext}" in used:
+            i += 1
+        deduped = f"{stem}_{i}{ext}"
+        used.add(deduped)
+        return deduped
+
     # ---------- 下载 ----------
 
     async def prepare_download(
@@ -200,6 +214,7 @@ class FileService:
                 job.substage = "zipping"
                 artifact = tmp / "transfer.zip"
                 total = 0
+                used_arcs: set[str] = set()
                 with zipfile.ZipFile(artifact, "w", zipfile.ZIP_DEFLATED) as zf:
                     for p in normed:
                         entry = await self._stat_or_raise(device_id, p)
@@ -210,7 +225,9 @@ class FileService:
                         await self._adb.pull(
                             device_id, p, str(raw), timeout=self.TRANSFER_TIMEOUT
                         )
-                        zf.write(raw, arcname=posixpath.basename(p))
+                        # 方案 51 E10：重名 arcname 追加 _1/_2 序号——多数解压
+                        # 工具对重复条目只保留其一，多选同名文件下载会静默吞条目
+                        zf.write(raw, arcname=self._unique_arcname(posixpath.basename(p), used_arcs))
                         raw.unlink()  # 即打包即清（磁盘保留策略）
                 job.total_size = total
                 filename = f"{posixpath.basename(normed[0])}_etc.zip"

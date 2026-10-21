@@ -15,7 +15,6 @@
       UDP 状态强制 ESTABLISHED、坏行（非法端口/非法 uid）整行跳过；
     - _parse_address：IPv4 小端序、IPv4 映射 IPv6、纯 IPv6、格式错误回退；
     - _get_wifi_status：SSID 提取、两种已连接判定、SSID 缺失/异常回退；
-    - stream_stats：周期产出、单轮失败被吞掉后继续；
     - 时间通过模块级 FakeClock 注入，不做真实等待（interval=0）。
 
 已修复问题（修复后转为回归用例）：
@@ -24,8 +23,6 @@
     （"00000000000000000000000001000000"）会被解成 "::100:0"。
     现统一为逐 32-bit 字反转恢复（见 test_parse_address_ipv6_pure_words_reversed）。
 """
-
-import asyncio
 
 import pytest
 
@@ -566,78 +563,3 @@ async def test_get_stats_non_strict_keeps_defaults_on_failure():
     assert (stats.rx_bytes, stats.tx_bytes) == (0, 0)
 
 
-# ---------------------------------------------------------------------------
-# stream_stats（生命周期 / 异常吞掉）
-# ---------------------------------------------------------------------------
-
-async def test_stream_stats_yields_snapshots():
-    """周期产出快照；break 后生成器可正常关闭。"""
-    _, sampler = make_sampler()
-
-    results = []
-    async for stats in sampler.stream_stats(DEV, interval=0):
-        results.append(stats)
-        if len(results) >= 3:
-            break
-
-    assert len(results) == 3
-    assert all(s.rx_bytes == 500000 for s in results)
-    assert results[0].rx_rate_kbps == 0.0  # 首轮无基准
-    assert [s.ts for s in results] == sorted(s.ts for s in results)
-
-
-async def test_stream_stats_continues_after_single_failure():
-    """单轮采集异常被吞掉（记录日志），下一轮继续产出。"""
-
-    class FlakySampler(NetworkSampler):
-        def __init__(self, adb, device_id):
-            super().__init__(adb, device_id)
-            self.attempts = 0
-
-        async def get_stats(self, device_id):
-            self.attempts += 1
-            if self.attempts == 1:
-                raise RuntimeError("模拟采集失败")
-            return await super().get_stats(device_id)
-
-    adb = FakeAdb(std_outputs())
-    sampler = FlakySampler(adb, DEV)
-
-    results = []
-    async for stats in sampler.stream_stats(DEV, interval=0):
-        results.append(stats)
-        break
-
-    assert len(results) == 1
-    assert sampler.attempts == 2
-    assert results[0].rx_bytes == 500000
-
-
-async def test_stream_stats_can_be_closed_early():
-    """消费方提前 aclose：不再产出、无残留异常。"""
-    _, sampler = make_sampler()
-    gen = sampler.stream_stats(DEV, interval=0)
-
-    first = await anext(gen)
-    await gen.aclose()
-
-    assert first.rx_bytes == 500000
-    with pytest.raises(StopAsyncIteration):
-        await anext(gen)
-
-
-async def test_stream_stats_interval_parameter_is_awaited(monkeypatch):
-    """interval 被传给 sleep（用哨兵替换 asyncio.sleep 验证，不做真实等待）。"""
-    _, sampler = make_sampler()
-    slept: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        slept.append(delay)
-
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    gen = sampler.stream_stats(DEV, interval=2.5)
-    await anext(gen)  # 第 1 轮产出后挂起，尚未 sleep
-    await anext(gen)  # 触发 sleep(interval) 后再产出第 2 轮
-    await gen.aclose()
-
-    assert slept == [2.5]
