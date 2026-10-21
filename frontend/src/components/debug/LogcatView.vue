@@ -158,6 +158,7 @@ import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useDebugStore } from '@/stores/debug'
 import { api } from '@/services/api'
 import { highlightLogcatMessage } from '@/utils/logcatHighlight'
+import { triggerDownload, errText } from '@/services/exportKit'
 
 /** 目标设备 ID（从父组件传入）。 */
 defineProps<{ deviceId: string }>()
@@ -291,12 +292,7 @@ async function exportLogs(format: 'json' | 'csv') {
       filterLevel.value,
       filterSearch.value,
     )
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `logs_${debugStore.sessionId}.${format}`
-    a.click()
-    URL.revokeObjectURL(url)
+    triggerDownload(blob, `logs_${debugStore.sessionId}.${format}`)
   } catch (e) {
     if ((e as { response?: { status?: number } }).response?.status === 404) {
       ElMessage.warning('暂无数据可导出')
@@ -305,11 +301,6 @@ async function exportLogs(format: 'json' | 'csv') {
     }
     console.error('Export failed:', e)
   }
-}
-
-function errText(e: unknown, fallback: string): string {
-  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-  return detail || fallback
 }
 
 /** 加载数据库统计信息。 */

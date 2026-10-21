@@ -155,7 +155,6 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import type { AxiosResponse } from 'axios'
 import { ElMessage } from 'element-plus'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
@@ -165,6 +164,7 @@ import { GridComponent, TooltipComponent, DataZoomComponent } from 'echarts/comp
 import { api } from '@/services/api'
 import { WebSocketService } from '@/services/websocket'
 import { alertLabel, createAlertNotifier, extractAlerts, type AlertItem } from '@/services/alerts'
+import { runExport, errText, type ExportCommand } from '@/services/exportKit'
 
 // 注册 ECharts 组件
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, DataZoomComponent])
@@ -426,59 +426,9 @@ async function toggleRecording() {
   }
 }
 
-type ExportCommand = 'buffer-csv' | 'buffer-json' | 'cache-csv' | 'cache-json'
-
-/** 导出指标：blob 范式下载 + 行数/区间回显（方案 18 O2）。 */
-async function handleExport(command: ExportCommand) {
-  const [source, format] = command.split('-') as ['buffer' | 'cache', 'csv' | 'json']
-  try {
-    const res = await api.exportPerfMetrics(props.deviceId, format, source)
-    triggerDownload(res.data, `perf_${props.deviceId}_${source}.${format}`)
-    ElMessage.success(formatExportMessage(res))
-  } catch (e) {
-    if ((e as AxiosErrorLike).response?.status === 404) {
-      ElMessage.warning('暂无数据可导出')
-    } else {
-      ElMessage.error(`导出失败: ${errText(e, '未知错误')}`)
-    }
-  }
-}
-
-interface AxiosErrorLike {
-  response?: { status?: number }
-}
-
-/** 从响应头提取导出元数据（后端 X-Export-* 头）。 */
-function formatExportMessage(res: AxiosResponse<Blob>): string {
-  const count = res.headers['x-export-count']
-  const oldest = res.headers['x-export-oldest-ts']
-  const newest = res.headers['x-export-newest-ts']
-  if (!count) return '导出完成'
-  const range =
-    oldest && newest
-      ? `（${formatTs(Number(oldest))} – ${formatTs(Number(newest))}）`
-      : ''
-  return `导出完成：${count} 条${range}`
-}
-
-function formatTs(ts: number): string {
-  if (!Number.isFinite(ts)) return '-'
-  return new Date(ts * 1000).toLocaleTimeString()
-}
-
-function errText(e: unknown, fallback: string): string {
-  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-  return detail || fallback
-}
-
-/** Blob 下载（LogcatView 同款范式）。 */
-function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
+/** 导出指标：blob 范式下载 + 行数/区间回显（方案 18 O2；逻辑下沉 exportKit，方案 51 F2-11）。 */
+function handleExport(command: ExportCommand) {
+  return runExport({ command, deviceId: props.deviceId, prefix: 'perf', fetch: api.exportPerfMetrics })
 }
 
 function connectWebSocket() {
