@@ -83,8 +83,11 @@ class FileService:
 
     @staticmethod
     def _check_name(name: str) -> str:
-        """文件名校验（上传在 basename 后调用；重命名直接调用）。"""
-        if not name or name in (".", "..") or "\x00" in name or "/" in name:
+        """文件名校验（上传在 basename 后调用；重命名直接调用）。
+        拒 "/" 与 "\\"：Windows 上 Path 拼接把反斜杠当分隔符，须同面拦截（方案 51 E2）。"""
+        if not name or name in (".", "..") or "\x00" in name:
+            raise InvalidPathError("invalid file name")
+        if "/" in name or "\\" in name:
             raise InvalidPathError("invalid file name")
         return name
 
@@ -224,6 +227,9 @@ class FileService:
         written = 0
         try:
             local = tmp / name
+            # 纵深防御：即便名校验面未来再漏，落盘必须仍在暂存目录内（方案 51 E2）
+            if local.resolve().parent != tmp.resolve():
+                raise InvalidPathError("invalid file name")
             with local.open("wb") as sink:
                 while True:
                     chunk = await read_chunk(self.CHUNK)

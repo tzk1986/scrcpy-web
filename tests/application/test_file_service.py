@@ -304,7 +304,7 @@ async def test_upload_rejects_outside_whitelist(svc: FileService) -> None:
         await svc.upload("d", "/data/app", "a", _chunk_reader([b"x"]))
 
 
-@pytest.mark.parametrize("bad", ["", ".", "..", "\x00", "/"])
+@pytest.mark.parametrize("bad", ["", ".", "..", "\x00", "/", "..\\..\\ev", "a\\b.txt", "\\abs"])
 async def test_upload_bad_filename(svc: FileService, bad: str) -> None:
     with pytest.raises(InvalidPathError):
         await svc.upload("d", "/sdcard", bad, _chunk_reader([b"x"]))
