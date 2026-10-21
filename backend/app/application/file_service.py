@@ -51,6 +51,10 @@ class FileService:
     """设备文件管理应用服务（经 deps 单例：任务表与互斥态进程内共享）。"""
 
     WRITABLE_ROOTS = ("/sdcard", "/data/local/tmp")
+    # A9+ 实测回归（2026-10-21，.22）：/sdcard → /storage/self/primary →
+    # /storage/emulated/0，视图本体不在白名单则合法写全被 E7 复核误伤 403。
+    # 视图本体与链接路径同权限（adbd 经 /sdcard 见到的即是它），等价别名化。
+    VIEW_ROOT_ALIASES = {"/storage/emulated/0": "/sdcard", "/storage/self/primary": "/sdcard"}
     MAX_UPLOAD_BYTES = 512 * 1024 * 1024
     TRANSFER_TIMEOUT = 900
     JOB_TTL_SECONDS = 60
@@ -108,10 +112,21 @@ class FileService:
             link = posixpath.join(posixpath.dirname(path), link)
         return posixpath.normpath(link)
 
+    @classmethod
+    def _canonicalize_real(cls, real: str) -> str:
+        """/sdcard 的视图本体映射回白名单等效根（E7 误伤回归修正），其余原样。"""
+        for alias, root in cls.VIEW_ROOT_ALIASES.items():
+            if real == alias:
+                return root
+            if real.startswith(alias + "/"):
+                return root + real[len(alias) :]
+        return real
+
     async def _ensure_writable_real(self, device_id: str, path: str) -> None:
         """写操作前置复核：文本白名单校验 + 设备端真实路径复核（软链解析后仍须在白名单内）。"""
         self._ensure_writable(path)
-        self._ensure_writable(await self._resolve_real(device_id, path))
+        real = await self._resolve_real(device_id, path)
+        self._ensure_writable(self._canonicalize_real(real))
 
     @staticmethod
     def _check_name(name: str) -> str:

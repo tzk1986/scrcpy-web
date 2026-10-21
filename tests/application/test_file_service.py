@@ -466,6 +466,23 @@ async def test_write_ops_pass_with_normal_paths(svc: FileService, adb: FakeAdb) 
     assert job.status == "done"
 
 
+async def test_sdcard_view_alias_legit_writes_pass(svc: FileService, adb: FakeAdb) -> None:
+    """E7 真机回归（.22/A9 实测）：/sdcard 视图本体 /storage/emulated/0 等价别名化，
+    合法写不再被复核误伤；A7.1 单级兜底形态（→/storage/self/primary）同样放行。"""
+    adb.real_paths["/sdcard"] = "/storage/emulated/0"
+    job = await svc.upload("d", "/sdcard", "v.txt", _chunk_reader([b"x"]))
+    assert job.status == "done"
+    # 别名只影响复核，实际写入路径仍是用户语义的 /sdcard/*
+    assert adb.pushed[-1][2] == "/sdcard/v.txt"
+    # 视图本体下的子路径解析（前缀替换形态）也放行
+    job = await svc.upload("d", "/sdcard/Download", "w.txt", _chunk_reader([b"x"]))
+    assert job.status == "done"
+    # A7.1 形态：-f rc=1 → 单级 readlink 出 /storage/self/primary，别名后放行
+    adb.readlink_f_broken = True
+    job = await svc.upload("d", "/sdcard", "u.txt", _chunk_reader([b"x"]))
+    assert job.status == "done"
+
+
 async def test_readlink_f_broken_falls_back_to_single_level(svc: FileService, adb: FakeAdb) -> None:
     """.25 实测 A7.1 形态：-f rc=1 → 单级 readlink 兜底仍拦逃逸；非链接降级放行。"""
     adb.readlink_f_broken = True
