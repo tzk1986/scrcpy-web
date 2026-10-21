@@ -325,7 +325,7 @@ class SqliteDebugRepository(DebugRepository):
 
         参数：
             session_id: 要查询的会话。
-            filter: 过滤条件（level、tag、pid、search、limit）。
+            filter: 过滤条件（level、tag、pid、limit）。
 
         返回：
             匹配过滤条件的 LogEntry 对象列表，最旧在前。
@@ -339,7 +339,8 @@ class SqliteDebugRepository(DebugRepository):
         if filter.tag:
             sql += " AND tag LIKE ?"
             params.append(f"%{filter.tag}%")
-        if filter.pid:
+        # 方案 51 D09：is not None 判定，pid=0 不再是假值漏过滤
+        if filter.pid is not None:
             sql += " AND pid=?"
             params.append(filter.pid)
 

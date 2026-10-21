@@ -17,6 +17,7 @@ import os
 import time
 
 import pytest
+import structlog
 
 import config.settings as config_settings
 from app.core.config_watch import ConfigWatcher, reload_config, watched_paths
@@ -27,14 +28,21 @@ from .http_testkit import make_client
 
 @pytest.fixture(autouse=True)
 def _isolate_settings(monkeypatch):
-    """隔离全局配置缓存与环境变量，用例结束后还原，避免污染其他测试。"""
+    """隔离全局配置缓存、环境变量与 structlog 全局配置，用例结束后还原。
+
+    方案 51 D15 后 reload_config() 成功路径会调 setup_logging() 改全局日志
+    配置（默认 INFO 过滤）；capture_logs 只换 processors 不换 wrapper_class，
+    不还原会把后续依赖 debug 级事件的用例（如 test_video 降级断言）静默滤掉。
+    """
     for var in ("BACKEND_PORT", "BACKEND_HOST", "APP_ENV", "ADB_PATH"):
         monkeypatch.delenv(var, raising=False)
     saved = config_settings._settings
+    saved_log_config = structlog.get_config()
     try:
         yield
     finally:
         config_settings._settings = saved
+        structlog.configure(**saved_log_config)
 
 
 def _fake_loader(config: dict):

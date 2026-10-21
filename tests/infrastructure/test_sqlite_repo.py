@@ -205,6 +205,16 @@ async def test_query_logs_filters(debug_repo):
     assert await debug_repo.query_logs("f", LogFilter(level="V")) == []
 
 
+async def test_query_logs_pid_zero_filter_effective(debug_repo):
+    # 方案 51 D09：pid=0 是合法过滤值，旧 `if filter.pid:` 真值判断会静默忽略
+    await debug_repo.save_logs_bulk([
+        ("z", 1.0, "I", 0, 1, "Init", "zero", "r", 0),
+        ("z", 2.0, "I", 1, 1, "App", "one", "r", 1),
+    ])
+    by_zero = await debug_repo.query_logs("z", LogFilter(pid=0))
+    assert [e.message for e in by_zero] == ["zero"]
+
+
 # ---------------------------------------------------------------------------
 # shell 历史
 # ---------------------------------------------------------------------------

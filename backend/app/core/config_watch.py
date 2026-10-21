@@ -14,6 +14,8 @@
       不会被 .env 修改覆盖，改 .env 需重启生效
     - server.host/port 变更需重启（uvicorn 已绑定旧地址），仅记录告警
     - 数据库路径、连接池大小等构造时读取的配置不热切换
+    - app.log_level / app.debug 热重载即时生效：重载成功后重调
+      setup_logging() 重新应用日志配置（方案 51 D15）
     - 重载失败（YAML 语法错误等）保留旧配置继续运行，仅记录告警
 
 零额外依赖：asyncio 轮询 mtime，不引入 watchdog。
@@ -25,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import config.settings as config_settings
-from app.core.logging import get_logger
+from app.core.logging import get_logger, setup_logging
 from config.settings import reload_settings, settings
 
 logger = get_logger(__name__)
@@ -60,6 +62,9 @@ def reload_config() -> dict[str, Any]:
     except Exception as e:
         logger.warning("config_reload_failed_keep_old", error=str(e))
         return {"reloaded": False, "error": str(e)}
+
+    # 方案 51 D15：重载成功后重配日志——log_level/debug 新值即时生效
+    setup_logging()
 
     bind_changed = (old.server.host, old.server.port) != (new.server.host, new.server.port)
     if bind_changed:

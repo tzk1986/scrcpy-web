@@ -15,9 +15,12 @@ import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import structlog
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = structlog.get_logger(__name__)
 
 
 class AppConfig(BaseSettings):
@@ -30,11 +33,11 @@ class AppConfig(BaseSettings):
 
 
 class ServerConfig(BaseSettings):
-    # A1 M1：默认回环——后端零鉴权，0.0.0.0 会向局域网全网卡暴露；
-    # 局域网开放须显式改 base.yaml 或设 BACKEND_HOST=0.0.0.0（run_server 会警示）
+    # A1 M1：默认回环——后端零鉴权，0.0.0.0 会向局域网全网卡暴露。
+    # 方案 51 D02：frozen exe 下 base.yaml 打进包内只读不可改，改绑仅有
+    # BACKEND_HOST=0.0.0.0 环境变量一条路（run_server 会警示）；源码部署才可改本文件。
     host: str = "127.0.0.1"
     port: int = 8765  # 后端 HTTP/WS 端口；可被 base.yaml server.port 或 BACKEND_PORT 环境变量覆盖
-    workers: int = 4
 
 
 def _is_writable(directory: Path) -> bool:
@@ -284,7 +287,14 @@ def load_yaml_config(env: str = "base") -> dict[str, Any]:
         return {}
 
     with open(config_file, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        data = yaml.safe_load(f) or {}
+
+    # 方案 51 D14：顶层节名拼错会被 Settings extra="ignore" 静默吞掉——
+    # 未知节告警提升可发现性（不 forbid，避免拼错直接起不来）。
+    unknown = set(data) - set(Settings.model_fields)
+    if unknown:
+        logger.warning("config_unknown_sections", env=env, sections=sorted(unknown))
+    return data
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

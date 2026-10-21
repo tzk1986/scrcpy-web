@@ -58,7 +58,9 @@ def setup_logging() -> None:
         ),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=True,
+        # 方案 51 D15：False——热重载再次 setup_logging 后新级别/格式立即生效
+        # （True 会让首次使用后的 logger 固化旧配置，重载改 log_level 不生效）。
+        cache_logger_on_first_use=False,
     )
 
 

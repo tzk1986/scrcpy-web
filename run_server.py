@@ -99,9 +99,18 @@ def main() -> int:
         srv.host, frozen=True, explicit_env=os.getenv("BACKEND_HOST")
     )
     if not launcher.acquire_single_instance_mutex():
-        # 另一实例在跑：直接开浏览器指向其端口（§8.4-6）
+        # 另一实例在跑：开浏览器指向其端口（§8.4-6）。
+        # 方案 51 D16：先 TCP 探活——port.txt 可能是崩溃进程遗留的死地址，
+        # 探活失败则不开窗，避免浏览器对着无响应端口报错。
         port = launcher.read_runtime_port(app_base_dir() / "data" / "port.txt") or srv.port
-        webbrowser.open(f"http://{host}:{port}")
+        if launcher.wait_until_port_ready(host, port, timeout=2.0):
+            webbrowser.open(f"http://{host}:{port}")
+        else:
+            print(
+                f"[OpenScrcpy] 另一实例在运行但 {host}:{port} 无响应"
+                "（port.txt 可能为遗留死地址），未打开浏览器",
+                file=sys.stderr,
+            )
         return 0
 
     port = launcher.find_available_port(host, srv.port)
@@ -115,6 +124,11 @@ def main() -> int:
     if not launcher.wait_until_port_ready(host, port):
         # 服务起不来时不得静默开浏览器到死端口（任务 3 审查 Important F1 修正）：
         # frozen 下 stderr 已重定向到日志文件；非零退出码便于双击场景排查
+        # 方案 51 D16：同步清掉刚写入的 port.txt，防止后续实例读到死地址
+        try:
+            (app_base_dir() / "data" / "port.txt").unlink(missing_ok=True)
+        except OSError:
+            pass
         print(
             f"[OpenScrcpy] 服务在 {host}:{port} 启动超时，请查看 logs/openscrcpy.log",
             file=sys.stderr,

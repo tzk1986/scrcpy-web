@@ -16,6 +16,8 @@
     ├── InvalidIdentifierError   — 外部标识符（设备 ID/包名）格式非法（400，方案 37 A5）
     ├── AdbError                 — ADB 子进程返回非零退出码（400）
     ├── DeviceUnreachableError   — TCP 可达性预检失败（400，connect/disconnect 前置）
+    ├── DeviceNotReadyError      — adb 回 already connected 但 transport 非 device 态（400，方案 51 D11 补树）
+    ├── ScrcpyOccupiedError      — 设备端有在跑 scrcpy 会话，起流前拦截（400，方案 48 D1，D11 补树）
     ├── InvalidPairRequestError  — 无线调试配对请求参数非法（400，方案 47 T4）
     ├── PairError                — adb 无线调试配对失败，message 为分类中文文案（400，方案 47 T4）
     ├── ConfigReloadError        — 配置热重载失败（400，旧配置保持生效）

@@ -70,13 +70,11 @@ class LogFilter:
         level:  按日志级别过滤（V/D/I/W/E/F）。
         tag:    按标签子串匹配过滤。
         pid:    按精确 PID 过滤。
-        search: 消息正文全文搜索。
         limit:  最大返回条目数（默认 1000）。
     """
     level: str | None = None
     tag: str | None = None
     pid: int | None = None
-    search: str | None = None
     limit: int = 1000
 
 
@@ -848,6 +846,10 @@ class DebugRepository(Protocol):
         """
         ...
 
+    async def close(self) -> None:
+        """释放本库路径占用的连接池（方案 51 D05：停机时由 lifespan 调用）。"""
+        ...
+
 
 @runtime_checkable
 class MetricsRepository(Protocol):
@@ -1019,4 +1021,8 @@ class DeviceRepository(Protocol):
         参数：
             device_id: 要删除的设备的 ADB 序列号。
         """
+        ...
+
+    async def close(self) -> None:
+        """释放本库路径占用的连接池（方案 51 D05：停机时由 lifespan 调用）。"""
         ...

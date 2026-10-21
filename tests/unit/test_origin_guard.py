@@ -52,6 +52,29 @@ def test_allows_whitelisted_dev_server():
     assert _client().get("/probe", headers={"Origin": "http://localhost:8080"}).status_code == 200
 
 
+def test_allows_origin_explicit_default_port():
+    # 方案 51 D17：Origin 显式 :80 与 Host 省略形式语义同源，须放行（原误 403）
+    r = _client("http://127.0.0.1").get("/probe", headers={"Origin": "http://127.0.0.1:80"})
+    assert r.status_code == 200
+
+
+def test_allows_host_explicit_default_port():
+    r = _client().get("/probe", headers={"Origin": "http://127.0.0.1", "host": "127.0.0.1:80"})
+    assert r.status_code == 200
+
+
+def test_allows_same_origin_mixed_case():
+    # D17：host 部分大小写不敏感
+    client = _client("http://localhost:8765")
+    assert client.get("/probe", headers={"Origin": "http://LocalHost:8765"}).status_code == 200
+
+
+def test_rejects_non_default_port_mismatch():
+    # 归一只剥默认端口：:80 与 :8765 仍是不同源，不得因小写化/剥端口放松
+    r = _client().get("/probe", headers={"Origin": "http://127.0.0.1:80", "host": "127.0.0.1:8765"})
+    assert r.status_code == 403
+
+
 def test_rejects_dns_rebinding_domain():
     # rebind：Origin 与 Host 同为攻击域名，netloc 相等但 host 非 IP 字面量/localhost → 拒
     client = _client("http://rebind.example:8765")

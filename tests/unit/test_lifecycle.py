@@ -40,13 +40,18 @@ async def test_lifespan_shutdown_clears_all_recordings(monkeypatch) -> None:
     fake_debug.restore_sessions = AsyncMock()
     fake_debug.start_cleanup_task = AsyncMock()
     fake_debug.stop_cleanup_task = AsyncMock()
-    fake_debug.writer.flush = AsyncMock()
+    fake_debug.writer.stop = AsyncMock()  # 方案 51 D13：停机由 flush 改 stop（冲净+取消循环）
     fake_device = MagicMock()
     fake_device.start = AsyncMock()
     fake_device.stop = AsyncMock()
+    fake_dev_repo = MagicMock(close=AsyncMock())
+    fake_dbg_repo = MagicMock(close=AsyncMock())
     monkeypatch.setattr("app.deps.get_recording_service", lambda: rec)
     monkeypatch.setattr("app.deps.get_debug_service", lambda: fake_debug)
     monkeypatch.setattr("app.deps.get_device_service", lambda: fake_device)
+    # 方案 51 D05：停机释放两库连接池——fake 注入保持不触真实 SQLite
+    monkeypatch.setattr("app.deps.get_device_repository", lambda: fake_dev_repo)
+    monkeypatch.setattr("app.deps.get_debug_repository", lambda: fake_dbg_repo)
     monkeypatch.setattr(
         "app.deps.get_performance_service", lambda: MagicMock(cleanup=AsyncMock())
     )
@@ -60,3 +65,6 @@ async def test_lifespan_shutdown_clears_all_recordings(monkeypatch) -> None:
 
     assert rec.calls == ["start", "stop", "cleanup_all"]
     fake_device.stop.assert_awaited_once()
+    fake_debug.writer.stop.assert_awaited_once()
+    fake_dev_repo.close.assert_awaited_once()
+    fake_dbg_repo.close.assert_awaited_once()

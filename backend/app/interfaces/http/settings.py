@@ -130,7 +130,13 @@ async def get_settings_payload() -> dict[str, Any]:
 
 @router.put("")
 async def put_settings_payload(patch: SettingsPatch) -> dict[str, bool]:
-    """节级合并写入（仅 model_fields_set 内的节生效；节传 null = 清除该节）。"""
+    """
+    节级合并写入（仅 model_fields_set 内的节生效；stream/recording 节传 null = 清除该节）。
+
+    方案 51 D08 显式化：devices 节是唯一例外——传 null 为**无操作**（整表保留），
+    清除全部设备覆盖须逐设备键删除。方案 45 T8 未定义全局清除语义，按最小惊讶
+    维持现状不动行为。
+    """
     user = settings_store.read_user_config()
     if "stream" in patch.model_fields_set:
         stream_patch = (

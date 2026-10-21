@@ -27,7 +27,8 @@
     4. stop_cleanup_task() — 停止后台清理任务（recording + debug 日志）；
        随后 RecordingService.cleanup_all_recordings() 清空录像暂存目录
        （方案 42 §3）
-    5. writer.flush()      — 冲刷批量日志缓冲
+    5. writer.stop()       — 冲净批量日志缓冲并取消周期冲刷任务（方案 51 D13）
+    6. repo.close()        — 释放 device/debug 两库 SQLite 连接池（方案 51 D05）
 
 添加新的启动工作时（如连接池、后台任务），放在 `yield` 之前。
 添加关闭工作时，放在 `yield` 之后。
@@ -63,7 +64,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 恢复上次进程遗留的活跃调试会话（续跑 logcat 采集）
     from app.deps import (
+        get_debug_repository,
         get_debug_service,
+        get_device_repository,
         get_device_service,
         get_network_service,
         get_performance_service,
@@ -116,7 +119,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 停止日志清理任务
     await debug_service.stop_cleanup_task()
 
-    # 冲刷批量写入缓冲，避免退出时丢日志
-    await debug_service.writer.flush()
+    # 方案 51 D13：stop=冲净积压缓冲+取消周期冲刷任务；原 flush 只清当前
+    # 一批，循环里排队的积压未落库即随进程消失
+    await debug_service.writer.stop()
+
+    # 方案 51 D05：释放两库连接池（repo.close 的既定用途，此前停机从未调用）
+    await get_device_repository().close()
+    await get_debug_repository().close()
 
     logger.info("application_stopped")

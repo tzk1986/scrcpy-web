@@ -48,7 +48,8 @@ from app.infrastructure.persistence.sqlite import SqliteDebugRepository, SqliteD
 # @lru_cache() 确保每个实现只创建一次。
 # 这是安全的，因为：
 #   - AdbCliDriver 是无状态的（每次调用生成子进程）
-#   - SQLite 仓库每次操作打开新连接（aiosqlite）
+#   - SQLite 仓库自身无状态：连接由模块级 _POOLS 池按库路径复用（方案 51 D18
+#     勘误——旧注释"每次操作打开新连接"与实现不符），单例不持有连接态
 #   - ScrcpyEncoder 跟踪单个子进程（在当前每进程单设备模型中没问题）
 
 @lru_cache()

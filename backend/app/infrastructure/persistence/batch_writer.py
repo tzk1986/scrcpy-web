@@ -26,6 +26,8 @@ class BatchLogWriter:
         self._buffer: list[tuple[Any, ...]] = []
         self._task: asyncio.Task[None] | None = None
         self._dropped = 0
+        # 方案 51 D12：即时冲刷任务持引用（done 回调 discard），防裸 create_task 被 GC
+        self._flush_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
@@ -45,8 +47,10 @@ class BatchLogWriter:
             entry.tag, entry.message, entry.raw, seq,
         ))
         if len(self._buffer) >= self._batch_size:
-            # 事件循环内无法 await，交给后台 _loop 即时冲刷
-            asyncio.create_task(self.flush())
+            # 事件循环内无法 await，交给后台任务即时冲刷（D12 持引用）
+            task = asyncio.create_task(self.flush())
+            self._flush_tasks.add(task)
+            task.add_done_callback(self._flush_tasks.discard)
 
     async def flush(self) -> None:
         if not self._buffer:

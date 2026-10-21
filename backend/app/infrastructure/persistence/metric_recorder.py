@@ -40,6 +40,8 @@ class MetricRecorder:
         self._network_rows: list[tuple[Any, ...]] = []
         self._task: asyncio.Task[None] | None = None
         self._written = 0
+        # 方案 51 D12：即时冲刷任务持引用（done 回调 discard），防裸 create_task 被 GC
+        self._flush_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def written(self) -> int:
@@ -84,8 +86,10 @@ class MetricRecorder:
 
     def _kick_if_full(self) -> None:
         if len(self._perf_rows) + len(self._network_rows) >= self._batch_size:
-            # 事件循环内无法 await，交给后台 _loop 即时冲刷
-            asyncio.create_task(self.flush())
+            # 事件循环内无法 await，交给后台任务即时冲刷（D12 持引用）
+            task = asyncio.create_task(self.flush())
+            self._flush_tasks.add(task)
+            task.add_done_callback(self._flush_tasks.discard)
 
     async def flush(self) -> None:
         perf_batch, self._perf_rows = self._perf_rows, []

@@ -51,11 +51,27 @@ class OriginGuardMiddleware:
         if not host:
             return False
         parsed = urlparse(origin)
-        if parsed.netloc != host:
+        # 方案 51 D17：比较前归一——scheme/host 大小写不敏感；显式默认端口
+        # （http:80 / https:443）与省略形式语义同源，不归一会误 403 合法请求。
+        scheme = parsed.scheme.lower()
+        if OriginGuardMiddleware._normalize_authority(parsed.netloc, scheme) != (
+            OriginGuardMiddleware._normalize_authority(host, scheme)
+        ):
             return False
         # rebind 场景 Origin/Host 同为攻击域名（netloc 相等），此时 host 部分是域名
         # 而非 IP 字面量/localhost → 不采信；局域网 IP 直连访问不受影响。
         return OriginGuardMiddleware._is_ip_or_localhost(parsed.hostname or "")
+
+    _DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+    @classmethod
+    def _normalize_authority(cls, authority: str, scheme: str) -> str:
+        """小写化并剥离对应 scheme 的显式默认端口。"""
+        lowered = authority.lower()
+        _, _, port = lowered.rpartition(":")
+        if port == cls._DEFAULT_PORTS.get(scheme):
+            return lowered[: len(lowered) - len(port) - 1]
+        return lowered
 
     @staticmethod
     def _is_ip_or_localhost(host: str) -> bool:

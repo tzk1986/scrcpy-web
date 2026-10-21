@@ -9,17 +9,16 @@ app:
 
 server:
   # A1 M1：默认仅绑回环（后端零鉴权，0.0.0.0 会向局域网全网卡暴露）。
-  # 需要局域网访问时显式改为 0.0.0.0 或设 BACKEND_HOST=0.0.0.0，自担风险。
+  # 源码部署可显式改为 0.0.0.0，自担风险；frozen exe 下本文件只读不可改，
+  # 改绑仅 BACKEND_HOST=0.0.0.0 环境变量生效（方案 51 D02）。
   host: 127.0.0.1
   port: 8765
-  workers: 4
 
 database:
   path: ./data/debug.sqlite
   echo: false
 
 adb:
-  path: adb
   timeout: 30
   probe_timeout: 1.5   # TCP 可达性预检超时（秒），仅用于 connect/disconnect 前置探测
   reconnect_interval: 5
