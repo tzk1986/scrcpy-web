@@ -2,7 +2,8 @@
 批量日志写入器
 ================
 
-层：基础设施 → 持久化。
+层：应用层（方案 52 B6 R3 自 infrastructure/persistence/batch_writer.py
+搬正——经注入 DebugRepository 端口落库，本体零 infra 技术）。
 
 把 logcat 条目先缓冲在内存，满 batch_size 条或每 flush_interval 秒
 用 save_logs_bulk 单事务 executemany 落库，把逐条 commit 的开销摊薄。

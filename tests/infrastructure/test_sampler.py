@@ -16,8 +16,8 @@ import time
 
 import pytest
 
+from app.application.performance_sampler import PerformanceSampler
 from app.core.exceptions import AdbError
-from app.infrastructure.performance.sampler import PerformanceSampler
 
 GOOD_OUTPUTS = {
     "cat /proc/stat": "cpu  100 20 30 40 5 6 0 0 0 0\n",

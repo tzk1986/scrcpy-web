@@ -1,5 +1,5 @@
 """
-网络采样器测试（infrastructure/network/sampler.py）
+网络采样器测试（application/network_sampler.py，方案 52 B6 R3 搬正）
 ===================================================
 
 用手写 FakeAdb（风格同 tests/unit/test_video.py、tests/application/test_app_service.py）
@@ -27,9 +27,9 @@
 import pytest
 
 from app.core.exceptions import AdbError
-import app.infrastructure.network.sampler as sampler_module
+import app.application.network_sampler as sampler_module
+from app.application.network_sampler import NetworkSampler
 from app.domain.runtime import NetworkConnection
-from app.infrastructure.network.sampler import NetworkSampler
 
 DEV = "net-sampler-device"
 

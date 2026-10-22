@@ -4,8 +4,8 @@ import time
 
 import pytest
 
+from app.application.batch_writer import BatchLogWriter
 from app.domain.ports import LogEntry, LogFilter
-from app.infrastructure.persistence.batch_writer import BatchLogWriter
 from app.infrastructure.persistence.sqlite import SqliteDebugRepository
 
 

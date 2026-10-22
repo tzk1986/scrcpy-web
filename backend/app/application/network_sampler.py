@@ -2,7 +2,8 @@
 网络数据采集器
 ==============
 
-层：基础设施层。
+层：应用层（方案 52 B6 R3 自 infrastructure/network/sampler.py 搬正——
+零 infra 技术纯逻辑件，仅依 AdbDriver 端口与 domain 数据对象）。
 
 通过 ADB 命令采集 Android 设备的网络状态：
 - 网络流量统计（接收/发送字节数、速率）

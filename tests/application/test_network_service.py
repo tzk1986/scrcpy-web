@@ -23,7 +23,7 @@ from app.application.network_service import NetworkService
 from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.domain.runtime import NetworkStats
-from app.infrastructure.persistence.metric_recorder import MetricRecorder
+from app.application.metric_recorder import MetricRecorder
 
 DEV = "net-svc-dev"
 

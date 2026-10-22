@@ -23,11 +23,11 @@ Perf/Network 两监控服务在「录制三态（start/stop/status）+ finalize 
 import asyncio
 from typing import Any, ClassVar
 
+from app.application.metric_recorder import MetricRecorder
 from app.core.config import settings
 from app.core.exceptions import RecordingDisabledError
 from app.core.logging import get_logger
 from app.domain.ports import MetricsRepository
-from app.infrastructure.persistence.metric_recorder import MetricRecorder
 
 logger = get_logger(__name__)
 

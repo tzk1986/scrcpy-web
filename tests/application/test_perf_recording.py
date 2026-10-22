@@ -31,7 +31,7 @@ from app.core.config import settings
 from app.core.exceptions import AdbError, RecordingDisabledError
 from app.domain.runtime import CpuProcessInfo
 from app.domain.runtime import PerformanceMetrics
-from app.infrastructure.persistence.metric_recorder import MetricRecorder
+from app.application.metric_recorder import MetricRecorder
 
 DEV = "perf-rec-dev"
 

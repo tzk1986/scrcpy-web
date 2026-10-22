@@ -34,6 +34,7 @@ from uuid import uuid4
 
 from fastapi import WebSocket
 
+from app.application.batch_writer import BatchLogWriter
 from app.core.exceptions import (
     InvalidIdentifierError,
     SessionLimitError,
@@ -50,7 +51,6 @@ from app.domain.ports import (
     ShellSession,
 )
 from app.domain.session import DebugSession
-from app.infrastructure.persistence.batch_writer import BatchLogWriter
 from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 logger = get_logger(__name__)

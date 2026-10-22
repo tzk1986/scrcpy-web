@@ -2,7 +2,8 @@
 指标批写录制器
 ==============
 
-层：基础设施 → 持久化。
+层：应用层（方案 52 B6 R3 自 infrastructure/persistence/metric_recorder.py
+搬正——经注入 MetricsRepository 端口落库，本体零 infra 技术）。
 
 录制期间把设备 Perf/Network 采样点缓冲在内存，满 batch_size 条
 或每 flush_interval 秒用 save_*_samples_bulk 单事务 executemany
