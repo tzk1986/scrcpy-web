@@ -17,10 +17,11 @@
     AdbCliDriver           ← 实现 AdbDriver（Protocol）
     SqliteDeviceRepository ← 实现 DeviceRepository（Protocol）
     SqliteDebugRepository  ← 实现 DebugRepository（Protocol）
+    SqliteMetricsRepository ← 实现 MetricsRepository（Protocol，方案 52 R4）
     ScrcpyEncoder          ← 实现 VideoEncoder（Protocol）
 
     DeviceService(adb, repo)
-    DebugService(adb, repo)
+    DebugService(adb, repo, metrics_repo)
     RecordingService(adb)      ← 方案 37 B3（单例：会话表 + 周期清理任务）
     StreamService(encoder)
     SessionService()（无依赖，纯内存）
@@ -37,9 +38,13 @@ from app.application.performance_service import PerformanceService
 from app.application.recording_service import RecordingService
 from app.application.session_service import SessionService
 from app.application.stream_service import StreamService
-from app.domain.ports import AdbDriver, DebugRepository, DeviceRepository
+from app.domain.ports import AdbDriver, DebugRepository, DeviceRepository, MetricsRepository
 from app.infrastructure.adb.cli import AdbCliDriver
-from app.infrastructure.persistence.sqlite import SqliteDebugRepository, SqliteDeviceRepository
+from app.infrastructure.persistence.sqlite import (
+    SqliteDebugRepository,
+    SqliteDeviceRepository,
+    SqliteMetricsRepository,
+)
 from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 
 
@@ -71,6 +76,16 @@ def get_debug_repository() -> DebugRepository:
     return SqliteDebugRepository()
 
 
+@lru_cache()
+def get_metrics_repository() -> MetricsRepository:
+    """返回进程级指标仓库单例（方案 52 R4：metrics_repo 必填化后由此装配）。
+
+    与 device/debug repo 同款 lru_cache 理由：仓库自身无状态，连接由
+    模块级 _POOLS 按库路径复用（方案 51 D18 勘误口径）。
+    """
+    return SqliteMetricsRepository()
+
+
 # ---------------------------------------------------------------------------
 # 瞬态应用服务工厂
 # ---------------------------------------------------------------------------
@@ -100,19 +115,20 @@ def get_debug_service() -> DebugService:
     return DebugService(
         adb=get_adb_driver(),
         repo=get_debug_repository(),
+        metrics_repo=get_metrics_repository(),
     )
 
 
 @lru_cache()
 def get_performance_service() -> PerformanceService:
     """返回进程级 PerformanceService 单例。"""
-    return PerformanceService(adb=get_adb_driver())
+    return PerformanceService(adb=get_adb_driver(), metrics_repo=get_metrics_repository())
 
 
 @lru_cache()
 def get_network_service() -> NetworkService:
     """返回进程级 NetworkService 单例。"""
-    return NetworkService(adb=get_adb_driver())
+    return NetworkService(adb=get_adb_driver(), metrics_repo=get_metrics_repository())
 
 
 @lru_cache()

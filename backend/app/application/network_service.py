@@ -26,7 +26,6 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver, MetricsRepository
 from app.domain.runtime import NetworkConnection, NetworkStats
-from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 logger = get_logger(__name__)
 
@@ -40,21 +39,22 @@ class NetworkService(RecordingSupportMixin):
     页面是否还在使用；停止监控/设备失联统一走 `_release_device` 释放暂存。
 
     使用示例：
-        service = NetworkService(adb_driver)
+        service = NetworkService(adb_driver, metrics_repo)
         stats = await service.get_stats("192.168.1.100")  # 冷启动自动拉起采样
     """
 
-    def __init__(self, adb: AdbDriver, metrics_repo: MetricsRepository | None = None) -> None:
+    def __init__(self, adb: AdbDriver, metrics_repo: MetricsRepository) -> None:
         """
         初始化服务。
 
         参数：
             adb: ADB 驱动实例。
-            metrics_repo: 指标仓储（录制落盘与缓存态导出用），
-                默认 SqliteMetricsRepository，测试可注入替身。
+            metrics_repo: 指标仓储（录制落盘与缓存态导出用），必填由
+                组合根 deps 注入（方案 52 R4——原默认值
+                SqliteMetricsRepository() 即违规落点），测试注入替身。
         """
         self.adb = adb
-        self._metrics_repo = metrics_repo or SqliteMetricsRepository()
+        self._metrics_repo = metrics_repo
         self._samplers: dict[str, NetworkSampler] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._buffers: dict[str, deque[NetworkStats]] = {}

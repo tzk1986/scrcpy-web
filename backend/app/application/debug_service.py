@@ -51,7 +51,6 @@ from app.domain.ports import (
     ShellSession,
 )
 from app.domain.session import DebugSession
-from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 logger = get_logger(__name__)
 
@@ -79,19 +78,20 @@ class DebugService:
         self,
         adb: AdbDriver,
         repo: DebugRepository,
-        metrics_repo: MetricsRepository | None = None,
+        metrics_repo: MetricsRepository,
     ):
         """
         参数：
             adb: 用于设备通信的 ADB 驱动。
             repo: 用于持久化的调试仓库。
             metrics_repo: 指标仓储（清理链路对 perf/network 采样表做
-                时间/容量双限删除用），默认 SqliteMetricsRepository，
-                测试可注入替身。
+                时间/容量双限删除用），必填由组合根 deps 注入（方案 52
+                R4——原默认值 SqliteMetricsRepository() 即应用层直依
+                infra 落点），测试注入替身。
         """
         self.adb = adb
         self.repo = repo
-        self._metrics_repo = metrics_repo or SqliteMetricsRepository()
+        self._metrics_repo = metrics_repo
         # 活跃会话，按 session_id 索引。内存中用于快速访问。
         self.sessions: dict[str, DebugSession] = {}
         # 后台 logcat 收集任务，按 session_id 索引。

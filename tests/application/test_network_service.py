@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.domain.runtime import NetworkStats
 from app.application.metric_recorder import MetricRecorder
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 DEV = "net-svc-dev"
 
@@ -123,7 +124,7 @@ def fast_loop(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_start_monitoring_idempotent_and_buffers(monkeypatch, fast_loop) -> None:
     """start 幂等；循环把采样点写入缓冲；stop 后缓冲与任务全部释放。"""
     adb = FakeAdb(std_outputs())
-    service = NetworkService(adb)
+    service = NetworkService(adb, metrics_repo=SqliteMetricsRepository())
 
     await service.start_monitoring(DEV)
     await service.start_monitoring(DEV)  # 幂等
@@ -140,7 +141,7 @@ async def test_start_monitoring_idempotent_and_buffers(monkeypatch, fast_loop) -
 async def test_device_loss_stops_and_releases_buffer(monkeypatch, fast_loop) -> None:
     """连续 lost_failures 次失败 → 任务自然结束，暂存缓冲释放（B1）。"""
     monkeypatch.setattr(settings().metrics, "lost_failures", 3)
-    service = NetworkService(DeadAdb())
+    service = NetworkService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
 
     await service.start_monitoring(DEV)
     await wait_until(lambda: DEV not in service._tasks)
@@ -154,7 +155,7 @@ async def test_single_failure_recovers_below_threshold(monkeypatch, fast_loop) -
     monkeypatch.setattr(settings().metrics, "lost_failures", 5)
     adb = FakeAdb(std_outputs())
     adb.failures_left = [["cat /proc/net/dev", 1]]  # 仅第一轮失败一次
-    service = NetworkService(adb)
+    service = NetworkService(adb, metrics_repo=SqliteMetricsRepository())
 
     await service.start_monitoring(DEV)
     await wait_until(lambda: len(list(service._buffers.get(DEV, []))) >= 1)
@@ -166,7 +167,7 @@ async def test_single_failure_recovers_below_threshold(monkeypatch, fast_loop) -
 
 async def test_stop_monitoring_idempotent() -> None:
     """stop 未监控设备不抛异常，可重复调用。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
 
     await service.stop_monitoring("no-such-device")
     await service.stop_monitoring("no-such-device")
@@ -179,7 +180,7 @@ async def test_stop_monitoring_idempotent() -> None:
 async def test_get_stats_reuses_fresh_buffer_point(monkeypatch) -> None:
     """缓冲最新点新鲜（age < interval）→ 直接复用，不触发采样。"""
     adb = FakeAdb(std_outputs())
-    service = NetworkService(adb)
+    service = NetworkService(adb, metrics_repo=SqliteMetricsRepository())
     monkeypatch.setattr(settings().metrics, "network_interval", 2.0)
     fresh = make_stats(ts=time.time() - 0.1, rx_bytes=42)
     service._buffers[DEV] = deque([fresh], maxlen=5)
@@ -195,7 +196,7 @@ async def test_get_stats_empty_buffer_falls_back_to_inline_sample(monkeypatch) -
     """方案 51 E3：缓冲入口已建但尚未出首样本（空 deque）→ 不 IndexError，
     按冷启动路径内联采样兜底。"""
     monkeypatch.setattr(settings().metrics, "network_interval", 2.0)
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
     service._buffers[DEV] = deque(maxlen=5)  # 首样本竞态窗
 
     result = await service.get_stats(DEV)
@@ -207,7 +208,7 @@ async def test_get_stats_empty_buffer_falls_back_to_inline_sample(monkeypatch) -
 async def test_get_stats_cold_start_starts_and_samples(monkeypatch) -> None:
     """无任务无缓冲：自动拉起监控 + 内联采样一次并返回。"""
     monkeypatch.setattr(settings().metrics, "network_interval", 2.0)
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
 
     result = await service.get_stats(DEV)
 
@@ -220,7 +221,7 @@ async def test_get_stats_cold_start_starts_and_samples(monkeypatch) -> None:
 async def test_get_stats_stale_point_triggers_inline_sample(monkeypatch) -> None:
     """缓冲点不新鲜（age >= interval）→ 内联采样重新取样。"""
     monkeypatch.setattr(settings().metrics, "network_interval", 2.0)
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
     stale = make_stats(ts=time.time() - 100, rx_bytes=1)
     service._buffers[DEV] = deque([stale], maxlen=5)
 
@@ -233,7 +234,7 @@ async def test_get_stats_stale_point_triggers_inline_sample(monkeypatch) -> None
 
 async def test_get_connections_snapshot_without_starting_task() -> None:
     """连接列表是即时快照：不写入缓冲、不拉起采样任务。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
 
     connections = await service.get_connections(DEV)
 
@@ -255,7 +256,7 @@ def guarded(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_guard_stops_after_idle(guarded) -> None:
     """无访问（无录制）超过 idle_ttl → 停采并释放缓冲。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
 
     await service.get_stats(DEV)  # start + touch 一次
     assert DEV in service._tasks
@@ -268,7 +269,7 @@ async def test_guard_stops_after_idle(guarded) -> None:
 
 async def test_guard_kept_alive_by_ongoing_access(guarded) -> None:
     """HTTP 轮询持续访问期间守卫不断续期；停止访问后停采。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
 
     await service.get_stats(DEV)
     for _ in range(10):  # 持续 0.2s 的访问心跳
@@ -283,7 +284,7 @@ async def test_guard_kept_alive_by_ongoing_access(guarded) -> None:
 async def test_guard_recording_inhibits_stop_then_resumes(guarded, monkeypatch) -> None:
     """录制中禁止空闲停采；录制结束后守卫继续观察并停采。"""
     monkeypatch.setattr(settings().metrics, "recording", True)
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
     recorder = MetricRecorder(FakeMetricsRepo())
     await recorder.start()
     service._recorders[DEV] = recorder
@@ -299,7 +300,7 @@ async def test_guard_recording_inhibits_stop_then_resumes(guarded, monkeypatch) 
 
 async def test_cleanup_stops_all_devices() -> None:
     """cleanup 清理所有设备任务与缓冲（服务关闭路径）。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
     for did in (DEV, "net-svc-dev-2"):
         await service.start_monitoring(did)
 
@@ -316,13 +317,13 @@ async def test_cleanup_stops_all_devices() -> None:
 
 async def test_get_alerts_empty_without_engine():
     """无监控（无引擎）时 get_alerts 返回 []。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
     assert service.get_alerts(DEV, time.time()) == []
 
 
 async def test_alert_engine_created_and_released_on_stop():
     """start 创建引擎；stop_monitoring 释放（网络服务无 _release_device 单点，走其一处）。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
     await service.start_monitoring(DEV)
 
     assert DEV in service._alert_engines
@@ -333,7 +334,7 @@ async def test_alert_engine_created_and_released_on_stop():
 async def test_alert_engine_released_on_device_lost(monkeypatch, fast_loop) -> None:
     """失联自然结束路径（_sampling_loop finally）同样释放引擎。"""
     monkeypatch.setattr(settings().metrics, "lost_failures", 3)
-    service = NetworkService(DeadAdb())
+    service = NetworkService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     await service.start_monitoring(DEV)
 
     await wait_until(lambda: DEV not in service._tasks)
@@ -344,7 +345,7 @@ async def test_alert_engine_released_on_device_lost(monkeypatch, fast_loop) -> N
 
 async def test_sampling_loop_evaluates_rate_metrics(monkeypatch, fast_loop) -> None:
     """采样循环每轮 sync + evaluate rx/tx 两指标。"""
-    service = NetworkService(FakeAdb(std_outputs()))
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
     await service.start_monitoring(DEV)
 
     class SpyEngine:

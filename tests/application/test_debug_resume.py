@@ -3,6 +3,7 @@ import pytest
 
 from app.application.debug_service import DebugService
 from app.domain.session import DebugSession
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 
 class Adb:
@@ -28,7 +29,7 @@ class Repo:
 
 @pytest.mark.asyncio
 async def test_get_logs_since_from_memory():
-    svc = DebugService(adb=Adb(), repo=Repo())
+    svc = DebugService(adb=Adb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     s = DebugSession(id="s", device_id="d", user_id="u")
     s.log_buffer = [{"seq": i, "message": f"m{i}"} for i in range(100)]
     svc.sessions[s.id] = s
@@ -39,7 +40,7 @@ async def test_get_logs_since_from_memory():
 
 @pytest.mark.asyncio
 async def test_get_logs_since_counts_missing():
-    svc = DebugService(adb=Adb(), repo=Repo())
+    svc = DebugService(adb=Adb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     s = DebugSession(id="s", device_id="d", user_id="u")
     s.log_buffer = [{"seq": i} for i in range(20, 60)]   # 头部 0-19 已环形淘汰
     svc.sessions[s.id] = s
@@ -50,7 +51,7 @@ async def test_get_logs_since_counts_missing():
 
 @pytest.mark.asyncio
 async def test_get_logs_since_falls_back_to_db_for_closed_session():
-    svc = DebugService(adb=Adb(), repo=Repo())
+    svc = DebugService(adb=Adb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     logs, missing = await svc.get_logs_since("closed", from_seq=0)
     assert missing == 0
     assert logs[0]["message"] == "db0"

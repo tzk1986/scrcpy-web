@@ -10,6 +10,7 @@ import pytest
 
 from app.application.debug_service import DebugService
 from app.domain.session import DebugSession
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 
 class Adb:
@@ -52,7 +53,7 @@ async def test_restore_sessions_recovers_sessions_without_logcat():
     采集惰性化后无人订阅不再启动 logcat（实施项 5）。"""
     repo = Repo(sessions={"s1": make_session("s1", time.time())}, max_seq=5)
     adb = Adb()
-    svc_new = DebugService(adb=adb, repo=repo)
+    svc_new = DebugService(adb=adb, repo=repo, metrics_repo=SqliteMetricsRepository())
     count = await svc_new.restore_sessions()
     assert count == 1
     assert "s1" in svc_new.sessions
@@ -70,7 +71,7 @@ async def test_restore_respects_ttl_and_limit():
     old = make_session("ancient", time.time() - 400 * 86400)  # 远超 7 天 TTL
     fresh = make_session("fresh", time.time())
     repo = Repo(sessions={"ancient": old, "fresh": fresh})
-    svc = DebugService(adb=Adb(), repo=repo)
+    svc = DebugService(adb=Adb(), repo=repo, metrics_repo=SqliteMetricsRepository())
     count = await svc.restore_sessions()
     since_ts, limit = repo.list_args
     assert limit == 20                                    # settings restore_max_sessions 默认

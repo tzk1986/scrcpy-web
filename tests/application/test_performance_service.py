@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.domain.runtime import CpuProcessInfo
 from app.domain.runtime import PerformanceMetrics
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 
 class DeadAdb:
@@ -38,7 +39,7 @@ class DeadAdb:
 
 
 async def test_monitoring_stops_and_notifies_subscribers_when_unreachable():
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     await service.start_monitoring("device-X", interval=0)
 
     received: list[object] = []
@@ -64,7 +65,7 @@ async def test_monitoring_stops_and_notifies_subscribers_when_unreachable():
 
 async def test_stop_monitoring_releases_buffer_and_is_idempotent():
     """stop 释放暂存缓冲并幂等；未监控设备重复调用不抛异常。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
 
     await service.stop_monitoring("device-X")
     await service.stop_monitoring("device-X")
@@ -76,7 +77,7 @@ async def test_stop_monitoring_releases_buffer_and_is_idempotent():
 
 def test_buffer_capacity_reads_from_config():
     """缓冲容量来自 settings().metrics.buffer_size（S3），不再硬编码。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
 
     assert service.buffer_capacity == settings().metrics.buffer_size
     assert service.buffer_capacity == 3600
@@ -101,7 +102,7 @@ def place_holder_running_device(service: PerformanceService, device_id: str) -> 
 
 async def test_guard_stops_monitoring_after_idle(guarded) -> None:
     """无订阅且无录制 → idle_ttl 后停采并释放缓冲。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     place_holder_running_device(service, "device-X")
     service._schedule_idle_guard("device-X")
 
@@ -114,7 +115,7 @@ async def test_guard_stops_monitoring_after_idle(guarded) -> None:
 
 async def test_guard_skips_when_subscriber_present(guarded) -> None:
     """有订阅者时守卫不触发停采。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     place_holder_running_device(service, "device-X")
     service._subscribers["device-X"] = [asyncio.Queue()]
     service._schedule_idle_guard("device-X")
@@ -127,7 +128,7 @@ async def test_guard_skips_when_subscriber_present(guarded) -> None:
 
 async def test_guard_recording_inhibits_stop_then_resumes(guarded) -> None:
     """录制中禁止空闲停采；录制结束后守卫继续观察并停采。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     place_holder_running_device(service, "device-X")
     service._recorders["device-X"] = object()
     service._schedule_idle_guard("device-X")
@@ -142,7 +143,7 @@ async def test_guard_recording_inhibits_stop_then_resumes(guarded) -> None:
 
 async def test_subscribe_cancels_guard_and_disconnect_schedules(guarded) -> None:
     """流订阅到来取消守卫；订阅断开后安排守卫并最终停采。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     place_holder_running_device(service, "device-X")
     service._schedule_idle_guard("device-X")
     await asyncio.sleep(0.01)
@@ -174,7 +175,7 @@ async def test_subscribe_cancels_guard_and_disconnect_schedules(guarded) -> None
 
 async def test_cleanup_stops_all_devices() -> None:
     """cleanup 清理所有设备任务与缓冲（服务关闭路径）。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     for did in ("device-X", "device-Y"):
         place_holder_running_device(service, did)
 
@@ -212,7 +213,7 @@ class HighCpuAdb:
 
 async def test_get_alerts_snapshot_after_consecutive_breach():
     """连续 CPU 越限（默认 above=80）→ get_alerts 返回活动快照；stop 后清空（方案 24 §7）。"""
-    service = PerformanceService(HighCpuAdb())
+    service = PerformanceService(HighCpuAdb(), metrics_repo=SqliteMetricsRepository())
     await service.start_monitoring("dev-A", interval=0)
 
     alerts: list[dict] = []
@@ -235,7 +236,7 @@ async def test_get_alerts_snapshot_after_consecutive_breach():
 
 async def test_alert_engine_released_when_device_lost():
     """失联自然结束路径（_release_device 单点）同样释放引擎。"""
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
     await service.start_monitoring("dev-B", interval=0)
 
     for _ in range(500):
@@ -249,7 +250,7 @@ async def test_alert_engine_released_when_device_lost():
 
 async def test_sampling_loop_evaluates_each_round():
     """采样循环每轮 sync + evaluate 各指标（先评估后推送）。"""
-    service = PerformanceService(HighCpuAdb())
+    service = PerformanceService(HighCpuAdb(), metrics_repo=SqliteMetricsRepository())
     await service.start_monitoring("dev-C", interval=0)
 
     class SpyEngine:
@@ -293,7 +294,7 @@ def test_metrics_to_dict_includes_new_keys():
                        CpuProcessInfo("system_server", 0.6, 0.1)],
         battery_temp=31.0, battery_voltage=4200, battery_health="GOOD",
     )
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
 
     d = service.metrics_to_dict(m)
 
@@ -323,6 +324,6 @@ def test_metrics_to_dict_output_json_serializable():
         cpu_processes=[CpuProcessInfo("kworker/0:1", 1.2, 0.3)],
         battery_temp=None, battery_voltage=None, battery_health="UNKNOWN",
     )
-    service = PerformanceService(DeadAdb())
+    service = PerformanceService(DeadAdb(), metrics_repo=SqliteMetricsRepository())
 
     json.dumps(service.metrics_to_dict(m))  # 不抛

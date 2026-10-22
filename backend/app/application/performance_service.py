@@ -25,7 +25,6 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver, MetricsRepository
 from app.domain.runtime import PerformanceMetrics
-from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 logger = get_logger(__name__)
 
@@ -38,7 +37,7 @@ class PerformanceService(RecordingSupportMixin):
     支持实时推送（通过 async generator）。
 
     使用示例：
-        service = PerformanceService(adb_driver)
+        service = PerformanceService(adb_driver, metrics_repo)
         await service.start_monitoring("192.168.1.100")
 
         # 查询历史
@@ -49,20 +48,21 @@ class PerformanceService(RecordingSupportMixin):
             print(m.cpu_percent)
     """
 
-    def __init__(self, adb: AdbDriver, metrics_repo: MetricsRepository | None = None) -> None:
+    def __init__(self, adb: AdbDriver, metrics_repo: MetricsRepository) -> None:
         """
         初始化服务。
 
         参数：
             adb: ADB 驱动实例。
-            metrics_repo: 指标仓储（录制落盘与缓存态导出用），
-                默认 SqliteMetricsRepository，测试可注入替身。
+            metrics_repo: 指标仓储（录制落盘与缓存态导出用），必填由
+                组合根 deps 注入（方案 52 R4——原默认值
+                SqliteMetricsRepository() 即违规落点），测试注入替身。
         """
         self.adb = adb
         # 内存缓冲区容量（@1s 采样约 1 小时/设备）；deque 构造后不可热伸缩，
         # 热重载仅对新建缓冲生效（方案 18 S3）
         self.buffer_capacity: int = settings().metrics.buffer_size
-        self._metrics_repo = metrics_repo or SqliteMetricsRepository()
+        self._metrics_repo = metrics_repo
         self._samplers: dict[str, PerformanceSampler] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._buffers: dict[str, deque[PerformanceMetrics]] = {}

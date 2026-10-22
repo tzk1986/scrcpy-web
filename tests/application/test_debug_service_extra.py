@@ -24,6 +24,7 @@ from app.core.config import settings as get_settings
 from app.core.exceptions import SessionNotFoundError
 from app.domain.ports import LogEntry
 from app.domain.session import DebugSession
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +303,7 @@ async def drain(n: int = 8) -> None:
 
 async def test_get_session_prefers_memory_then_falls_back_to_repo():
     repo = FakeRepo()
-    svc = DebugService(adb=FakeAdb(), repo=repo)
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=SqliteMetricsRepository())
     s = make_session("s1")
     svc.sessions["s1"] = s
     assert await svc.get_session("s1") is s
@@ -313,7 +314,7 @@ async def test_get_session_prefers_memory_then_falls_back_to_repo():
 
 
 async def test_close_session_stops_shell_and_forwarding_task():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
     shell = FakeShell()
@@ -330,7 +331,7 @@ async def test_close_session_stops_shell_and_forwarding_task():
 
 
 async def test_close_session_survives_shell_stop_error():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
     svc.shell_sessions[session.id] = FakeShell(stop_error=RuntimeError("pty stuck"))
@@ -343,7 +344,7 @@ async def test_close_session_survives_shell_stop_error():
 async def test_restore_skips_sessions_already_in_memory():
     repo = FakeRepo()
     repo.sessions_db["s1"] = make_session("s1")  # DB 副本
-    svc = DebugService(adb=FakeAdb(), repo=repo)
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=SqliteMetricsRepository())
     existing = make_session("s1")
     existing.seq_next = 99
     svc.sessions["s1"] = existing
@@ -356,7 +357,7 @@ async def test_restore_skips_sessions_already_in_memory():
 
 async def test_grace_stop_noop_when_no_collect_task(monkeypatch):
     monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.01)
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     try:
         ws = FakeWS()
@@ -379,6 +380,7 @@ async def test_collect_filters_below_min_level(monkeypatch):
     svc = ScriptedParseService(
         adb=FakeAdb(lines=lines),
         repo=FakeRepo(),
+        metrics_repo=SqliteMetricsRepository(),
         entries=[make_entry("D", "verbose-msg"), make_entry("I", "info-msg")],
     )
     session = make_session()
@@ -395,6 +397,7 @@ async def test_collect_rate_limit_drops_low_level_and_resets_window(monkeypatch)
     svc = ScriptedParseService(
         adb=ClockAdb(lines, clock, advances=[0, 0, 0, 2]),
         repo=FakeRepo(),
+        metrics_repo=SqliteMetricsRepository(),
         entries=[
             make_entry("I", "m0"),  # 窗口内第 1 条 → 保留
             make_entry("I", "m1"),  # 超限 → 丢弃（<W）
@@ -411,7 +414,7 @@ async def test_collect_rate_limit_drops_low_level_and_resets_window(monkeypatch)
 async def test_collect_evicts_oldest_when_buffer_full(monkeypatch):
     monkeypatch.setattr(DebugService, "MAX_LOG_BUFFER", 2)
     lines = [f"09-17 10:00:0{i}.000 1 1 I TagA: m{i}" for i in range(3)]
-    svc = DebugService(adb=FakeAdb(lines=lines), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(lines=lines), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     await svc._collect_logcat(session)
     assert [e["message"] for e in session.log_buffer] == ["m1", "m2"]  # 最旧的 m0 被淘汰
@@ -422,7 +425,8 @@ async def test_collect_evicts_oldest_when_buffer_full(monkeypatch):
 async def test_collect_survives_stream_error():
     repo = FakeRepo()
     svc = DebugService(adb=FakeAdb(lines=["09-17 10:00:00.000 1 1 I TagA: ok"],
-                                   error=RuntimeError("device lost")), repo=repo)
+                                   error=RuntimeError("device lost")), repo=repo,
+                       metrics_repo=SqliteMetricsRepository())
     session = make_session()
     await svc._collect_logcat(session)  # 不抛出，仅记录错误
     await svc.writer.flush()
@@ -433,7 +437,7 @@ async def test_collect_survives_stream_error():
 
 async def test_finished_collect_task_removes_itself():
     svc = DebugService(adb=FakeAdb(lines=["09-17 10:00:00.000 1 1 I TagA: only"]),
-                       repo=FakeRepo())
+                       repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc._ensure_logcat_task(session)  # 流耗尽自然结束
     await drain()
@@ -446,7 +450,7 @@ async def test_finished_collect_task_removes_itself():
 # ---------------------------------------------------------------------------
 
 async def test_notify_subscribers_respects_pause_and_filters():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     sid = "s1"
     paused, by_level, by_tag = FakeWS(), FakeWS(), FakeWS()
     level_miss, tag_miss = FakeWS(), FakeWS()
@@ -468,7 +472,7 @@ async def test_notify_subscribers_respects_pause_and_filters():
 
 
 async def test_notify_subscribers_removes_dead_connections():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     sid = "s1"
     dead, alive = FakeWS(fail=True), FakeWS()
     svc.subscribers[sid] = {dead: {"paused": False}, alive: {"paused": False}}
@@ -484,7 +488,7 @@ async def test_notify_subscribers_removes_dead_connections():
 
 
 async def test_notify_shell_output_sends_and_cleans_dead():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     await svc._notify_shell_output("absent", "x")  # 无订阅者直接返回
 
     sid = "s1"
@@ -504,7 +508,7 @@ async def test_notify_shell_output_sends_and_cleans_dead():
 # ---------------------------------------------------------------------------
 
 def test_parse_logcat_line_malformed_falls_back():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     entry = svc._parse_logcat_line("garbage output")
     assert entry.level == "I"
     assert entry.pid == 0 and entry.tid == 0
@@ -514,7 +518,7 @@ def test_parse_logcat_line_malformed_falls_back():
 
 def test_parse_logcat_line_threadtime_field_mapping():
     """按模块文档声明的 threadtime 契约：PID TID LEVEL 应对应 pid/tid/level。"""
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     entry = svc._parse_logcat_line("09-08 14:23:45.678  1234  5678 W ActivityManager: hi")
     assert entry.level == "W"
     assert entry.pid == 1234
@@ -524,7 +528,7 @@ def test_parse_logcat_line_threadtime_field_mapping():
 
 
 async def test_get_logs_memory_path_filters():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     session.log_buffer = [
         {"ts": 1.0, "level": "I", "tag": "TagA", "message": "a"},
@@ -543,7 +547,7 @@ async def test_get_logs_falls_back_to_db():
     repo.query_logs_result = [
         LogEntry(ts=1.0, level="I", pid=1, tid=2, tag="T", message="m", raw="r")
     ]
-    svc = DebugService(adb=FakeAdb(), repo=repo)
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=SqliteMetricsRepository())
     logs = await svc.get_logs("closed-session", level="I", tag="T", limit=5)
 
     assert logs == [{"ts": 1.0, "level": "I", "pid": 1, "tid": 2,
@@ -560,7 +564,7 @@ async def test_get_logs_falls_back_to_db():
 async def test_exec_shell_success_records_history():
     adb = FakeAdb(shell_out="pong")
     repo = FakeRepo()
-    svc = DebugService(adb=adb, repo=repo)
+    svc = DebugService(adb=adb, repo=repo, metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
 
@@ -572,7 +576,7 @@ async def test_exec_shell_success_records_history():
 
 
 async def test_exec_shell_missing_session_raises():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     with pytest.raises(SessionNotFoundError):
         await svc.exec_shell("nope", "ls")
 
@@ -580,7 +584,7 @@ async def test_exec_shell_missing_session_raises():
 async def test_get_or_create_shell_creates_then_reuses():
     shell = FakeShell()
     adb = FakeAdb(shell=shell)
-    svc = DebugService(adb=adb, repo=FakeRepo())
+    svc = DebugService(adb=adb, repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
 
@@ -599,7 +603,7 @@ async def test_get_or_create_shell_creates_then_reuses():
 async def test_get_or_create_shell_replaces_dead_instance():
     dead, fresh = FakeShell(alive=False), FakeShell(alive=True)
     adb = FakeAdb(shell=fresh)
-    svc = DebugService(adb=adb, repo=FakeRepo())
+    svc = DebugService(adb=adb, repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
     svc.shell_sessions[session.id] = dead
@@ -612,14 +616,14 @@ async def test_get_or_create_shell_replaces_dead_instance():
 
 
 async def test_get_or_create_shell_missing_session_raises():
-    svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     with pytest.raises(SessionNotFoundError):
         await svc.get_or_create_shell("nope")
 
 
 async def test_resize_shell_forwards_dims_to_live_shell():
     shell = FakeShell(alive=True)
-    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
     svc.shell_sessions[session.id] = shell
@@ -629,13 +633,13 @@ async def test_resize_shell_forwards_dims_to_live_shell():
 
 
 async def test_resize_shell_noop_when_shell_missing():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     await svc.resize_shell("nope", 120, 40)  # 不应抛出
 
 
 async def test_resize_shell_noop_when_shell_dead():
     shell = FakeShell(alive=False)
-    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     svc.shell_sessions["s1"] = shell
 
     await svc.resize_shell("s1", 120, 40)
@@ -647,7 +651,7 @@ async def test_resize_shell_noop_when_shell_dead():
 # ---------------------------------------------------------------------------
 
 async def test_output_forwarding_idempotent_while_running_and_restarts_after_done():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     queue: asyncio.Queue = asyncio.Queue()
     shell = FakeShell(out=queue)
     sid = "s1"
@@ -674,7 +678,7 @@ async def test_output_forwarding_errors_on_dead_pty():
         async def get_output(self):
             raise RuntimeError("pty gone")
 
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     svc._start_output_forwarding("s1", RaisingShell())
     await drain()
     task = svc.shell_output_forwarding_tasks["s1"]
@@ -682,7 +686,7 @@ async def test_output_forwarding_errors_on_dead_pty():
 
 
 async def test_output_forwarding_streams_lines_to_subscribers():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     queue: asyncio.Queue = asyncio.Queue()
     shell = FakeShell(out=queue)
     ws = FakeWS()
@@ -699,7 +703,7 @@ async def test_output_forwarding_streams_lines_to_subscribers():
 
 
 async def test_stop_output_forwarding_cancels_running_task():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     queue: asyncio.Queue = asyncio.Queue()
     svc._start_output_forwarding("s1", FakeShell(out=queue))
     task = svc.shell_output_forwarding_tasks["s1"]
@@ -719,7 +723,7 @@ async def test_stop_output_forwarding_cancels_running_task():
 async def test_exec_shell_stream_raw_yields_lines_and_records():
     shell = FakeShell(lines=["x", "y"])
     repo = FakeRepo()
-    svc = DebugService(adb=FakeAdb(shell=shell), repo=repo)
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=repo, metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
 
@@ -731,7 +735,7 @@ async def test_exec_shell_stream_raw_yields_lines_and_records():
 
 
 async def test_exec_shell_stream_raw_missing_session_raises():
-    svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(shell=FakeShell()), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     with pytest.raises(SessionNotFoundError):
         async for _line in svc.exec_shell_stream_raw("nope", "ls"):
             pass
@@ -743,7 +747,7 @@ async def test_exec_shell_stream_raw_missing_session_raises():
 
 async def test_exec_shell_serializes_same_session():
     rec = ConcurrencyRecorder()
-    svc = DebugService(adb=SlowAdb(rec), repo=FakeRepo())
+    svc = DebugService(adb=SlowAdb(rec), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
 
@@ -756,7 +760,7 @@ async def test_exec_shell_serializes_same_session():
 
 async def test_exec_shell_parallel_across_sessions():
     rec = ConcurrencyRecorder()
-    svc = DebugService(adb=SlowAdb(rec), repo=FakeRepo())
+    svc = DebugService(adb=SlowAdb(rec), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     s1, s2 = make_session("s1", "dev1"), make_session("s2", "dev2")
     svc.sessions[s1.id] = s1
     svc.sessions[s2.id] = s2
@@ -771,7 +775,7 @@ async def test_exec_shell_parallel_across_sessions():
 async def test_exec_shell_and_stream_raw_share_session_lock():
     rec = ConcurrencyRecorder()
     shell = SlowShell(rec)
-    svc = DebugService(adb=SlowAdb(rec, shell=shell), repo=FakeRepo())
+    svc = DebugService(adb=SlowAdb(rec, shell=shell), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
 
@@ -791,7 +795,7 @@ async def test_stream_raw_releases_lock_when_consumer_closes():
     rec = ConcurrencyRecorder()
     shell = SlowShell(rec, lines=["x", "y", "z"], delay=0.01)
     repo = FakeRepo()
-    svc = DebugService(adb=SlowAdb(rec, shell=shell), repo=repo)
+    svc = DebugService(adb=SlowAdb(rec, shell=shell), repo=repo, metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
 
@@ -809,7 +813,7 @@ async def test_stream_raw_releases_lock_when_consumer_closes():
 async def test_stream_raw_closes_inner_generator_on_consumer_close():
     """消费者中断时内层 shell.execute() 生成器被立即关闭（aclosing），不等 GC。"""
     shell = TrackingShell()
-    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     session = make_session()
     svc.sessions[session.id] = session
 
@@ -826,7 +830,7 @@ async def test_stream_raw_closes_inner_generator_on_consumer_close():
 # ---------------------------------------------------------------------------
 
 async def test_start_cleanup_task_duplicate_and_stop():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     await svc.start_cleanup_task()
     first = svc.cleanup_task
     assert first is not None and not first.done()
@@ -959,12 +963,12 @@ async def test_cleanup_loop_survives_run_cleanup_crash():
 async def test_cleanup_session_delegates_to_repo():
     repo = FakeRepo()
     repo.deleted_session_logs = 7
-    svc = DebugService(adb=FakeAdb(), repo=repo)
+    svc = DebugService(adb=FakeAdb(), repo=repo, metrics_repo=SqliteMetricsRepository())
     assert await svc.cleanup_session("s1") == 7
 
 
 async def test_get_db_stats_counts_sessions_and_subscribers():
-    svc = DebugService(adb=FakeAdb(), repo=FakeRepo())
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
     svc.sessions["a"] = make_session("a")
     svc.sessions["b"] = make_session("b")
     svc.subscribers["a"] = {FakeWS(): {}, FakeWS(): {}}

@@ -3,6 +3,7 @@ import pytest
 
 from app.application.debug_service import DebugService
 from app.domain.session import DebugSession
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 
 class FakeAdb:
@@ -43,7 +44,7 @@ async def test_collect_logcat_assigns_increasing_seq():
         "09-17 10:00:00.200     1     1 W TagC: msg-c",
     ]
     repo = FakeRepo()
-    svc = DebugService(adb=FakeAdb(lines), repo=repo)
+    svc = DebugService(adb=FakeAdb(lines), repo=repo, metrics_repo=SqliteMetricsRepository())
     session = DebugSession(id="s", device_id="d", user_id="u")
     await svc._collect_logcat(session)  # FakeAdb 流自然耗尽结束
     await svc.writer.flush()            # submit 只进缓冲，断言前冲刷落库

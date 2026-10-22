@@ -19,6 +19,7 @@ import pytest
 
 from app.application.debug_service import DebugService
 from app.domain.session import DebugSession
+from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 
 
 class HangingAdb:
@@ -73,7 +74,7 @@ async def _drain_loop(n: int = 10) -> None:
 
 async def test_create_session_does_not_start_logcat():
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     try:
         assert svc.logcat_tasks == {}
@@ -89,7 +90,7 @@ async def test_restore_sessions_does_not_start_logcat():
     s.last_active = time.time()
     repo = Repo(sessions={"s1": s}, max_seq=5)
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=repo)
+    svc = DebugService(adb=adb, repo=repo, metrics_repo=SqliteMetricsRepository())
     count = await svc.restore_sessions()
     try:
         assert count == 1
@@ -104,7 +105,7 @@ async def test_restore_sessions_does_not_start_logcat():
 
 async def test_paused_false_starts_collection_idempotently():
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -122,7 +123,7 @@ async def test_paused_false_starts_collection_idempotently():
 async def test_all_paused_stops_collection_after_grace(monkeypatch):
     monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.02)
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -143,7 +144,7 @@ async def test_all_paused_stops_collection_after_grace(monkeypatch):
 async def test_restart_within_grace_keeps_collection(monkeypatch):
     monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.1)
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -163,7 +164,7 @@ async def test_restart_within_grace_keeps_collection(monkeypatch):
 async def test_unsubscribe_all_stops_collection(monkeypatch):
     monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.02)
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -182,7 +183,7 @@ async def test_unsubscribe_all_stops_collection(monkeypatch):
 async def test_stopped_then_resumed_restarts_collection(monkeypatch):
     monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.02)
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -202,7 +203,7 @@ async def test_stopped_then_resumed_restarts_collection(monkeypatch):
 
 
 async def test_close_session_without_task_idempotent():
-    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    svc = DebugService(adb=HangingAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     await svc.close_session(session.id)  # 无采集任务入口时正常关闭
     assert session.id not in svc.sessions
@@ -212,7 +213,7 @@ async def test_close_session_without_task_idempotent():
 async def test_task_removes_itself_after_finish():
     """采集任务结束（被 close 取消）后入口自清理，二次 close 不报错。"""
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -229,7 +230,7 @@ async def test_create_session_rejects_invalid_device_id():
     from app.core.exceptions import InvalidIdentifierError
 
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     try:
         with pytest.raises(InvalidIdentifierError):
             await svc.create_session("dev1&calc", "u1")
@@ -243,7 +244,7 @@ async def test_create_session_id_is_opaque_random():
     import re
 
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     try:
         s1 = await svc.create_session("dev1", "u1")
         s2 = await svc.create_session("dev1", "u1")
@@ -262,7 +263,7 @@ async def test_create_session_active_limit():
     from app.core.exceptions import SessionLimitError
 
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     for i in range(_MAX_DEBUG_SESSIONS):
         svc.sessions[f"fill-{i}"] = DebugSession(id=f"fill-{i}", device_id="dev", user_id="u")
 
@@ -279,7 +280,7 @@ async def test_reap_idle_expired_no_subscriber_closed():
     """过期且无订阅者的会话应被回收（close_session 全清理）。"""
     from app.application.debug_service import _SESSION_IDLE_TTL_SECONDS
 
-    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    svc = DebugService(adb=HangingAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     session.last_active = time.time() - _SESSION_IDLE_TTL_SECONDS - 1
     await svc._reap_idle_sessions()
@@ -291,7 +292,7 @@ async def test_reap_idle_expired_with_subscriber_kept():
     """虽过期但仍有订阅者：不回收（避免掐断在看的会话）。"""
     from app.application.debug_service import _SESSION_IDLE_TTL_SECONDS
 
-    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    svc = DebugService(adb=HangingAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -305,7 +306,7 @@ async def test_reap_idle_expired_with_subscriber_kept():
 
 async def test_reap_idle_fresh_session_kept():
     """未过期的会话不受影响。"""
-    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    svc = DebugService(adb=HangingAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     await svc._reap_idle_sessions()
     assert session.id in svc.sessions
@@ -328,7 +329,7 @@ class HangingShell:
 
 async def test_unsubscribe_keeps_forwarding_while_subscribers_remain():
     """方案 51 C2：一方退订不得掐断全体——仅订阅者清零才停输出转发。"""
-    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    svc = DebugService(adb=HangingAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws1, ws2 = object(), object()
     await svc.subscribe(session.id, ws1)
@@ -352,7 +353,7 @@ async def test_resubscribe_after_all_left_restarts_forwarding():
     """C2 连带口径：订阅清零停转发后，再次 get_or_create_shell（存活 shell）
     须补建转发，否则新订阅者永久收不到 PTY 输出。"""
     adb = HangingAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     await svc.subscribe(session.id, ws)
@@ -427,7 +428,7 @@ async def test_dead_shell_replacement_self_heals_forwarding():
     否则死亡残任务顶锁，新 shell 永久无输出。"""
     dead = DeadShell()
     new = LiveShell(lines=["hi"])
-    svc = DebugService(adb=_ShellAdb(new), repo=Repo())  # type: ignore[arg-type]
+    svc = DebugService(adb=_ShellAdb(new), repo=Repo(), metrics_repo=SqliteMetricsRepository())  # type: ignore[arg-type]
     session = await svc.create_session("dev1", "u1")
     ws = _RecordingWs()
     await svc.subscribe(session.id, ws)
@@ -468,7 +469,7 @@ async def test_logcat_error_broadcasts_stream_error_and_rebuilds():
     """采集异常中断：订阅者可感知（stream_error 帧），任务入口清除、
     下次开录经 _ensure_logcat_task 惰性重建。"""
     adb = BoomAdb()
-    svc = DebugService(adb=adb, repo=Repo())
+    svc = DebugService(adb=adb, repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = _RecordingWs()
     await svc.subscribe(session.id, ws)
@@ -492,7 +493,7 @@ async def test_logcat_error_broadcasts_stream_error_and_rebuilds():
 async def test_set_subscriber_filter_returns_hit_or_miss(monkeypatch):
     """方案 51 C16：命中订阅者 True；未订阅/会话不存在 False（WS 层回 filter_applied:false）。"""
     monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.01)
-    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    svc = DebugService(adb=HangingAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     ws = object()
     try:
@@ -513,7 +514,7 @@ async def test_set_subscriber_filter_returns_hit_or_miss(monkeypatch):
 
 async def test_get_logs_limit_clamped():
     """方案 51 C12 服务侧双保险：limit 夹到 [1, MAX_LOG_QUERY_LIMIT]，0/负数不再全库切片。"""
-    svc = DebugService(adb=HangingAdb(), repo=Repo())
+    svc = DebugService(adb=HangingAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     for i in range(5):
         session.log_buffer.append({"level": "I", "tag": "T", "message": str(i), "seq": i})
@@ -529,6 +530,7 @@ async def test_get_logs_limit_clamped():
 async def test_rate_window_boundary_entry_counted(monkeypatch):
     """方案 51 C18：窗口重置后当条计为新窗首条——限额吞吐不再多放一条。"""
     from app.core.config import settings as get_settings
+
     monkeypatch.setattr(get_settings().debug, "min_log_level", "V")
     monkeypatch.setattr(get_settings().debug, "log_rate_limit", 1)
     clock = [0.0]
@@ -542,7 +544,7 @@ async def test_rate_window_boundary_entry_counted(monkeypatch):
             yield "09-08 14:23:46.778 1234 5678 I Tag: three"  # count=2>1 → 低级别丢弃
             yield "09-08 14:23:46.778 1234 5678 I Tag: four"   # count=3>1 → 丢弃
 
-    svc = DebugService(adb=StepAdb(), repo=Repo())
+    svc = DebugService(adb=StepAdb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
     session = await svc.create_session("dev1", "u1")
     try:
         await svc._collect_logcat(session)
