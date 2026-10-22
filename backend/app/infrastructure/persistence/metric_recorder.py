@@ -18,8 +18,7 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.domain.ports import MetricsRepository
-from app.infrastructure.network.sampler import NetworkStats
-from app.infrastructure.performance.sampler import PerformanceMetrics
+from app.domain.runtime import NetworkStats, PerformanceMetrics
 
 logger = get_logger(__name__)
 

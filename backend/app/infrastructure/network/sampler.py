@@ -19,39 +19,12 @@ import ipaddress
 import re
 import struct
 import time
-from dataclasses import dataclass
 
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
+from app.domain.runtime import NetworkConnection, NetworkStats
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class NetworkStats:
-    """网络统计快照。"""
-
-    ts: float
-    rx_bytes: int          # 接收字节数（累计）
-    tx_bytes: int          # 发送字节数（累计）
-    rx_rate_kbps: float    # 接收速率 KB/s
-    tx_rate_kbps: float    # 发送速率 KB/s
-    active_connections: int  # 活跃连接数
-    wifi_connected: bool
-    wifi_ssid: str | None
-
-
-@dataclass
-class NetworkConnection:
-    """网络连接信息。"""
-
-    protocol: str          # tcp/udp
-    local_addr: str
-    local_port: int
-    remote_addr: str
-    remote_port: int
-    state: str             # ESTABLISHED/LISTEN/CLOSE_WAIT/...
-    uid: int | None
 
 
 class NetworkSampler:

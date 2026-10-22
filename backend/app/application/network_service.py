@@ -23,11 +23,8 @@ from app.application.recording_support import RecordingSupportMixin
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver, MetricsRepository
-from app.infrastructure.network.sampler import (
-    NetworkConnection,
-    NetworkSampler,
-    NetworkStats,
-)
+from app.domain.runtime import NetworkConnection, NetworkStats
+from app.infrastructure.network.sampler import NetworkSampler
 from app.infrastructure.persistence.metric_recorder import MetricRecorder
 from app.infrastructure.persistence.sqlite import SqliteMetricsRepository
 

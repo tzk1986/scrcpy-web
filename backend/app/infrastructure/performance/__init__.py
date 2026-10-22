@@ -16,6 +16,7 @@
         print(metrics.cpu_percent)
 """
 
-from .sampler import PerformanceSampler, PerformanceMetrics
+from app.domain.runtime import PerformanceMetrics
+from .sampler import PerformanceSampler
 
 __all__ = ["PerformanceSampler", "PerformanceMetrics"]

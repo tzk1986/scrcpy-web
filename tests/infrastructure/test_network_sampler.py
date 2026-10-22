@@ -28,7 +28,8 @@ import pytest
 
 from app.core.exceptions import AdbError
 import app.infrastructure.network.sampler as sampler_module
-from app.infrastructure.network.sampler import NetworkConnection, NetworkSampler
+from app.domain.runtime import NetworkConnection
+from app.infrastructure.network.sampler import NetworkSampler
 
 DEV = "net-sampler-device"
 

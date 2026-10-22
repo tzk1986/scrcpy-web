@@ -14,7 +14,8 @@ import asyncio
 
 from app.core.exceptions import AdbError
 from app.domain.runtime import BatteryInfo, CpuProcessInfo
-from app.infrastructure.performance.sampler import PerformanceMetrics, PerformanceSampler
+from app.domain.runtime import PerformanceMetrics
+from app.infrastructure.performance.sampler import PerformanceSampler
 
 # FakeAdb 的固定 shell 响应
 PROC_STAT = "cpu  100 10 5 200 0 0 0 0 0 0\n"

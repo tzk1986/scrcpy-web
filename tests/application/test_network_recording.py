@@ -23,7 +23,7 @@ import pytest
 from app.application.network_service import NetworkService
 from app.core.config import settings
 from app.core.exceptions import AdbError, RecordingDisabledError
-from app.infrastructure.network.sampler import NetworkStats
+from app.domain.runtime import NetworkStats
 
 DEV = "net-rec-dev"
 

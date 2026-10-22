@@ -23,7 +23,7 @@ from app.application.performance_service import PerformanceService
 from app.core.config import settings
 from app.core.exceptions import AdbError
 from app.domain.runtime import CpuProcessInfo
-from app.infrastructure.performance.sampler import PerformanceMetrics
+from app.domain.runtime import PerformanceMetrics
 
 
 class DeadAdb:

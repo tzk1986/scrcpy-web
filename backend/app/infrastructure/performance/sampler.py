@@ -20,37 +20,14 @@
 import asyncio
 import re
 import time
-from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from app.core.exceptions import AdbError
 from app.core.logging import get_logger
 from app.domain.ports import AdbDriver
-from app.domain.runtime import BatteryInfo, CpuProcessInfo
+from app.domain.runtime import BatteryInfo, CpuProcessInfo, PerformanceMetrics
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class PerformanceMetrics:
-    """性能指标快照。"""
-
-    ts: float                 # Unix 时间戳（秒）
-    cpu_percent: float        # CPU 使用率 0-100
-    total_memory_mb: float    # 总内存 MB
-    used_memory_mb: float     # 已用内存 MB
-    fps: float | None         # 帧率（可选）
-    jank_count: int           # 卡顿帧数
-    current_activity: str     # 当前前台 Activity 组件名
-    top_package: str          # 当前前台应用包名
-    # fps 是否为本轮实测值（沿用 _last_fps / 空窗为 False）。仅服务端告警判定用，
-    # 不进 metrics_to_dict / WS 消息 / 落库（方案 24 §4.3）
-    fps_fresh: bool = False
-    # ---- 方案 37 D3 新增（带默认值保旧构造；辅助指标失败降级为默认值） ----
-    cpu_processes: list[CpuProcessInfo] = field(default_factory=list)  # 进程级 CPU 明细
-    battery_temp: float | None = None    # 电池温度（摄氏，BatteryInfo 已 ÷10）
-    battery_voltage: int | None = None   # 电池电压（原值）
-    battery_health: str = "UNKNOWN"      # 健康枚举串（采集层 None → UNKNOWN 归一）
 
 
 class PerformanceSampler:

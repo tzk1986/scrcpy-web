@@ -9,11 +9,17 @@
 子项 D（性能监控增强）的数据对象：
 从 dumpsys cpuinfo / dumpsys battery 输出解析出的进程级 CPU 明细 / 电池四字段。
 
+方案 52 B6 R2 扩员（采集快照对象同族安家）：
+PerformanceMetrics / NetworkStats / NetworkConnection（原驻 infra sampler，
+纯 dataclass 零 infra 技术，平移至领域层与上述解析产物同族）。
+
 被以下模块使用：
     - AdbDriver.get_runtime_info()    → 返回 RuntimeInfo
     - AdbDriver.get_cpu_usage()       → 返回 list[CpuProcessInfo]
     - AdbDriver.get_battery_info()    → 返回 BatteryInfo
     - infrastructure/adb/cli.py       → 解析纯函数产物（TopActivityInfo 等）
+    - 性能/网络采样与应用层服务       → PerformanceMetrics / NetworkStats /
+      NetworkConnection（快照对象，生产与消费均在应用层之上）
 
 属性：
     TopActivityInfo:
@@ -41,7 +47,7 @@
         health:       健康枚举串；行缺失 → None；未识别码 → "UNKNOWN"。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -108,3 +114,55 @@ class BatteryInfo:
     temperature: float | None
     voltage: int | None
     health: str | None
+
+
+@dataclass
+class PerformanceMetrics:
+    """性能指标快照（采集自 dumpsys/proc 系命令，方案 52 B6 R2 自
+    infrastructure/performance/sampler.py 平移——与 BatteryInfo/CpuProcessInfo
+    同族「解析产物数据对象」安家领域层）。"""
+
+    ts: float                 # Unix 时间戳（秒）
+    cpu_percent: float        # CPU 使用率 0-100
+    total_memory_mb: float    # 总内存 MB
+    used_memory_mb: float     # 已用内存 MB
+    fps: float | None         # 帧率（可选）
+    jank_count: int           # 卡顿帧数
+    current_activity: str     # 当前前台 Activity 组件名
+    top_package: str          # 当前前台应用包名
+    # fps 是否为本轮实测值（沿用 _last_fps / 空窗为 False）。仅服务端告警判定用，
+    # 不进 metrics_to_dict / WS 消息 / 落库（方案 24 §4.3）
+    fps_fresh: bool = False
+    # ---- 方案 37 D3 新增（带默认值保旧构造；辅助指标失败降级为默认值） ----
+    cpu_processes: list[CpuProcessInfo] = field(default_factory=list)  # 进程级 CPU 明细
+    battery_temp: float | None = None    # 电池温度（摄氏，BatteryInfo 已 ÷10）
+    battery_voltage: int | None = None   # 电池电压（原值）
+    battery_health: str = "UNKNOWN"      # 健康枚举串（采集层 None → UNKNOWN 归一）
+
+
+@dataclass
+class NetworkStats:
+    """网络统计快照（采集自 /proc/net 系命令，方案 52 B6 R2 自
+    infrastructure/network/sampler.py 平移入领域层）。"""
+
+    ts: float
+    rx_bytes: int          # 接收字节数（累计）
+    tx_bytes: int          # 发送字节数（累计）
+    rx_rate_kbps: float    # 接收速率 KB/s
+    tx_rate_kbps: float    # 发送速率 KB/s
+    active_connections: int  # 活跃连接数
+    wifi_connected: bool
+    wifi_ssid: str | None
+
+
+@dataclass
+class NetworkConnection:
+    """网络连接信息（/proc/net/tcp|udp 解析产物，方案 52 B6 R2 平移入领域层）。"""
+
+    protocol: str          # tcp/udp
+    local_addr: str
+    local_port: int
+    remote_addr: str
+    remote_port: int
+    state: str             # ESTABLISHED/LISTEN/CLOSE_WAIT/...
+    uid: int | None

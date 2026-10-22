@@ -12,7 +12,7 @@ import asyncio
 from typing import Any
 
 from app.deps import get_network_service
-from app.infrastructure.network.sampler import NetworkConnection, NetworkStats
+from app.domain.runtime import NetworkConnection, NetworkStats
 
 from .http_testkit import make_client, override
 
