@@ -1207,7 +1207,7 @@ async def test_stall_window_max_2x_idle_or_10s(monkeypatch):
     """
     import types
 
-    from app.infrastructure.stream.scrcpy import EncoderStalledError
+    from app.core.exceptions import EncoderStalledError
 
     fake = types.SimpleNamespace(
         stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
@@ -1275,7 +1275,7 @@ async def test_stall_after_repeated_probe_send_failure(monkeypatch):
     """
     import types
 
-    from app.infrastructure.stream.scrcpy import EncoderStalledError
+    from app.core.exceptions import EncoderStalledError
 
     fake = types.SimpleNamespace(
         stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),
@@ -1694,7 +1694,7 @@ def _b5_env(monkeypatch, clock: dict):
     """B5 两用例共用编排：idle=0.2s（tick=0.1s 真实时间）+ 可变假时钟。"""
     import types
 
-    from app.infrastructure.stream.scrcpy import EncoderStalledError
+    from app.core.exceptions import EncoderStalledError
 
     fake = types.SimpleNamespace(
         stream=types.SimpleNamespace(idle_reset_seconds=0.2, raw_stream_fallback=False),

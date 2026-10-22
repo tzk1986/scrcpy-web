@@ -44,7 +44,7 @@ import zlib
 from typing import Any, AsyncIterator, Callable
 
 from app.core.config import settings
-from app.core.exceptions import ScrcpyOccupiedError
+from app.core.exceptions import EncoderStalledError, ScrcpyOccupiedError
 from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.core.units import parse_bit_rate
@@ -78,15 +78,6 @@ def _local_port_for(device_id: str) -> int:
     碰撞率高；crc32 跨进程确定，%1000 碰撞率降一个量级。
     """
     return 27183 + zlib.crc32(device_id.encode()) % 1000
-
-
-class EncoderStalledError(RuntimeError):
-    """编码器卡死（E009/E021 同族「活着不产帧」故障，方案 19 实施项 1b；
-    方案 34 加宽判死窗并引入 reason 区分两种成因）。"""
-
-    def __init__(self, message: str, *, reason: str = "no_data_after_reset") -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 # 方案 51 B2：收尾中 pids 注册表 device_id -> {pid: 过期 monotonic 时刻}。

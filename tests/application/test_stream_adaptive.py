@@ -18,7 +18,7 @@ import pytest
 from app.application.stream_service import StreamService
 from app.core.units import parse_bit_rate
 from app.core.config import settings
-from app.infrastructure.stream.scrcpy import EncoderStalledError
+from app.core.exceptions import EncoderStalledError
 
 
 class FakeEncoder:
@@ -240,7 +240,7 @@ async def test_restart_applies_even_when_stream_idle(stream_settings):
 @pytest.mark.asyncio
 async def test_stall_recovery_and_storm_guard(stream_settings, monkeypatch):
     """卡死自愈：EncoderStalledError → 重建编码器续流；60s 窗口内最多 3 次，超限上抛。"""
-    from app.infrastructure.stream.scrcpy import EncoderStalledError
+    from app.core.exceptions import EncoderStalledError
 
     async def fake_sleep(t):
         pass

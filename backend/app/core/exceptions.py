@@ -38,6 +38,10 @@
     ├── SseClientLimitError      — SSE 订阅连接数达上限，新连接被拒（503，A1 L1）
     └── SessionLimitError        — 活跃会话数达上限，新建被拒（503，A1 L2）
 
+独立于 HTTP 树：
+    EncoderStalledError          — 编码器卡死控制流信号（RuntimeError 基类，
+                                   方案 52 B6 自 infra/scrcpy 下沉，无状态码映射）
+
 所有异常都携带一个机器可读的 ``code`` 字段（如 "DEVICE_NOT_FOUND"）
 以及一个人可读的 ``message``。这让前端可以根据 ``error.code`` 进行
 国际化或条件逻辑处理。
@@ -421,6 +425,26 @@ class SessionLimitError(OpenScrcpyException):
             f"{kind}活跃会话数已达上限（{limit}），请先关闭部分会话后重试",
             code="SESSION_LIMIT",
         )
+
+
+# ---------------------------------------------------------------------------
+# 非 HTTP 异常（不入 OpenScrcpyException 树：内部运行态控制流信号，
+# 不经 FastAPI 处理器映射状态码，以 RuntimeError 为基类保持既有捕获语义）
+# ---------------------------------------------------------------------------
+
+
+class EncoderStalledError(RuntimeError):
+    """编码器卡死（E009/E021 同族「活着不产帧」故障，方案 19 实施项 1b；
+    方案 34 加宽判死窗并引入 reason 区分两种成因）。
+
+    方案 52 B6：自 infrastructure/stream/scrcpy.py 下沉 core——应用层
+    （StreamService）与基础设施层（ScrcpyEncoder）共同引用的异常须落两
+    层皆可依赖的位置，消除应用层直依 infra 具体类。
+    """
+
+    def __init__(self, message: str, *, reason: str = "no_data_after_reset") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 # ---------------------------------------------------------------------------

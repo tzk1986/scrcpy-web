@@ -32,10 +32,11 @@ from typing import Any, AsyncIterator, Callable
 
 from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor
 from app.core.config import settings
+from app.core.exceptions import EncoderStalledError
 from app.core.logging import get_logger
 from app.core.units import parse_bit_rate
 from app.domain.ports import EncoderOpts
-from app.infrastructure.stream.scrcpy import EncoderStalledError, ScrcpyEncoder
+from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 from config.settings import device_stream_settings
 
 logger = get_logger(__name__)
