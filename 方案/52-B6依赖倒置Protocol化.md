@@ -1,6 +1,7 @@
 # 52 - B6 依赖倒置 Protocol 化（方案 51 缓批项立项）
 
-> 状态：**待拍板**（2026-10-22 立项调研完成，风险评估与收益评估见 §四/§五，拍板清单见 §七）
+> 状态：**已拍板 · 实施中**（2026-10-22 用户裁决：**D1 扩面为六处一并治理**，D2-D5 按默认建议。
+> 编码器链按 §四方案 A；扩面机制按 §四之二（Ruling R2-R5）。拍板记录见 §七）
 > 依据：方案 51 §四 T3 拍板记录「B6 缓至下批」；走查条目 `docs/reviews/2026-10-20-代码走查与二次调研.md` B6（定性明确档）
 > 基线：v0.7.13 + 方案 51 批次（master `db3ccdc`）。流程遵守 DEVELOPMENT.md 约束 7：调研与根因在本文档完成，拍板后实施。
 
@@ -157,7 +158,67 @@ import 路径与类型标注。
 |---|---|---|
 | B 惰性函数内 import | `__init__` 里局部 `from app.infrastructure…` | 依赖边仍在（运行时/静态均可查出），仅躲开「模块级 import」字面检查——假治理，违背 DEVELOPMENT.md:83 精神 |
 | C 改文档口径 | 在 DEVELOPMENT.md 接受「应用层默认可直依 infra」 | 与 CLAUDE.md「严格四层、依赖倒置通过 Protocol」硬约束直接冲突；收益为零 |
-| D 六处一起改 | B6 + 其余 5 处同批 | 需新立 MetricsRepository/BatchWriter/Sampler 等 3-4 端口，拍板面与回归面数倍放大，且走查未立项=无既有裁决授权扩面 |
+| D 六处一起改 | B6 + 其余 5 处同批 | 成稿时按「需新立 3-4 端口、拍板面数倍放大」否入 D1 默认；**2026-10-22 用户拍板改判为做**，且复研发现可走「搬正错位层位」而非造端口——扩面设计见 §四之二 |
+
+## 四之二、扩面设计（D1 拍板：六处一并治理，2026-10-22 补调研后定稿）
+
+拍板后复研（本轮 §2.4 之外的新事实）：其余五处直依类的**全部依赖只有端口与数据**——
+
+| 类 | infra 技术使用 | 实际依赖 |
+|---|---|---|
+| PerformanceSampler | **无** | core + `AdbDriver` 端口 + domain.runtime |
+| NetworkSampler | **无** | core + `AdbDriver` 端口 |
+| MetricRecorder | **无**（经注入 repo 端口落库） | core + `MetricsRepository` 端口 + 两 dataclass |
+| BatchLogWriter | **无**（经 `DebugRepository.save_logs_bulk`） | core + `DebugRepository` 端口 + LogEntry |
+| PerformanceMetrics / NetworkStats / NetworkConnection | 纯 dataclass | stdlib + domain.runtime |
+
+即其违规实质是**层位放错**（把纯逻辑件放进 infra 目录），不是缺抽象。
+
+**Ruling R1（机制分治）**：对「真 infra 适配器」用 Protocol 化（方案 A）；对「放错层的纯逻辑件」用**层位搬正**——不替零替换面的单实现类造 Protocol 假抽象（那是接口债务不是治理）。判据：该类是否亲触子进程/socket/驱动等基础设施技术。`ScrcpyEncoder` 是（subprocess/adb forward/socket）→ Protocol；上述四件不是 → 搬正。
+
+### R2 三 dataclass → `domain/runtime.py`
+
+同文件既有 BatteryInfo/CpuProcessInfo「dumpsys 解析产物数据对象」同族安家（其 docstring 自陈）。
+PerformanceMetrics / NetworkStats / NetworkConnection 平移，全仓引用路径随改。
+
+### R3 四纯逻辑类 → 应用层（git mv + 路径改，实现零改动）
+
+| 旧址 | 新址 |
+|---|---|
+| `infrastructure/performance/sampler.py` | `application/performance_sampler.py` |
+| `infrastructure/network/sampler.py` | `application/network_sampler.py` |
+| `infrastructure/persistence/metric_recorder.py` | `application/metric_recorder.py` |
+| `infrastructure/persistence/batch_writer.py` | `application/batch_writer.py` |
+
+搬后 debug/performance/network/recording_support 对它们的 import 属应用层 intra 合法；
+docstring 层注改「应用层」；`infrastructure/performance|network` 两空子包删除；
+`infrastructure/__init__.py`、`persistence` 包说明同步勘正；`app.scrcpy/__init__.py:11`
+注释「ScrcpyEncoder 位于 infrastructure」仍真（不动）。
+
+### R4 `SqliteMetricsRepository` 默认值 → 必填参数 + deps 注入（D3 同款）
+
+Debug/Performance/NetworkService 三处 `metrics_repo or SqliteMetricsRepository()` 默认是违规落点；
+端口 `MetricsRepository` 本已存在、参数名不变、语义不变，仅：必填化（去默认）+
+deps `@lru_cache get_metrics_repository() -> MetricsRepository`（无状态仓库单例，
+与 device/debug repo 同款 lru_cache 理由）供三服务注入。
+
+### R5 测试构造点与路径回填
+
+- metrics_repo 必填化波及：DebugService 63 处、PerformanceService 14 处、NetworkService 17 处
+  （tests 不受 mypy 约束，构造时补 `metrics_repo=SqliteMetricsRepository()`——与现默认实例化行为
+  逐点等价，不新增替身）。
+- sampler/recorder/writer/dataclass 搬址波及 import 路径：~15 处测试文件（含
+  test_sampler/test_perf_sampler/test_network_sampler/test_batch_writer/test_http_network/
+  test_perf_recording/test_network_service/test_performance_service 等）。
+- encoder 链波及（§A5）：StreamService 4 处构造 + EncoderStalledError 5 处路径。
+
+### 扩面后改动量与风险补充
+
+总规模约 **app 9 文件 + deps 1 + tests ~25 文件，净 diff 数百行**，其中**运行时逻辑改动仍为零**
+（类体一字不动；可执行面净变化 = StreamService/metrics_repo 构造签名 4 处 + deps 装配 4 处）。
+新增风险面：搬址穷尽性（grep 清单 §2.4/§2.3 + ImportError 首跑全暴露，漏改不可能静默存活）；
+测试大面回填的机械错误（以全量 pytest 为闸）。原「造 4 端口 + 工厂参数」假想路线被 R1
+替代后，**省约 150 行端口/工厂 plumbing 与 60 处替身构造改造**。
 
 ## 五、风险评估与收益评估（用户问的「综合考量」）
 
@@ -191,29 +252,37 @@ import 路径与类型标注。
 （enabling）型收益。价值高低取决于「是否认真执行四层约束」——该约束是
 CLAUDE.md 白纸黑字，若答案是否（接受现状），则应改约束文本而非放任文档与代码矛盾。
 
-## 六、实施要点（拍板后）
+## 六、实施要点（拍板后 · 扩面版）
 
-单批次预计 3 个 commit：
+单批次预计 6 个 commit（每个独立过全量 pytest，搬址漏改会以 ImportError 当场暴露）：
 
-1. `refactor(core)`: A1 异常下沉（core + scrcpy import 点 + tests 5 处路径）——先行使 mypy 可独立验证异常无分裂。
-2. `refactor(domain+app)`: A2+A3 Protocol 回填 + 应用层断边（含 start 签名修正）——此 commit 起 mypy 首校验一致性。
-3. `refactor(deps)+test`: A4+A5 组合根与构造点回填；收尾 `test_video.py` FakeEncoder 标注（可选加 1 条结构 isinstance 钉）。
+1. `refactor(core)`: A1 `EncoderStalledError` 下沉（core 定义 + scrcpy/stream_service import + tests 5 处路径）——先行使 mypy 可独立验证异常无分裂。
+2. `refactor(domain+app+deps)`: A2-A5 编码器链 Protocol 化（VideoEncoder 六成员 + start 签名修正 + stream_service 断边/工厂必填 + deps 传工厂 + StreamService 4 测试构造点）。
+3. `refactor(domain)`: R2 三 dataclass 入 `domain/runtime.py`，sampler/recorder/app/tests 引用路径随改。
+4. `refactor(app)`: R3 四纯逻辑类搬入应用层 + 空子包删除 + 包说明/层注勘正 + tests ~15 处 import 路径。
+5. `refactor(app+deps)`: R4 metrics_repo 必填化 + deps `get_metrics_repository()` 单例 + tests ~94 处构造点回填。
+6. `docs`: 方案 52 收口 + 方案 51 勘误（D3 相关）+ 进度追踪第一百一十一次。
 
-门禁：后端三件套全量 + 前端三件套（无前端改动可跳过，按当期门禁惯例仍跑一遍收口）
-+ 真机抽验（.18 或 .22：起流 1 帧、触控 send_input 生效、request_keyframe 回切、
-拔线触发 stall 自愈至预算上抛 error 文案）。
+门禁：后端三件套全量 + 前端三件套（无前端改动，按当期门禁惯例仍跑一遍收口）。
+真机抽验：推流 1 帧 + 触控 send_input + request_keyframe 回切 + stall 自愈观察
+（=方案 51 F1-01 判据，覆盖搬移的编码器链）；performance/network 页监控启动→采样滚动→
+录制 start/status/stop 落库行数回显（覆盖 R2/R3/R4 搬移件活链）。
 
-## 七、拍板清单（待用户确认）
+## 七、拍板记录（2026-10-22 用户裁决）
 
-| # | 问题 | 默认建议 |
+| # | 问题 | 裁决 |
 |---|---|---|
-| D1 | 本期范围：仅 B6 编码器链（其余 5 处同型违规登记低优先池另行立项），还是扩为六处全治？ | **仅 B6**；其余 5 处记入路线图低优先池（新立「应用层 infra 直依全量治理」条目） |
-| D2 | `EncoderStalledError` 落点：`core/exceptions.py` 独立段（方案 51 默认，非 HTTP 树），还是 `domain/ports.py` 随 Protocol 放？ | **core/exceptions.py**（与 ScrcpyOccupiedError 等既有跨层异常同址；ports 保持纯端口+数据类） |
-| D3 | 工厂注入点口径：方案 51 原文「注入点 deps 不动」与「应用层断边」互斥（默认工厂内藏具体类即断不净）。是否确认修正为 **deps 传 `encoder_factory=ScrcpyEncoder` + StreamService 参数必填**？ | **确认修正**（deps 本就是组合根，其余服务同款；「deps 不动」文本随本方案作废并在方案 51 更新记录记勘误） |
-| D4 | `VideoEncoder` Protocol 成员面按 §2.2 六成员（含 codec/resolution 属性）钉，是否可？（未来实现须同时提供这四方法两属性） | **可**（即 WS/应用真实消费面，不多不少；runtime_checkable 保留） |
-| D5 | 实施排期：本项独立成批（3 commit，半天级），还是与下一功能批合并走？ | **独立小批先行**——改动干净、风险窗口短，不背功能批的回归包袱 |
+| D1 | 本期范围：仅 B6 编码器链，还是扩为六处全治？ | **「把其余5处一并处理了」**——扩面全治；机制按 §四之二 R1-R5 复研修正版（层位搬正为主，Protocol 化仅用于 ScrcpyEncoder） |
+| D2 | `EncoderStalledError` 落点 | **core/exceptions.py 独立段**（按默认） |
+| D3 | deps 传工厂 + 参数必填（方案 51「deps 不动」作废记勘误） | **按默认确认** |
+| D4 | `VideoEncoder` 六成员面 | **按默认确认可** |
+| D5 | 独立小批先行（不与功能批混走） | **按默认独立成批** |
 
 ## 更新记录
 
 - 2026-10-22：立项调研成稿（依赖边/真实调用面/Protocol 漂移/测试与构造点全清单、
   方案 A 设计与 B/C/D 否决理由、风险与收益评估、5 项拍板清单）。待拍板。
+- 2026-10-22：用户拍板——D1 改判扩面六处一并治理，D2-D5 按默认。拍板后复研新事实：
+  其余五处直依类零 infra 技术（只依端口），实质为层位放错；据此定 §四之二
+  Ruling R1（机制分治：真适配器 Protocol 化 / 错层纯逻辑件层位搬正）与 R2-R5 设计，
+  §六 commit 划分改 6 步、§五 否方案 D 行注记改判、§七 转拍板记录。进入实施。
