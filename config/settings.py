@@ -16,17 +16,29 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-import structlog
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-logger = structlog.get_logger(__name__)
+
+def _logger():
+    """structlog 懒取（方案 52 后补修，0.7.14 打包暴露）。
+
+    frozen --noconsole 下 run_server 必须先接管 sys.stdout/stderr 再加载
+    会 import structlog 的模块：structlog 26.x 的 PrintLogger 在模块导入期
+    `from sys import stdout` 早绑定（None），实例化时拿它建文件写锁即崩
+    TypeError（weakref None）。本模块此前顶层 import structlog，恰被
+    run_server 在 redirect 之前（取 app_base_dir）拉起，契约被破坏——
+    改懒取后模块导入期零 structlog，首用发生在 redirect 之后。
+    """
+    import structlog
+
+    return structlog.get_logger(__name__)
 
 
 class AppConfig(BaseSettings):
     name: str = "OpenScrcpy"
-    version: str = "0.7.13"
+    version: str = "0.7.14"
     debug: bool = False
     log_level: str = "INFO"
     config_watch: bool = True  # 配置文件（config/*.yaml）热重载监听开关
@@ -294,7 +306,7 @@ def load_yaml_config(env: str = "base") -> dict[str, Any]:
     # 未知节告警提升可发现性（不 forbid，避免拼错直接起不来）。
     unknown = set(data) - set(Settings.model_fields)
     if unknown:
-        logger.warning("config_unknown_sections", env=env, sections=sorted(unknown))
+        _logger().warning("config_unknown_sections", env=env, sections=sorted(unknown))
     return data
 
 
