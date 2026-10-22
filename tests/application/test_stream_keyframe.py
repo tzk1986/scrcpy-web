@@ -59,7 +59,7 @@ async def test_request_keyframe_debounced_1s():
     101.1 窗口外再次发送（True）→ 共 2 次编码器调用；
     missing 设备无编码器 → False。
     """
-    svc = StreamService()
+    svc = StreamService(encoder_factory=ScrcpyEncoder)
     enc = KFEncoder()
     svc.encoders["dev"] = enc
     assert await svc.request_keyframe("dev", now=100.0) is True
@@ -78,7 +78,7 @@ async def test_encoder_request_keyframe_noop_without_control():
 async def test_request_keyframe_send_failure_returns_false_and_retries():
     """发送异常被吞掉返回 False（终审修复：不向上传播杀死 input 任务）；
     失败不占防抖窗口——1s 窗口内重试仍会再次发送。"""
-    svc = StreamService()
+    svc = StreamService(encoder_factory=ScrcpyEncoder)
     enc = FailingKFEncoder()
     svc.encoders["dev"] = enc
     assert await svc.request_keyframe("dev", now=100.0) is False
@@ -90,7 +90,7 @@ async def test_request_keyframe_send_failure_returns_false_and_retries():
 
 async def test_request_keyframe_failure_then_success_occupies_debounce():
     """失败不记录防抖时间戳；下一次成功才记录，此后 1s 窗口内请求被合并。"""
-    svc = StreamService()
+    svc = StreamService(encoder_factory=ScrcpyEncoder)
     enc = FlakyKFEncoder()
     svc.encoders["dev"] = enc
     assert await svc.request_keyframe("dev", now=100.0) is False  # 发送失败

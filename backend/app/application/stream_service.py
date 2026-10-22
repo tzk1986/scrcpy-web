@@ -28,15 +28,14 @@
 import asyncio
 import time
 from collections import deque
-from typing import Any, AsyncIterator, Callable
+from typing import AsyncIterator, Callable
 
 from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor
 from app.core.config import settings
 from app.core.exceptions import EncoderStalledError
 from app.core.logging import get_logger
 from app.core.units import parse_bit_rate
-from app.domain.ports import EncoderOpts
-from app.infrastructure.stream.scrcpy import ScrcpyEncoder
+from app.domain.ports import EncoderOpts, VideoEncoder
 from config.settings import device_stream_settings
 
 logger = get_logger(__name__)
@@ -60,23 +59,24 @@ class _ActiveStreamToken:
 class StreamService:
     """视频流用例。"""
 
-    def __init__(self, encoder_factory: Callable[[], Any] | None = None) -> None:
+    def __init__(self, encoder_factory: Callable[[], VideoEncoder]) -> None:
         """
         初始化视频流服务。
 
         为每个设备维护独立的编码器实例。
 
         参数：
-            encoder_factory: 编码器工厂（默认 ScrcpyEncoder），
-                注入点便于单测替换为假编码器。
+            encoder_factory: VideoEncoder 工厂（必填，由组合根 deps 传入
+                ScrcpyEncoder；单测传假编码器工厂）。应用层不直依 infra
+                具体类（方案 52 B6 断边）。
         """
         # 按 device_id 跟踪活跃流。值为本会话的 _ActiveStreamToken（truthy，
         # 由 start_stream 写入）或 False（stop_stream 已请求停止）。
         # teardown 按 identity 清理，旧流 finally 不得弹掉新流条目（R2）。
         self.active_streams: dict[str, _ActiveStreamToken | bool] = {}
         # 按 device_id 跟踪编码器实例
-        self.encoders: dict[str, ScrcpyEncoder] = {}
-        self._encoder_factory = encoder_factory or ScrcpyEncoder
+        self.encoders: dict[str, VideoEncoder] = {}
+        self._encoder_factory = encoder_factory
         # 自适应码率：决策器与待生效的码率（由 report_client_fps 写入，帧循环消费）
         self._advisors: dict[str, BitrateAdvisor] = {}
         self._pending_bitrate: dict[str, int] = {}
@@ -441,7 +441,7 @@ class StreamService:
         """
         return [device_id for device_id, active in self.active_streams.items() if active]
 
-    def get_encoder(self, device_id: str) -> ScrcpyEncoder | None:
+    def get_encoder(self, device_id: str) -> VideoEncoder | None:
         """
         获取设备对应的编码器实例。
 
@@ -452,6 +452,6 @@ class StreamService:
             device_id: 设备的 ADB 序列号。
 
         返回：
-            ScrcpyEncoder 实例，如果设备没有活跃流则返回 None。
+            VideoEncoder 实例，如果设备没有活跃流则返回 None。
         """
         return self.encoders.get(device_id)

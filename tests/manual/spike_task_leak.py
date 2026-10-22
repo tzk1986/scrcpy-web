@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT))  # config 包在项目根（config/settings.py）
 
 from app.application.stream_service import StreamService  # noqa: E402
+from app.infrastructure.stream.scrcpy import ScrcpyEncoder  # noqa: E402
 
 
 def count_event_wait() -> int:
@@ -44,7 +45,7 @@ def count_event_wait() -> int:
 
 
 async def run(device: str, seconds: float, interval: float) -> int:
-    svc = StreamService()
+    svc = StreamService(encoder_factory=ScrcpyEncoder)
     print(f"[spike] device={device} seconds={seconds:.0f} interval={interval:.0f}",
           flush=True)
     print(f"[spike] baseline Event.wait={count_event_wait()} "

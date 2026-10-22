@@ -40,6 +40,7 @@ from app.application.stream_service import StreamService
 from app.domain.ports import AdbDriver, DebugRepository, DeviceRepository
 from app.infrastructure.adb.cli import AdbCliDriver
 from app.infrastructure.persistence.sqlite import SqliteDebugRepository, SqliteDeviceRepository
+from app.infrastructure.stream.scrcpy import ScrcpyEncoder
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +149,11 @@ def get_stream_service() -> StreamService:
     跨会话状态依赖同一实例——每 WS 连接新建实例会让 D4 acquire 守卫
     各自看到空 dict 永不拒绝、多会话并发各起 scrcpy-server（设备端
     SIGABRT 互踩，2026-10-08 .33 现场日志实证）。
+
+    encoder_factory 由组合根传入（方案 52 B6）：应用层 StreamService
+    只认 VideoEncoder 端口，具体 ScrcpyEncoder 在此装配。
     """
-    return StreamService()
+    return StreamService(encoder_factory=ScrcpyEncoder)
 
 
 @lru_cache()

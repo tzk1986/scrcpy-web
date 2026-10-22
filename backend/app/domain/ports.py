@@ -653,23 +653,56 @@ class VideoEncoder(Protocol):
 
     编码器作为长生命周期的异步生成器运行；产出的帧是原始 H.264 NAL 单元，
     前端通过 WebCodecs 解码。
+
+    成员面即 §应用层与 WS 层对编码器的全部实际调用面（方案 52 B6 回填：
+    原仅 start/stop 且 start 签名漂移未随方案 32 PTS 透传更新，Protocol
+    从未被使用故从未被校验）。
     """
 
-    async def start(self, device_id: str, opts: EncoderOpts) -> AsyncIterator[bytes]:
+    @property
+    def codec(self) -> str:
+        """当前编码格式 id（如 "h264"/"h265"，session 包确认后有效）。"""
+        ...
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        """当前编码分辨率 (宽, 高)，取自 session 包。"""
+        ...
+
+    def start(self, device_id: str, opts: EncoderOpts) -> AsyncIterator[tuple[int, bytes]]:
         """
-        开始编码并产出 H.264 帧。
+        开始编码并产出 H.264 帧（异步生成器，直接 `async for` 消费）。
+
+        声明为同步 def 返回 AsyncIterator 而非 `async def`：实现是
+        async generator function（mypy 视其为 `def ... -> AsyncIterator`），
+        若写成 `async def` 会被建模成协程函数、调用得 Coroutine 不可迭代
+        （方案 52 B6 mypy 首校验暴露的陈旧声明缺陷）。
 
         参数：
             device_id: 要编码的设备的 ADB 序列号。
             opts: 编码器配置（分辨率、码率、编码格式、帧率）。
 
         产出：
-            H.264 帧数据（原始字节，可能包含多个 NAL 单元）。
+            (pts, 帧数据) 元组——pts 为 scrcpy 12B 头中的 PTS/flags 原值
+            （方案 32 透传，供上层识别 config/关键帧），帧数据为原始字节
+            （可能包含多个 NAL 单元）。
+
+        异常：
+            EncoderStalledError: 探针/RESET 后判死窗内无数据
+                （core/exceptions，方案 52 B6 下沉）。
         """
         ...
 
     async def stop(self) -> None:
         """停止编码并释放资源（子进程等）。"""
+        ...
+
+    async def send_input(self, data: dict[str, Any]) -> None:
+        """经控制通道发送输入事件；通道不可用时回退 adb shell input。"""
+        ...
+
+    async def request_keyframe(self) -> None:
+        """请求关键帧（RESET_VIDEO）；无控制通道时为 no-op。"""
         ...
 
 
