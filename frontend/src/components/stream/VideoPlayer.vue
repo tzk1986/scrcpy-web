@@ -636,15 +636,16 @@ defineExpose({
 
 .stats {
   display: flex;
+  align-items: baseline;
   gap: 16px;
   font-size: 12px;
   color: #888;
 }
 
+/* 纯文本项不得嵌套 flex：line-height:normal 下含中文/纯拉丁行盒度量不同，
+   内层 center 会使「FPS: 0」等纯拉丁项基线上移（0.7.14 覆盖重打修复） */
 .stat-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  display: inline;
 }
 
 .stat-item.streaming {
