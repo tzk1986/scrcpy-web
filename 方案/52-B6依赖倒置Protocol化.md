@@ -1,7 +1,8 @@
 # 52 - B6 依赖倒置 Protocol 化（方案 51 缓批项立项）
 
-> 状态：**已拍板 · 实施中**（2026-10-22 用户裁决：**D1 扩面为六处一并治理**，D2-D5 按默认建议。
-> 编码器链按 §四方案 A；扩面机制按 §四之二（Ruling R2-R5）。拍板记录见 §七）
+> 状态：**已实施**（2026-10-22 用户裁决 D1 扩面六处一并治理、D2-D5 按默认后，当日
+> C1-C6 六 commit 落地：编码器链按 §四方案 A、扩面按 §四之二 R1-R5，零运行时逻辑改动。
+> 门禁六件套全绿 + 真机抽验两判据 PASS，详见 §六之补与更新记录）
 > 依据：方案 51 §四 T3 拍板记录「B6 缓至下批」；走查条目 `docs/reviews/2026-10-20-代码走查与二次调研.md` B6（定性明确档）
 > 基线：v0.7.13 + 方案 51 批次（master `db3ccdc`）。流程遵守 DEVELOPMENT.md 约束 7：调研与根因在本文档完成，拍板后实施。
 
@@ -113,13 +114,18 @@ class VideoEncoder(Protocol):
     def codec(self) -> str: ...
     @property
     def resolution(self) -> tuple[int, int]: ...
-    async def start(self, device_id: str, opts: EncoderOpts) -> AsyncIterator[tuple[int, bytes]]: ...
+    def start(self, device_id: str, opts: EncoderOpts) -> AsyncIterator[tuple[int, bytes]]: ...
     async def stop(self) -> None: ...
     async def send_input(self, data: dict[str, Any]) -> None: ...
     async def request_keyframe(self) -> None: ...
 ```
 
 - **修正 `start` 返回签名漂移**（bytes → tuple[int, bytes]，对齐方案 32 PTS 透传现实）。
+- **实施勘误（C2 mypy 首校验实证）**：`start` 声明为**同步 `def` 返回
+  `AsyncIterator`**而非成稿样例的 `async def`——实现是 async generator function，
+  mypy 视 AGF 为 `def ... -> AsyncIterator`；写成 `async def` 会被建模成协程函数、
+  调用得 Coroutine 不可 `__anext__`。本节样例此处本就踩中 §2.2「Protocol 从未被校验」
+  的同一坑，实证于 `ports.py:672` 的 docstring 记档。
 - docstring「未来实现：MediaCodec/FFmpeg」保留；补一句契约语义（request_keyframe
   无通道时 no-op 等，从实现 docstring 提炼，不新增约束）。
 
@@ -268,6 +274,29 @@ CLAUDE.md 白纸黑字，若答案是否（接受现状），则应改约束文�
 （=方案 51 F1-01 判据，覆盖搬移的编码器链）；performance/network 页监控启动→采样滚动→
 录制 start/status/stop 落库行数回显（覆盖 R2/R3/R4 搬移件活链）。
 
+### 六之补、实施结果（2026-10-22 收口）
+
+| commit | 内容 | hash |
+|---|---|---|
+| C1 | A1 异常下沉（core 定义 + scrcpy/stream_service import + tests 5 处路径） | `589ea30` |
+| C2 | A2-A5 编码器链 Protocol 化（六成员 + AGF 签名修正 + 断边/工厂必填 + deps 传工厂 + 4 测试构造点） | `e72e50b` |
+| C3 | R2 三 dataclass 入 `domain/runtime.py` + 引用路径 | `1c42c30` |
+| C4 | R3 四纯逻辑类 git mv 搬应用层 + 空子包删除 + 层注/包说明 + tests 路径 | `9016d41` |
+| C5 | R4 metrics_repo 必填化 + deps 单例注入 + tests 97 处构造回填（预估 ~94，实际含多行/子类构造 4 处修正） | `01ce720` |
+| C6 | docs 收口（本勘误 + 方案 51 B6 行勘误 + 进度追踪一百一十一次） | 本提交 |
+
+- **门禁（2026-10-22 全绿）**：后端 ruff / mypy strict（77 文件，Protocol 首校验点）/
+  pytest **1355 passed, 1 skipped, cov 93.87%**（与方案 51 基线一致零增减）；
+  前端 vitest **728/728** / eslint 全量 / vue-tsc。
+- **真机抽验（.18，8766 隔离实例 + 5039 独立 adb，判据全 PASS）**：
+  - 编码器链（F1-01 同款）：推流 11 帧 + config + IDR×3；`send_input`（touch + HOME key）
+    后持续出帧零 error；`request_keyframe` 后 IDR 再现（第 4 个）；后端日志 0 stall/Traceback。
+    stall 自愈路径真机不可主动注入，由 `test_stream_adaptive` 5 项钉 + 被动观察窗未见异常。
+  - perf/network 录制链：临时置 `metrics.recording=true`（user.yaml + config/reload 热生效）→
+    perf 监控 start(1s) → 录制 status rows 0→9→12 递增 → stop 回显 **rows=17**；
+    network stats 冷启动拉采样(2s) → 录制 rows 0→4→6 → stop 回显 **rows=6**；
+    删 user.yaml 还原重载后 record/start 复归 400 RECORDING_DISABLED（开关路径同场坐实）。
+
 ## 七、拍板记录（2026-10-22 用户裁决）
 
 | # | 问题 | 裁决 |
@@ -286,3 +315,9 @@ CLAUDE.md 白纸黑字，若答案是否（接受现状），则应改约束文�
   其余五处直依类零 infra 技术（只依端口），实质为层位放错；据此定 §四之二
   Ruling R1（机制分治：真适配器 Protocol 化 / 错层纯逻辑件层位搬正）与 R2-R5 设计，
   §六 commit 划分改 6 步、§五 否方案 D 行注记改判、§七 转拍板记录。进入实施。
+- 2026-10-22：**C1-C6 实施完成，状态转「已实施」**。全程零运行时逻辑改动；
+  mypy 在 C2 首次校验即暴露本方案 §A2 样例自身的 AGF 建模缺陷（`async def start`
+  应为 `def start -> AsyncIterator`），已随实施修正并回写样例（§四 A2 勘误注）。
+  C5 实测构造点 97 处（预估 ~94，差 3 处为多行 DebugService 与子类构造）。
+  门禁六件套全绿、真机抽验两判据 PASS，明细见 §六之补。C1-C5 本地提交未 push（待授权）；
+  方案 51 B6 行「deps 不动」口径随 C6 勘误。
