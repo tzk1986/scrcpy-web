@@ -14,14 +14,17 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+if TYPE_CHECKING:
+    import structlog
 
-def _logger():
+
+def _logger() -> "structlog.BoundLogger":
     """structlog 懒取（方案 52 后补修，0.7.14 打包暴露）。
 
     frozen --noconsole 下 run_server 必须先接管 sys.stdout/stderr 再加载
@@ -33,7 +36,7 @@ def _logger():
     """
     import structlog
 
-    return structlog.get_logger(__name__)
+    return cast("structlog.BoundLogger", structlog.get_logger(__name__))
 
 
 class AppConfig(BaseSettings):
