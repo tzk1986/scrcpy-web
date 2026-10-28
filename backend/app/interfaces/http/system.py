@@ -86,6 +86,7 @@ def _probe_adb_version(adb_path: str) -> str:
     try:
         result = subprocess.run(
             [adb_path, "version"],
+            stdin=subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
             capture_output=True,
             text=True,
             timeout=5,

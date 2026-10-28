@@ -139,6 +139,7 @@ class ConPtyProcess:
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(self.pty.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 capture_output=True, timeout=5,
                 # CREATE_NO_WINDOW 仅在 Windows typeshed 定义，直引会让 Linux CI 的
                 # mypy 报 attr-defined。此路径运行时恒在 Windows，getattr 兜底仅为跨平台静态检查。

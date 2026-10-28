@@ -593,6 +593,18 @@ class DeviceService:
 
                 except Exception as e:
                     logger.error("device_refresh_failed", error=str(e))
+                    # 方案 53 B 层：WinError 6 = 标准句柄悬垂投毒，自愈后下一
+                    # tick 自然恢复，免重启。
+                    if "WinError 6" in str(e):
+                        try:
+                            from app.infrastructure.adb.std_guard import (
+                                repair_std_handles)
+                            repaired = repair_std_handles()
+                            if repaired:
+                                logger.error("std_handles_repaired", items=repaired)
+                        except Exception as repair_err:
+                            logger.error("std_handles_repair_failed",
+                                         error=str(repair_err))
 
                 await asyncio.sleep(self._refresh_interval)
         except asyncio.CancelledError:

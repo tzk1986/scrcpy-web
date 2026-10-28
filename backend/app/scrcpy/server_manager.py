@@ -143,6 +143,7 @@ class ServerManager:
                 settings().adb.path, "-s", device_id, "push",
                 str(self._jar_path),
                 SCRCPY_SERVER_REMOTE_PATH,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -206,6 +207,7 @@ class ServerManager:
             process = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell",
                 f"ls -l {SCRCPY_SERVER_BAK_PATH} && sha256sum {SCRCPY_SERVER_BAK_PATH}",
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -232,6 +234,7 @@ class ServerManager:
             process = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell",
                 "cp", SCRCPY_SERVER_BAK_PATH, SCRCPY_SERVER_REMOTE_PATH,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -259,6 +262,7 @@ class ServerManager:
             process = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell",
                 "cp", SCRCPY_SERVER_REMOTE_PATH, SCRCPY_SERVER_BAK_PATH,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -289,6 +293,7 @@ class ServerManager:
             process = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell",
                 "ls", "-l", SCRCPY_SERVER_REMOTE_PATH,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -343,6 +348,7 @@ class ServerManager:
             process = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell",
                 "rm", SCRCPY_SERVER_REMOTE_PATH,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,

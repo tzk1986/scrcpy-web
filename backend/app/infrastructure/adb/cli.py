@@ -419,6 +419,7 @@ class AdbCliDriver:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -631,6 +632,7 @@ class AdbCliDriver:
             device_id,
             "shell",
             f"{cmd} 2>&1",  # 合并 stderr 到 stdout
+            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
@@ -818,6 +820,7 @@ class AdbCliDriver:
             device_id,
             "shell",
             self._LOGCAT_SINCE_NOW_CMD,
+            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
@@ -971,6 +974,7 @@ class AdbCliDriver:
         proc = await asyncio.create_subprocess_exec(
             self.adb_path, "-s", device_id, "exec-out",
             "sh", "-c", "screencap -p 2>/dev/null",
+            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
@@ -1017,6 +1021,7 @@ class AdbCliDriver:
         proc = await asyncio.create_subprocess_exec(
             self.adb_path, "-s", device_id, "exec-out",
             "sh", "-c", "screencap 2>/dev/null | gzip -1",
+            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,

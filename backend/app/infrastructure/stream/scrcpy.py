@@ -187,6 +187,7 @@ class ScrcpyEncoder:
             cleanup = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "forward", "--remove",
                 f"tcp:{self._local_port}",
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -209,6 +210,7 @@ class ScrcpyEncoder:
             settings().adb.path, "-s", device_id, "forward",
             f"tcp:{self._local_port}",
             f"localabstract:{self._socket_name}",
+            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
@@ -259,6 +261,7 @@ class ScrcpyEncoder:
         # 6. 启动 scrcpy-server 子进程
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
@@ -375,6 +378,7 @@ class ScrcpyEncoder:
             try:
                 resolution_proc = await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", device_id, "shell", "wm", "size",
+                    stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     creationflags=CREATE_NO_WINDOW,
@@ -815,6 +819,10 @@ class ScrcpyEncoder:
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id,
                     "shell", "input", "tap", str(x), str(y),
+                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
 
@@ -825,6 +833,10 @@ class ScrcpyEncoder:
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
                     str(x1), str(y1), str(x2), str(y2), str(duration),
+                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
 
@@ -835,6 +847,10 @@ class ScrcpyEncoder:
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
                     str(x), str(y), str(x), str(y), str(duration),
+                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
 
@@ -843,6 +859,10 @@ class ScrcpyEncoder:
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id,
                     "shell", "input", "keyevent", str(keycode),
+                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
 
@@ -850,6 +870,10 @@ class ScrcpyEncoder:
                 text = data["text"]
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id, "shell", "input", "text", text,
+                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
 
@@ -874,6 +898,7 @@ class ScrcpyEncoder:
         try:
             proc = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell", self._STRAY_GREP_CMD,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -921,6 +946,7 @@ class ScrcpyEncoder:
         try:
             proc = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell", f"cat /proc/{pid}/cmdline",
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -937,6 +963,7 @@ class ScrcpyEncoder:
         try:
             proc = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell", self._STRAY_GREP_CMD,
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -952,6 +979,7 @@ class ScrcpyEncoder:
         try:
             proc = await asyncio.create_subprocess_exec(
                 settings().adb.path, "-s", device_id, "shell", f"kill -9 {' '.join(pids)}",
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
@@ -1017,6 +1045,7 @@ class ScrcpyEncoder:
                 cleanup = await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id, "forward", "--remove",
                     f"tcp:{self._local_port}",
+                    stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     creationflags=CREATE_NO_WINDOW,
