@@ -506,10 +506,14 @@ class ScrcpyEncoder:
             except Exception as e:
                 logger.error("socket_read_error", device=device_id, error=str(e))
             finally:
-                # 队列满时 put(None) 会永久阻塞：先清积压再直投哨兵（P0-3）；
-                # 清积压后队列必空（单生产者），put_nowait 不会再满
-                self._drop_backlog()
-                self._data_queue.put_nowait(None)
+                # 队列满时 put(None) 会永久阻塞：满员才清积压再投哨兵（P0-3）。
+                # 未满时保留已入队帧——EOF 与消费者唤醒之间存在调度竞态
+                # （Python 3.15 起 asyncio 快路径无挂起点，无条件清积压会吞掉尾帧）
+                try:
+                    self._data_queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    self._drop_backlog()
+                    self._data_queue.put_nowait(None)
 
         read_task = asyncio.create_task(read_socket())
 

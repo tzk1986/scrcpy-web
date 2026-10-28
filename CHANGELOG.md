@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 视频流 EOF 哨兵竞态（Python 3.15 适配）：读任务收尾时「无条件清积压再投哨兵」在 3.15 asyncio 快路径下 EOF 与消费者唤醒之间无挂起点，可吞掉已入队的末尾帧；现改为未满直接投哨兵（保序），仅队列满员才清积压回落（3.10 行为不变）
 - pydantic-settings `IncompleteFieldDefinitionWarning`：`Settings.devices` 的 `dict[DeviceId, DeviceOverride]` 引用定义在其后的三个覆盖类，前向引用未解析触发告警——`StreamOverride`/`RecordingOverride`/`DeviceOverride` 移至 `Settings` 之前（定义序根治，零行为变化）
 
 ### Changed
