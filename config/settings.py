@@ -272,6 +272,39 @@ DeviceId = Annotated[
 ]
 
 
+class StreamOverride(BaseModel):
+    """stream 节写入白名单（方案 45 T2；T8 设备级覆盖复用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_size: int | None = Field(default=None, ge=0, le=4096)
+    bit_rate: str | None = Field(default=None, pattern=r"^\d+[MK]$")
+    fps: int | None = Field(default=None, ge=1, le=120)
+    codec: Literal["h264", "h265"] | None = None
+    adaptive_bitrate: bool | None = None
+
+
+class RecordingOverride(BaseModel):
+    """recording 节写入白名单（方案 45 T2；T8 设备级覆盖复用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bit_rate: str | None = Field(default=None, pattern=r"^\d+[MK]$")
+    time_limit: int | None = Field(default=None, ge=1, le=1800)
+
+
+class DeviceOverride(BaseModel):
+    """单设备覆盖节（stream/recording 各可选；节为 None 表示不覆盖该侧）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stream: StreamOverride | None = None
+    recording: RecordingOverride | None = None
+    alias: str | None = Field(
+        default=None, max_length=64
+    )  # 设备备注（方案 50）：user.yaml 持久，读取侧经 device_alias 消费
+
+
 class Settings(BaseSettings):
     app: AppConfig = Field(default_factory=AppConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -407,39 +440,6 @@ def reload_settings() -> Settings:
     global _settings
     _settings = get_settings()
     return _settings
-
-
-class StreamOverride(BaseModel):
-    """stream 节写入白名单（方案 45 T2；T8 设备级覆盖复用）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    max_size: int | None = Field(default=None, ge=0, le=4096)
-    bit_rate: str | None = Field(default=None, pattern=r"^\d+[MK]$")
-    fps: int | None = Field(default=None, ge=1, le=120)
-    codec: Literal["h264", "h265"] | None = None
-    adaptive_bitrate: bool | None = None
-
-
-class RecordingOverride(BaseModel):
-    """recording 节写入白名单（方案 45 T2；T8 设备级覆盖复用）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    bit_rate: str | None = Field(default=None, pattern=r"^\d+[MK]$")
-    time_limit: int | None = Field(default=None, ge=1, le=1800)
-
-
-class DeviceOverride(BaseModel):
-    """单设备覆盖节（stream/recording 各可选；节为 None 表示不覆盖该侧）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    stream: StreamOverride | None = None
-    recording: RecordingOverride | None = None
-    alias: str | None = Field(
-        default=None, max_length=64
-    )  # 设备备注（方案 50）：user.yaml 持久，读取侧经 device_alias 消费
 
 
 def device_stream_settings(device_id: str) -> StreamConfig:

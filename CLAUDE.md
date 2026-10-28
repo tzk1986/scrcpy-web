@@ -44,7 +44,7 @@ docs/                 — 技术文档
 
 ```bash
 # 后端
-python run_server.py    # 端口 8765，已配置 Windows ProactorEventLoop
+python run_server.py    # 端口 8765
 
 # 前端开发
 cd frontend && npm run dev    # 代理到 8765
@@ -55,7 +55,7 @@ PYTHONPATH=backend python -m pytest tests/ -v
 
 ## 关键约定
 
-- Windows 兼容：asyncio 子进程需要 ProactorEventLoop（已在 run_server.py 配置）
+- Windows 兼容：asyncio 子进程需要 ProactorEventLoop（Python 3.8+ Windows 默认即 Proactor，无需显式设置策略；3.14+ 已弃用 set_event_loop_policy，勿再添加）
 - Git Bash 中执行 ADB shell 命令时设置 `MSYS_NO_PATHCONV=1` 避免路径转换
 - 后端端口 8765（避免与常用端口冲突）
 - WebSocket 消息协议：JSON 格式，`op` 字段为客户端操作，`type` 字段为服务端消息类型

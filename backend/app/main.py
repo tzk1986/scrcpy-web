@@ -20,13 +20,7 @@ FastAPI 的 @app.websocket 装饰器与 APIRouter 的路径参数路由配合不
 """
 
 import sys
-import asyncio
 from pathlib import Path
-
-# Windows 上需要 ProactorEventLoop 才能使用 asyncio.create_subprocess_exec
-# 必须在任何其他 asyncio 代码之前设置
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.exceptions import RequestValidationError

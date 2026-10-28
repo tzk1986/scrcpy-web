@@ -8,7 +8,7 @@
 采样/缓冲/失联语义测试见 tests/application/test_network_service.py。
 """
 
-import asyncio
+import inspect
 from typing import Any
 
 from app.deps import get_network_service
@@ -194,5 +194,5 @@ def test_connections_forwards_device_id_to_service() -> None:
 def test_fake_exposes_service_interface() -> None:
     """替身实现服务层同一接口（get_stats / get_connections 均为 async）。"""
     fake = FakeNetworkService()
-    assert asyncio.iscoroutinefunction(fake.get_stats)
-    assert asyncio.iscoroutinefunction(fake.get_connections)
+    assert inspect.iscoroutinefunction(fake.get_stats)
+    assert inspect.iscoroutinefunction(fake.get_connections)

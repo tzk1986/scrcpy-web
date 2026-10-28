@@ -38,10 +38,8 @@ import time
 import zipfile
 from pathlib import Path
 
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    # 判据 detail 可含 U+FFFD 等非 GBK 字符（S39-9 坏名呈现），防 print 崩
-    sys.stdout.reconfigure(errors="replace")
+# 判据 detail 可含 U+FFFD 等非 GBK 字符（S39-9 坏名呈现），防 print 崩
+sys.stdout.reconfigure(errors="replace")
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))

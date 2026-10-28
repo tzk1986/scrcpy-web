@@ -35,10 +35,6 @@ import sys
 import time
 from pathlib import Path
 
-if sys.platform == "win32":
-    # Windows 上必须 ProactorEventLoop 才能支持子进程（同 run_server.py）
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 sys.stdout.reconfigure(encoding="utf-8")
 # Git Bash 路径转换防御（子进程列参本不经 MSYS，双保险）
 os.environ.setdefault("MSYS_NO_PATHCONV", "1")

@@ -63,7 +63,7 @@ make dev
 ### Docker 部署（开发参考，未验证）
 
 Docker/Linux 配置仅作服务器化方向的骨架，**未在 Linux 容器实测**（后端依赖
-ConPTY/pywinpty、scrcpy.exe、ProactorEventLoop 等 Windows 专属组件）。当前受支持
+ConPTY/pywinpty、scrcpy.exe 等 Windows 专属组件）。当前受支持
 的运行方式为 **Windows 本地运行**，详见 [部署指南](docs/部署指南.md)。
 
 ## 📖 文档

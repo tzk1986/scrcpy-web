@@ -7,11 +7,10 @@
 绿色版（PyInstaller 冻结运行）：单实例互斥、端口探测回退、文件日志、
     服务就绪后自动打开浏览器；默认绑定 127.0.0.1。
 
-Windows 上需要在 uvicorn 启动前设置 ProactorEventLoop，
-以支持 asyncio.create_subprocess_exec。
+事件循环：Windows 自 Python 3.8 起默认即 ProactorEventLoop，
+原生支持 asyncio.create_subprocess_exec，无需显式设置策略。
 """
 
-import asyncio
 import os
 import sys
 
@@ -20,10 +19,6 @@ project_root = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.join(project_root, "backend")
 sys.path.insert(0, project_root)
 sys.path.insert(0, backend_dir)
-
-# Windows 上必须使用 ProactorEventLoop 才能支持子进程
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 
 def _serve(server_app, host: str, port: int) -> None:

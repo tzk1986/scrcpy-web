@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- pydantic-settings `IncompleteFieldDefinitionWarning`：`Settings.devices` 的 `dict[DeviceId, DeviceOverride]` 引用定义在其后的三个覆盖类，前向引用未解析触发告警——`StreamOverride`/`RecordingOverride`/`DeviceOverride` 移至 `Settings` 之前（定义序根治，零行为变化）
+
+### Changed
+
+- 弃用告警清零（Python 3.14/3.16 前瞻）：①测试替身协程判定 `asyncio.iscoroutinefunction` → `inspect.iscoroutinefunction`（3.14 弃用、3.16 移除）；②删除全部 `asyncio.set_event_loop_policy(WindowsProactorEventLoopPolicy())` 显式设置（Python 3.8 起 win32 默认即 Proactor，该 API 3.14 弃用、3.16 连类移除，届时不改将 AttributeError）——涉 `run_server.py`/`backend/app/main.py`/`tests/manual` 4 脚本；③文档口径同步（CLAUDE.md/README/架构.md/经验记录 E008 订正注）
+
 ## [0.7.14] - 2026-10-23
 
 ### Fixed
