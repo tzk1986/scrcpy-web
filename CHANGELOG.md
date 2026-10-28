@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-10-28
+
+### Fixed
+
+- 调试终端关闭后全局 adb 失效（方案 53，v0.7.15 发布包报告）：exe 内 native 路径会 CloseHandle 掉进程标准句柄而 PEB 值保留（悬垂，外部探针在投毒实例上实锤 stdin/stdout DEAD），此后一切走 std 继承分支的子进程 spawn 永久报 `[WinError 6] 句柄无效`——设备列表 500、连接设备、自动上下线全灭且仅重启恢复。双层治理：①全部 28 个 spawn 点显式 `stdin=DEVNULL`（交互调试 shell 保留 PIPE；5 个输入点连 stdout/stderr 一并 DEVNULL），彻底绕开继承分支；②新增 `std_guard.repair_std_handles()` 悬垂自愈，设备刷新捕获 WinError 6 时把已死标准句柄替换为 NUL——即使未来出现新触发路径，投毒后下一刷新周期自动恢复，免重启
+
 ## [0.7.15] - 2026-10-28
 
 ### Fixed

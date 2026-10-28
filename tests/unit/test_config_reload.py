@@ -55,7 +55,7 @@ def _fake_loader(config: dict):
 
 
 def _base_config(**app_overrides) -> dict:
-    app = {"name": "OpenScrcpy", "version": "0.7.15"}
+    app = {"name": "OpenScrcpy", "version": "0.7.16"}
     app.update(app_overrides)
     # host 与 base.yaml 现默认（A1 M1 回环 127.0.0.1）一致，保证「same bind」用例语义
     return {"app": app, "server": {"host": "127.0.0.1", "port": 8765}}
