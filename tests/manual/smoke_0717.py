@@ -27,6 +27,12 @@ import time
 import urllib.request
 from pathlib import Path
 
+# GBK 控制台打不出 ⑩⑪⑫⑬ 等带圈字符（U+246A 起不在 GBK）——stdout 强制 UTF-8
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 _ROOT = Path(__file__).resolve().parents[2]
 _EXE = _ROOT / "dist" / "OpenScrcpy" / "OpenScrcpy.exe"
 _PORT_FILE = _ROOT / "dist" / "OpenScrcpy" / "data" / "port.txt"
