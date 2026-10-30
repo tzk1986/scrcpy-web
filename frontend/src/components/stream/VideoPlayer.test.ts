@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
     connect = vi.fn()
     close = vi.fn()
     reconnectHandler: (() => void) | null = null
+    openHandler: (() => void) | null = null
     url: string
 
     constructor(url: string) {
@@ -37,6 +38,9 @@ const h = vi.hoisted(() => {
     }
     setErrorHandler(handler: (e: unknown) => void) {
       this.errorHandler = handler
+    }
+    setOpenHandler(handler: () => void) {
+      this.openHandler = handler
     }
     setReconnectHandler(handler: () => void) {
       this.reconnectHandler = handler
@@ -86,6 +90,9 @@ const h = vi.hoisted(() => {
     handleTouchStart = vi.fn()
     handleTouchMove = vi.fn()
     handleTouchEnd = vi.fn()
+    // 方案54：onMounted 初始化与消息截流所需替身
+    setPreferText = vi.fn()
+    handleClipboardMessage = vi.fn()
 
     constructor() {
       MockInputController.instances.push(this)
@@ -115,6 +122,9 @@ vi.mock('@/services/websocket', () => ({ WebSocketService: h.MockWebSocketServic
 vi.mock('@/services/h264VideoStream', () => ({ H264VideoStream: h.MockH264Stream }))
 vi.mock('@/services/videoStream', () => ({ VideoStream: h.MockVideoStream }))
 vi.mock('@/services/api', () => ({ api: h.MockApi }))
+vi.mock('element-plus', () => ({
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+}))
 vi.mock('@/services/inputController', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/inputController')>()
   return { InputController: h.MockInputController, KeyCode: actual.KeyCode }
@@ -122,6 +132,15 @@ vi.mock('@/services/inputController', async (importOriginal) => {
 
 import VideoPlayer from '@/components/stream/VideoPlayer.vue'
 import { KeyCode } from '@/services/inputController'
+
+/** 与 ScreenshotPreview.test 同款：v-if 控制 slot 渲染，对话框未开不产生多余按钮 */
+const ElDialogStub = {
+  name: 'ElDialog',
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  template: '<div v-if="modelValue" class="stub-dialog"><slot /></div>',
+}
+const stubs = { 'el-button': true, 'el-button-group': true, 'el-dialog': ElDialogStub }
 
 let hiddenFlag = false
 
@@ -141,7 +160,7 @@ async function mountPlayer() {
     props: { deviceId: 'dev1', deviceWidth: 640, deviceHeight: 480 },
     // 测试不引入 ElementPlus，stub 掉模板中的 el-* 组件消除解析告警；
     // renderStubDefaultSlot 让 el-button-group stub 透出内部导航键按钮
-    global: { renderStubDefaultSlot: true, stubs: { 'el-button': true, 'el-button-group': true } },
+    global: { renderStubDefaultSlot: true, stubs },
   })
   await flushPromises()
   return wrapper
@@ -284,8 +303,9 @@ describe('VideoPlayer 初始化与输入转发', () => {
   it('导航键按钮发送对应 KeyCode', async () => {
     const wrapper = await mountPlayer()
     const ic = h.MockInputController.instances[0]
+    // 方案54 后共 5 个：4 虚拟导航键 + 「文本」入口（对话框 stub 未开不渲染）
     const buttons = wrapper.findAll('el-button-stub')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(5)
 
     await buttons[0].trigger('click')
     await buttons[1].trigger('click')
@@ -404,7 +424,7 @@ describe('VideoPlayer H264 状态机与回退', () => {
     vi.unstubAllGlobals()
     const wrapper = shallowMount(VideoPlayer, {
       props: { deviceId: 'dev1' },
-      global: { renderStubDefaultSlot: true, stubs: { 'el-button': true, 'el-button-group': true } },
+      global: { renderStubDefaultSlot: true, stubs },
     })
     await flushPromises()
 
@@ -680,7 +700,7 @@ describe('VideoPlayer 截图快照（方案 40 A）', () => {
     vi.unstubAllGlobals() // 移除 VideoDecoder stub → 挂载即截图模式
     const wrapper = shallowMount(VideoPlayer, {
       props: { deviceId: 'dev1' },
-      global: { renderStubDefaultSlot: true, stubs: { 'el-button': true, 'el-button-group': true } },
+      global: { renderStubDefaultSlot: true, stubs },
     })
     await flushPromises()
     expect(h.MockH264Stream.instances.length).toBe(0)

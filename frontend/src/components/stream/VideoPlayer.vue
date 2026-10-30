@@ -22,6 +22,8 @@
     - 实时 FPS 和帧数统计
     - Page Visibility 降载：tab 隐藏时停 fps 上报与输入处理（方案 17 实施项 4）
     - 实验开关：URL ?swdecode=1 强制软解，诊断 Rockchip 硬解花屏
+    - 物理键盘镜像：点击视频区捕获焦点，按键/滚轮/IME/粘贴直通设备，
+      Esc×2 退出，失焦补 up 防卡键；「文本」对话框与剪贴板双向（方案 54）
 
   生命周期：
     onMounted: 初始化 WebSocket + VideoStream + InputController
@@ -41,8 +43,25 @@
         @touchstart.prevent="onTouchStart"
         @touchmove.prevent="onTouchMove"
         @touchend.prevent="onTouchEnd"
+        @wheel.prevent="onWheel"
         @contextmenu.prevent
       ></canvas>
+
+      <!-- 键盘捕获焦点目标（方案54 D1）：IME 候选窗需可编辑元素获焦，
+           视觉隐藏但留在容器内（候选窗跟随光标位置，不可移出屏幕外） -->
+      <input
+        ref="captureInputRef"
+        class="keyboard-capture"
+        autocomplete="off"
+        aria-label="键盘捕获"
+        @keydown="onCaptureKeyDown"
+        @keyup="onCaptureKeyUp"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
+        @paste="onCapturePaste"
+        @focus="onCaptureFocus"
+        @blur="onCaptureBlur"
+      />
 
       <!-- 状态覆盖层（首次连接期显示；截图态与恢复期不显示，保留画面可见） -->
       <div
@@ -64,6 +83,11 @@
       <div v-if="mode === 'screenshot' && state === 'streaming'" class="readonly-badge">
         截图预览 · 输入延迟较高
       </div>
+
+      <!-- 键盘捕获角标（方案54）：点击即退出捕获 -->
+      <div v-if="capturing" class="keyboard-badge" @click="exitCapture">
+        键盘已捕获 · 连按两次 Esc 或点此退出
+      </div>
     </div>
 
     <!-- 控制栏 -->
@@ -83,6 +107,14 @@
           <el-button size="small" @click="sendKey(KeyCode.MENU)" title="菜单">
             ≡
           </el-button>
+          <el-button
+            size="small"
+            :disabled="!wsConnected"
+            :title="wsConnected ? '输入文本 / 剪贴板' : '连接未就绪，暂不可用'"
+            @click="openInputDialog"
+          >
+            文本
+          </el-button>
         </el-button-group>
       </div>
 
@@ -97,11 +129,35 @@
         </span>
       </div>
     </div>
+
+    <!-- 输入文本对话框（方案54 D2/D3）：文本注入 + 剪贴板双向 + prefer-text 开关 -->
+    <el-dialog v-model="inputDialogVisible" title="输入文本" width="420px">
+      <textarea
+        v-model="dialogText"
+        class="dialog-textarea"
+        rows="3"
+        placeholder="输入要注入设备的文本"
+      ></textarea>
+      <div class="dialog-meta">
+        <span>{{ dialogText.length }} 字符</span>
+        <label class="prefer-text">
+          <input type="checkbox" v-model="preferText" @change="applyPreferText" />
+          字母改用文本注入
+        </label>
+      </div>
+      <div class="dialog-actions">
+        <el-button size="small" :disabled="!wsConnected" @click="injectDialogText">注入文本</el-button>
+        <el-button size="small" :disabled="!wsConnected" @click="pasteToDevice">粘贴到设备</el-button>
+        <el-button size="small" :disabled="!wsConnected" @click="pullClipboard(0)">取设备剪贴板</el-button>
+        <el-button size="small" :disabled="!wsConnected" @click="pullClipboard(1)">取设备选中文本</el-button>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { WebSocketService } from '@/services/websocket'
 import { api } from '@/services/api'
 import { VideoStream, type VideoStreamState } from '@/services/videoStream'
@@ -135,6 +191,21 @@ const frameCount = ref(0)
 const droppedFrames = ref(0)
 const error = ref<string | null>(null)
 const mode = ref<'h264' | 'screenshot'>('screenshot')
+
+// ===== 方案54：键盘捕获 / 输入文本对话框 / 剪贴板双向 =====
+
+const captureInputRef = ref<HTMLInputElement>()
+/** 键盘捕获中（隐藏输入获焦即置位，角标提示 + blur 退出） */
+const capturing = ref(false)
+/** ws 就绪态（setOpenHandler/setCloseHandler 维护；D4：未就绪禁用文本入口） */
+const wsConnected = ref(false)
+const inputDialogVisible = ref(false)
+const dialogText = ref('')
+/** D2 prefer-text 开关：字母注入路径（localStorage 持久化，默认关=keyevent） */
+const PREFER_TEXT_KEY = 'osc.keyboardPreferText'
+const preferText = ref(localStorage.getItem(PREFER_TEXT_KEY) === '1')
+/** 800ms 内第二次 Esc 退出捕获；首次照常注入 ESC(111) */
+let lastEscapeAt = 0
 
 const stateLabel = computed(() => {
   switch (state.value) {
@@ -400,8 +471,12 @@ onMounted(async () => {
   ws.setErrorHandler((e) => {
     console.error('[VideoPlayer] WebSocket error:', e)
   })
+  ws.setOpenHandler(() => {
+    wsConnected.value = true
+  })
   ws.setCloseHandler(() => {
     state.value = 'stopped'
+    wsConnected.value = false
   })
 
   // 初始化输入控制器
@@ -410,6 +485,30 @@ onMounted(async () => {
     props.deviceWidth || 1080,
     props.deviceHeight || 1920
   )
+  inputController.setPreferText(preferText.value)
+
+  // 方案54 G3：包装消息通道，截流剪贴板应答（clipboard/clipboard_error）。
+  // WebSocketService.setMessageHandler 为单回调覆盖式，h264/截图链路各自注册，
+  // 此处接管注册入口：剪贴板 JSON 帧转 InputController，其余原样转发给后注册者。
+  const rawSetMessageHandler = ws.setMessageHandler.bind(ws)
+  let downstreamHandler: ((data: unknown) => void) | null = null
+  ws.setMessageHandler = (handler: (data: unknown) => void) => {
+    downstreamHandler = handler
+    rawSetMessageHandler((data) => {
+      if (typeof data === 'string') {
+        try {
+          const msg = JSON.parse(data) as { type?: string; text?: string }
+          if (msg && (msg.type === 'clipboard' || msg.type === 'clipboard_error')) {
+            inputController?.handleClipboardMessage({ type: msg.type, text: msg.text })
+            return
+          }
+        } catch {
+          /* 非 JSON 文本帧：原样转发 */
+        }
+      }
+      downstreamHandler?.(data)
+    })
+  }
 
   // 输入事件驱动截屏（方案 27）：仅截图模式下转发给 VideoStream.notifyInput
   inputController.setInputHandler(() => {
@@ -473,6 +572,8 @@ onUnmounted(() => {
 function onMouseDown(e: MouseEvent) {
   if (canvasRef.value && inputController) {
     inputController.handleMouseDown(e, canvasRef.value)
+    // 方案54 D1=A：点击视频区即捕获键盘
+    captureInputRef.value?.focus()
   }
 }
 
@@ -508,6 +609,108 @@ function onTouchEnd(e: TouchEvent) {
 
 function sendKey(keycode: number) {
   inputController?.sendKey(keycode)
+}
+
+// ===== 方案54：键盘捕获事件 =====
+
+/**
+ * 浏览器致命组合放行清单（不 preventDefault、不注入，交回浏览器）：
+ * meta 组合一律放行；Ctrl+R/W/T/N/L/J、Ctrl+Shift+I/J（开发者工具）、F5/F12。
+ */
+function isBrowserReserved(e: KeyboardEvent): boolean {
+  if (e.metaKey) return true
+  if (e.code === 'F5' || e.code === 'F12') return true
+  if (e.ctrlKey) {
+    if (e.shiftKey) return e.code === 'KeyI' || e.code === 'KeyJ'
+    return ['KeyR', 'KeyW', 'KeyT', 'KeyN', 'KeyL', 'KeyJ'].includes(e.code)
+  }
+  return false
+}
+
+function onCaptureKeyDown(e: KeyboardEvent) {
+  if (isBrowserReserved(e)) return
+  if (e.code === 'Escape' && !e.ctrlKey && !e.altKey) {
+    const now = Date.now()
+    if (now - lastEscapeAt < 800) {
+      lastEscapeAt = 0
+      exitCapture()
+      return
+    }
+    lastEscapeAt = now
+  }
+  e.preventDefault()
+  inputController?.handleKeyDown(e)
+}
+
+function onCaptureKeyUp(e: KeyboardEvent) {
+  inputController?.handleKeyUp(e)
+}
+
+function onCaptureFocus() {
+  capturing.value = true
+}
+
+function onCaptureBlur() {
+  capturing.value = false
+  inputController?.releaseAllKeys()
+}
+
+/** 角标点击/双击 Esc 显式退出（不依赖 blur 派发：未聚焦时 blur() 不触发事件） */
+function exitCapture() {
+  capturing.value = false
+  inputController?.releaseAllKeys()
+  captureInputRef.value?.blur()
+}
+
+function onCompositionStart() {
+  inputController?.setComposing(true)
+}
+
+function onCompositionEnd(e: CompositionEvent) {
+  inputController?.handleCompositionEnd(e.data ?? '')
+}
+
+/** 粘贴 → 设备剪贴板写入并粘贴（paste=true 中文主路径，见 API.md B.2） */
+function onCapturePaste(e: ClipboardEvent) {
+  e.preventDefault()
+  const text = e.clipboardData?.getData('text') ?? ''
+  if (text) inputController?.sendClipboardSet(text, true)
+}
+
+function onWheel(e: WheelEvent) {
+  if (canvasRef.value && inputController) {
+    inputController.handleWheel(e, canvasRef.value)
+  }
+}
+
+// ===== 方案54：输入文本对话框 =====
+
+function openInputDialog() {
+  inputDialogVisible.value = true
+}
+
+function applyPreferText() {
+  inputController?.setPreferText(preferText.value)
+  localStorage.setItem(PREFER_TEXT_KEY, preferText.value ? '1' : '0')
+}
+
+function injectDialogText() {
+  if (dialogText.value) inputController?.sendText(dialogText.value)
+}
+
+function pasteToDevice() {
+  if (dialogText.value) inputController?.sendClipboardSet(dialogText.value, true)
+}
+
+/** 拉取设备剪贴板（copyKey=1 先注入复制键取选中文本）回填输入框 */
+async function pullClipboard(copyKey: number) {
+  const text = await inputController?.requestClipboard(copyKey)
+  if (text === undefined) return
+  if (text === null) {
+    ElMessage.warning('设备剪贴板不可用或应答超时')
+    return
+  }
+  dialogText.value = text
 }
 
 async function reconnect() {
@@ -658,5 +861,66 @@ defineExpose({
 
 .stat-item.stopped {
   color: #909399;
+}
+
+/* 键盘捕获焦点目标（方案54）：视觉隐藏但留在画面内，IME 候选窗跟随其位置 */
+.keyboard-capture {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: none;
+  outline: none;
+  padding: 0;
+  z-index: 1;
+}
+
+/* 捕获角标（方案54）：右下角，点击退出捕获 */
+.keyboard-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #67c23a;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(103, 194, 58, 0.5);
+  border-radius: 4px;
+  z-index: 10;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dialog-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+}
+
+.dialog-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 8px 0;
+  font-size: 12px;
+  color: #888;
+}
+
+.prefer-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 8px;
 }
 </style>
