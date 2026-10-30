@@ -90,6 +90,7 @@ const h = vi.hoisted(() => {
     handleCompositionEnd = vi.fn()
     setPreferText = vi.fn()
     sendClipboardSet = vi.fn()
+    sendClipboardMirror = vi.fn()
     requestClipboard = vi.fn()
     handleClipboardMessage = vi.fn()
 
@@ -478,7 +479,8 @@ describe('方案54 输入文本对话框与 D4 禁用', () => {
     expect(ic.setPreferText).toHaveBeenLastCalledWith(false)
 
     await openDialog(wrapper)
-    await wrapper.find('input[type="checkbox"]').setValue(true)
+    // 工具栏「剪贴板镜像」checkbox 在 DOM 序前于对话框 prefer-text——须限定对话框内选择
+    await wrapper.find('.prefer-text input[type="checkbox"]').setValue(true)
     expect(ic.setPreferText).toHaveBeenLastCalledWith(true)
     expect(localStorage.getItem('osc.keyboardPreferText')).toBe('1')
     wrapper.unmount()
