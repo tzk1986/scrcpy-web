@@ -41,6 +41,7 @@ import asyncio
 import re
 import time
 import zlib
+from collections import deque
 from typing import Any, AsyncIterator, Callable
 
 from app.core.config import settings
@@ -51,6 +52,11 @@ from app.core.units import parse_bit_rate
 from app.domain.ports import EncoderOpts
 from app.scrcpy.server_manager import ServerManager
 from app.scrcpy.control_sender import ControlSender, ACTION_DOWN, ACTION_UP, ACTION_MOVE
+from app.scrcpy.device_messages import (
+    TYPE_CLIPBOARD,
+    DeviceMessage,
+    read_device_message,
+)
 from app.scrcpy.constants import (
     SCRCPY_SERVER_REMOTE_PATH,
     SCRCPY_SERVER_CLASS,
@@ -111,6 +117,10 @@ class ScrcpyEncoder:
         self._writer: asyncio.StreamWriter | None = None
         self._control_writer: asyncio.StreamWriter | None = None  # 控制连接
         self._control_sender: ControlSender | None = None  # 控制消息发送器
+        # 方案 54 G3-B：控制 socket 反向 DeviceMessage reader（剪贴板拉取应答）
+        self._control_reader: asyncio.StreamReader | None = None
+        self._control_reader_task: asyncio.Task[None] | None = None
+        self._clipboard_waiters: deque[asyncio.Future[str | None]] = deque()
         self._resolution: tuple[int, int] = (0, 0)  # 屏幕分辨率
         self._codec: str = "h264"  # 当前会话编解码器（方案 45 T3）
         self._server_manager = ServerManager()
@@ -409,11 +419,16 @@ class ScrcpyEncoder:
         # 已在上一步由 adb 获取，直接创建。
         logger.info("establishing_control_connection", device=device_id)
         try:
-            _, control_writer = await asyncio.wait_for(
+            control_reader, control_writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", self._local_port),
                 timeout=3.0,
             )
             self._control_writer = control_writer
+            # 方案 54 G3-B：控制 socket 全双工（tunnel_forward 即 TCP），
+            # 保留反向 reader 解析 DeviceMessage（CLIPBOARD/ACK 应答）
+            self._control_reader = control_reader
+            self._control_reader_task = asyncio.create_task(
+                self._read_control_messages())
 
             if raw_fallback:
                 # 创建控制消息发送器（需要分辨率）
@@ -659,6 +674,87 @@ class ScrcpyEncoder:
                        device=device_id, resolution=self._resolution)
 
     # =========================================================================
+    # 控制 socket 反向通道（DeviceMessage，方案 54 G3-B）
+    # =========================================================================
+
+    async def _read_control_messages(self) -> None:
+        """后台任务：解析控制 socket 反向 DeviceMessage 并分发。
+
+        只服务剪贴板拉取（CLIPBOARD 帧 FIFO 关联 clipboard_get 请求）；
+        不触碰视频帧路径。EOF/未知帧 → 收口在途等待者后退出（reader 无
+        帧边界恢复手段，未知 type 继续读必坏帧，宁可终止循环）。
+        """
+        reader = self._control_reader
+        if reader is None:
+            return
+        try:
+            while True:
+                msg = await read_device_message(reader)
+                if msg is None:
+                    break
+                self._dispatch_device_message(msg)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning("control_reader_error",
+                           device=self._device_id, error=str(e))
+        finally:
+            self._fail_clipboard_waiters()
+
+    def _dispatch_device_message(self, msg: DeviceMessage) -> None:
+        """DeviceMessage → clipboard_get 等待者（FIFO）。正文不入日志，只记长度。"""
+        if msg.kind == TYPE_CLIPBOARD:
+            text = msg.text or ""
+            while self._clipboard_waiters:
+                fut = self._clipboard_waiters.popleft()
+                if not fut.done():
+                    fut.set_result(text)
+                    return
+            logger.debug("clipboard_message_unmatched",
+                         device=self._device_id, text_len=len(text))
+        else:
+            logger.debug("device_message_ignored",
+                         device=self._device_id, kind=msg.kind)
+
+    def _fail_clipboard_waiters(self) -> None:
+        """连接断/循环退出：在途 clipboard_get 以 None 收口（调用侧回 error）。"""
+        while self._clipboard_waiters:
+            fut = self._clipboard_waiters.popleft()
+            if not fut.done():
+                fut.set_result(None)
+
+    async def get_device_clipboard(self, copy_key: int = 0,
+                                   timeout: float = 3.0) -> str | None:
+        """拉取设备剪贴板（方案 54 G3-B 拉取式，不依赖 autosync）。
+
+        copy_key=1：服务端先注入 COPY 键捕获当前选中文本再读（Android≥7）。
+        控制通道不可用、发送失败或应答超时 → None（调用侧回 clipboard_error）。
+        """
+        if self._control_sender is None:
+            logger.debug("clipboard_get_no_control", device=self._device_id)
+            return None
+        fut: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        self._clipboard_waiters.append(fut)
+        try:
+            await self._control_sender.get_clipboard(copy_key)
+            return await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            logger.warning("clipboard_get_timeout",
+                           device=self._device_id, timeout=timeout)
+            return None
+        except Exception as e:
+            logger.warning("clipboard_get_failed",
+                           device=self._device_id, error=str(e))
+            return None
+        finally:
+            # 超时路径 wait_for 已 cancel(fut)（done 但仍在队）：无条件摘除，
+            # 防陈旧已取消 future 占位吃掉后续应答
+            try:
+                self._clipboard_waiters.remove(fut)
+            except ValueError:
+                pass
+
+    # =========================================================================
     # 控制输入方法
     # =========================================================================
 
@@ -673,8 +769,12 @@ class ScrcpyEncoder:
             - "touch": {"action": "touch", "x": 100, "y": 200}
             - "swipe": {"action": "swipe", "x1": 100, "y1": 200, "x2": 300, "y2": 400, "duration": 300}
             - "long_press": {"action": "long_press", "x": 100, "y": 200, "duration": 1000}
-            - "key": {"action": "key", "keycode": 4}
+            - "key": {"action": "key", "keycode": 4}（方案 54 扩 down/repeat/meta，
+              缺省 down 维持 DOWN+UP 成对向后兼容）
             - "text": {"action": "text", "text": "hello"}
+            - "scroll": {"action": "scroll", "x": 500, "y": 800, "h_scroll": 0, "v_scroll": -1}
+            - "clipboard_set": {"action": "clipboard_set", "text": "...", "paste": true}
+              （clipboard_get 不走此处：需应答回传，由 video.py 直调 get_device_clipboard）
 
         如果控制 socket 不可用，自动回退到 adb shell input。
         """
@@ -715,12 +815,33 @@ class ScrcpyEncoder:
 
             elif action == "key":
                 keycode = data["keycode"]
-                await self._control_sender.keycode(keycode, ACTION_DOWN)
-                await self._control_sender.keycode(keycode, ACTION_UP)
+                repeat = int(data.get("repeat", 0) or 0)
+                meta_state = int(data.get("meta", 0) or 0)
+                down = data.get("down")
+                if down is None:
+                    # 旧格式兼容（4 虚拟键等）：无 down 字段维持 DOWN+UP 成对
+                    await self._control_sender.keycode(
+                        keycode, ACTION_DOWN, 0, meta_state)
+                    await self._control_sender.keycode(
+                        keycode, ACTION_UP, 0, meta_state)
+                else:
+                    await self._control_sender.keycode(
+                        keycode, ACTION_DOWN if down else ACTION_UP,
+                        repeat, meta_state)
 
             elif action == "text":
                 text = data["text"]
                 await self._control_sender.text(text)
+
+            elif action == "scroll":
+                await self._control_sender.scroll(
+                    int(data["x"]), int(data["y"]),
+                    int(data.get("h_scroll", 0) or 0),
+                    int(data.get("v_scroll", 0) or 0))
+
+            elif action == "clipboard_set":
+                await self._control_sender.set_clipboard(
+                    data["text"], paste=bool(data.get("paste", False)))
 
             else:
                 logger.warning("unknown_input_action", action=action)
@@ -855,6 +976,11 @@ class ScrcpyEncoder:
                 )
 
             elif action == "key":
+                # 兜底态 keyevent 无按下/抬起语义=点击等效：仅在 down=True 或
+                # 旧格式（无 down）时敲一次，down=False 跳过防双触发（方案 54 3.1；
+                # 长按 repeat 与修饰键在兜底态丢弃——如实写入手册不承诺等效）
+                if data.get("down") is False:
+                    return
                 keycode = data["keycode"]
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id,
@@ -866,7 +992,9 @@ class ScrcpyEncoder:
                     creationflags=CREATE_NO_WINDOW,
                 )
 
-            elif action == "text":
+            elif action in ("text", "clipboard_set"):
+                # clipboard_set 兜底：不写剪贴板，直接 input text（ASCII 部分
+                # 尽力，中文/换行受限——方案 54 §3.3，前端文案提示降级态）
                 text = data["text"]
                 await asyncio.create_subprocess_exec(
                     settings().adb.path, "-s", self._device_id, "shell", "input", "text", text,
@@ -993,6 +1121,17 @@ class ScrcpyEncoder:
         """停止编码并释放资源。"""
         logger.info("stopping_scrcpy_encoder", device=self._device_id)
         self._running = False
+
+        # 方案 54：先停反向 reader（其 finally 收口在途 clipboard_get）
+        if self._control_reader_task is not None:
+            self._control_reader_task.cancel()
+            try:
+                await self._control_reader_task
+            except asyncio.CancelledError:
+                pass
+            self._control_reader_task = None
+        self._control_reader = None
+        self._fail_clipboard_waiters()
 
         # 关闭控制 socket
         if self._control_writer:

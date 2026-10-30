@@ -705,6 +705,11 @@ class VideoEncoder(Protocol):
         """请求关键帧（RESET_VIDEO）；无控制通道时为 no-op。"""
         ...
 
+    async def get_device_clipboard(self, copy_key: int = 0,
+                                   timeout: float = 3.0) -> str | None:
+        """拉取设备剪贴板（方案 54 G3-B）；不可用/超时返回 None。"""
+        ...
+
 
 @runtime_checkable
 class DebugRepository(Protocol):

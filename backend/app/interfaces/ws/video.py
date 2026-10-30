@@ -25,7 +25,19 @@
         { "action": "swipe", "x1": 100, "y1": 200, "x2": 300, "y2": 400, "duration": 300 }
         { "action": "long_press", "x": 100, "y": 200, "duration": 1000 }
         { "action": "key", "keycode": 4 }
+          （方案 54 G1 扩展：可选 down/repeat/meta——down 缺省维持按下+抬起
+          成对的旧行为；down=true/false 单发按下/抬起，repeat 长按重复计数，
+          meta 为 Android META_* 位掩码）
         { "action": "text", "text": "hello" }
+        { "action": "scroll", "x": 500, "y": 800, "h_scroll": 0, "v_scroll": -1 }
+          （方案 54：滚轮注入，h/v 取值 ±1 档位）
+        { "action": "clipboard_set", "text": "...", "paste": true }
+          （方案 54 G3-A：写设备剪贴板，paste=true 同时注入粘贴键）
+        { "action": "clipboard_get", "copy_key": 0 }
+          （方案 54 G3-B：拉取设备剪贴板；copy_key=1 先注入复制键捕获选中文本）
+    服务端 → 客户端（方案 54 G3-B 剪贴板应答）：
+        { "type": "clipboard", "text": "..." }
+        { "type": "clipboard_error", "error": "..." }
 
 H.264 流处理：
     - 输入为 scrcpy-server 12B 包头协议切分后的完整包载荷
@@ -126,7 +138,7 @@ async def video_stream(
                 data = parse_video_input(await websocket.receive_text())
                 if data is None:
                     continue  # 非法输入帧忽略，输入面不断
-                await _handle_input(device_id, data, stream_service)
+                await _handle_input(device_id, data, stream_service, websocket)
                 pend = stream_service.peek_pending_bitrate(device_id)
                 if pend is not None and pend != last_notified:
                     last_notified = pend
@@ -446,7 +458,12 @@ async def _send_config(websocket: WebSocket, sps: bytes, pps: bytes, stream_serv
                                stream_service=stream_service, device_id=device_id)
 
 
-async def _handle_input(device_id: str, data: dict[str, Any], stream_service: StreamService) -> None:
+async def _handle_input(
+    device_id: str,
+    data: dict[str, Any],
+    stream_service: StreamService,
+    websocket: WebSocket,
+) -> None:
     """
     处理来自客户端的输入事件。
 
@@ -457,8 +474,12 @@ async def _handle_input(device_id: str, data: dict[str, Any], stream_service: St
         - touch: 触摸事件（x, y）
         - swipe: 滑动事件（x1, y1, x2, y2, duration）
         - long_press: 长按事件（x, y, duration 默认 1000ms）
-        - key: 按键事件（keycode）
+        - key: 按键事件（keycode；方案 54 扩 down/repeat/meta，缺省 down 成对）
         - text: 文本输入（text）
+        - scroll: 滚轮注入（x, y, h_scroll, v_scroll）
+        - clipboard_set: 写设备剪贴板（text, paste）
+        - clipboard_get: 拉取设备剪贴板（copy_key）——需应答回传，
+          经同一 WS 回 {type: clipboard / clipboard_error}
 
     另外支持客户端 1Hz 帧率上报（用于自适应码率决策）：
         { "op": "stats", "fps": 25 }
@@ -478,7 +499,27 @@ async def _handle_input(device_id: str, data: dict[str, Any], stream_service: St
         stream_service.report_client_fps(device_id, fps)
         return
 
-    logger.debug("input_received", device=device_id, action=data.get("action"), data=data)
+    if data.get("action") == "clipboard_get":
+        # 方案 54 G3-B：拉取式应答回传；正文不入日志
+        encoder = stream_service.get_encoder(device_id)
+        copy_key = int(data.get("copy_key", 0) or 0)
+        text = (await encoder.get_device_clipboard(copy_key=copy_key)
+                if encoder is not None else None)
+        if text is None:
+            await websocket.send_json(
+                {"type": "clipboard_error", "error": "unavailable_or_timeout"})
+        else:
+            await websocket.send_json({"type": "clipboard", "text": text})
+        return
+
+    if data.get("action") == "clipboard_set":
+        # 安全（方案 54 §3.3）：剪贴板正文不落日志，只记长度
+        logger.debug("input_received", device=device_id, action="clipboard_set",
+                     text_len=len(str(data.get("text", ""))),
+                     paste=bool(data.get("paste")))
+    else:
+        logger.debug("input_received", device=device_id,
+                     action=data.get("action"), data=data)
 
     encoder = stream_service.get_encoder(device_id)
     if encoder is None:

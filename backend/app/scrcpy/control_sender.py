@@ -32,6 +32,8 @@ TYPE_BACK_OR_SCREEN_ON = 4
 TYPE_EXPAND_NOTIFICATION_PANEL = 5
 TYPE_EXPAND_SETTINGS_PANEL = 6
 TYPE_COLLAPSE_PANELS = 7
+TYPE_GET_CLIPBOARD = 8
+TYPE_SET_CLIPBOARD = 9
 TYPE_SET_DISPLAY_POWER = 10
 TYPE_RESET_VIDEO = 17
 
@@ -229,6 +231,27 @@ class ControlSender:
     async def collapse_panels(self) -> None:
         """发送折叠面板命令（1 字节）。"""
         package = struct.pack(">B", TYPE_COLLAPSE_PANELS)
+        await self._send(package)
+
+    async def get_clipboard(self, copy_key: int = 0) -> None:
+        """发送 GET_CLIPBOARD（2 字节）：type(1) + copyKey(1)。
+
+        copy_key 非零时服务端先注入 COPY/CUT 键再读剪贴板（Android≥7），
+        可捕获当前选中文本。应答经控制 socket 反向 CLIPBOARD 帧返回
+        （方案 54 G3-B，不依赖 clipboard_autosync）。
+        """
+        await self._send(struct.pack(">BB", TYPE_GET_CLIPBOARD, copy_key))
+
+    async def set_clipboard(self, text: str, paste: bool = False) -> None:
+        """发送 SET_CLIPBOARD：type(1) + sequence(8) + paste(1) + len(4) + utf8。
+
+        paste=True 时服务端写剪贴板后注入 PASTE 键直接落入焦点输入框
+        （中文主路径，绕开 INJECT_TEXT 的字符限制，Android≥7）。
+        sequence 恒 0（上游 SEQUENCE_INVALID）→ 服务端不回 ACK。
+        """
+        buffer = text.encode("utf-8")
+        package = struct.pack(">BqB", TYPE_SET_CLIPBOARD, 0, 1 if paste else 0)
+        package += struct.pack(">i", len(buffer)) + buffer
         await self._send(package)
 
     async def set_display_power(self, on: bool) -> None:

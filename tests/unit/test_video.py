@@ -99,12 +99,18 @@ class FakeEncoder:
     codec 供 WS 层惰性 HEVC 判定（方案 45 T3，默认 h264 既有用例零变化）。"""
 
     def __init__(
-        self, resolution: tuple[int, int] = (1080, 1920), codec: str = "h264"
+        self,
+        resolution: tuple[int, int] = (1080, 1920),
+        codec: str = "h264",
+        clipboard_result: str | None = "clip",
     ) -> None:
         self._resolution = resolution
         self._codec = codec
         self._control_sender = None
         self.inputs: list[dict[str, Any]] = []
+        # 方案 54 G3-B：get_device_clipboard 替身返回值与调用记录
+        self.clipboard_result = clipboard_result
+        self.clipboard_calls: list[int] = []
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -116,6 +122,11 @@ class FakeEncoder:
 
     async def send_input(self, data: dict[str, Any]) -> None:
         self.inputs.append(data)
+
+    async def get_device_clipboard(self, copy_key: int = 0,
+                                   timeout: float = 3.0) -> str | None:
+        self.clipboard_calls.append(copy_key)
+        return self.clipboard_result
 
 
 class FakeStreamService:
@@ -661,6 +672,64 @@ def test_invalid_input_frames_ignored_and_input_survives(video_client):
         assert encoder.inputs == [{"action": "touch", "x": 1, "y": 2}]
         gate.set()
     assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
+
+
+def test_clipboard_get_returns_text_over_ws(video_client):
+    """方案 54 G3-B：clipboard_get → 应答 {type:clipboard,text} 同 WS 回传，
+    copy_key 透传编码器。"""
+    gate = threading.Event()
+    encoder = FakeEncoder(clipboard_result="设备复制的内容")
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(0, IDR_0)
+        session.send_json({"action": "clipboard_get", "copy_key": 1})
+        assert recv_json(session) == {"type": "clipboard", "text": "设备复制的内容"}
+        assert encoder.clipboard_calls == [1]
+        gate.set()
+
+
+def test_clipboard_get_without_encoder_returns_error(video_client):
+    """无编码器：clipboard_get 回 clipboard_error（不静默、不抛错断输入面）。"""
+    gate = threading.Event()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=None,
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(0, IDR_0)
+        session.send_json({"action": "clipboard_get"})
+        msg = recv_json(session)
+        assert msg["type"] == "clipboard_error"
+        gate.set()
+
+
+def test_clipboard_set_forwarded_via_send_input(video_client):
+    """clipboard_set 走 send_input 透传（应答不需要）；stats 同步点定序。"""
+    gate = threading.Event()
+    encoder = FakeEncoder()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        fps_to_bitrate={25.0: 2_000_000},
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(0, IDR_0)
+        session.send_json({"action": "clipboard_set", "text": "abc", "paste": True})
+        session.send_json({"op": "stats", "fps": 25})
+        assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
+        assert encoder.inputs == [
+            {"action": "clipboard_set", "text": "abc", "paste": True}
+        ]
+        gate.set()
 
 
 def test_request_keyframe_op_dispatched(video_client):

@@ -653,6 +653,8 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `restarting`（JSON 文本） | `{"type": "restarting", "bit_rate": 2000000}` | 编码器即将按新码率重启的预告（1–3s 黑屏属预期）；客户端应暂停回退 watchdog 并停止上报 stats。仅当客户端发送输入消息时检查并附带下发 |
 | `stream_ended`（JSON 文本） | `{"type": "stream_ended"}` | 流正常结束通知（方案 19 实施项 5）：客户端应立即走回退，不再等待 watchdog 超时 |
 | `error`（JSON 文本） | `{"type": "error", "message": "..."}` | 流处理异常时尽力发送，随后连接结束 |
+| `clipboard`（JSON 文本） | `{"type": "clipboard", "text": "..."}` | `clipboard_get` 请求的应答（方案 54 G3-B 拉取式） |
+| `clipboard_error`（JSON 文本） | `{"type": "clipboard_error", "error": "..."}` | `clipboard_get` 失败（无控制通道/发送异常/3s 超时） |
 
 #### 客户端 → 服务端
 
@@ -663,8 +665,11 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `touch` | `x`, `y`（整数，设备坐标） | 点击：后端发送 DOWN + UP |
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `duration`（毫秒） | 滑动：DOWN → 分段 MOVE（步长 5px，最多 100 步）→ UP；距离 <10px 或 `duration` <100ms 时退化为 DOWN+UP |
 | `long_press` | `x`, `y`（整数，设备坐标）、`duration`（毫秒，默认 1000） | 长按：DOWN → 保持 `duration` → UP；adb 回退路径用同点 `input swipe x y x y duration` |
-| `key` | `keycode`（Android keycode 整数） | 按键：DOWN + UP |
-| `text` | `text`（字符串，UTF-8） | 文本注入 |
+| `key` | `keycode`（Android keycode 整数）、`down`（可选布尔，方案 54 G1）、`repeat`（可选整数，长按重复计数）、`meta`（可选整数，Android `META_*` 位掩码：SHIFT=1/ALT=2/SYM=4/CTRL=16/META=0x10000） | 按键：`down` 缺省时维持 DOWN+UP 成对（旧行为，4 虚拟键零改动）；`down=true/false` 单发按下/抬起（物理键盘镜像用，repeat 仅按下帧有意义） |
+| `text` | `text`（字符串，UTF-8） | 文本注入（服务端单条上限 300 字符，超长由前端分段） |
+| `scroll` | `x`, `y`（设备坐标）、`h_scroll`, `v_scroll`（±1 档位整数） | 滚轮注入（方案 54，adb 回退路径无等效命令、忽略） |
+| `clipboard_set` | `text`（字符串）、`paste`（可选布尔，默认 false） | 写设备剪贴板（方案 54 G3-A）；`paste=true` 服务端写后注入粘贴键直接落入焦点输入框（中文主路径，Android≥7）。控制不可用时降级 `input text`（ASCII 尽力） |
+| `clipboard_get` | `copy_key`（可选整数，0=直接读、1=先注入复制键捕获选中文本） | 拉取设备剪贴板（方案 54 G3-B）；应答经同 WS 回 `clipboard` / `clipboard_error`，超时 3s |
 
 帧率上报（自适应码率决策输入，前端约每 2s 一次）：
 
@@ -823,17 +828,22 @@ SPS 与 PPS 不随帧转发，仅用于构造 `config` 消息的 `description`�
 
 | type | 名称 | 总长度 | 结构（大端） |
 |------|------|--------|-------------|
-| 0 | INJECT_KEYCODE | 13B | `type(1) + action(1) + keycode(4) + repeat(4) + metaState(4)` |
-| 1 | INJECT_TEXT | 5 + N | `type(1) + length(4) + text(UTF-8, N 字节)` |
+| 0 | INJECT_KEYCODE | 14B | `type(1) + action(1) + keycode(4) + repeat(4) + metaState(4)`（方案 51 B11 勘误） |
+| 1 | INJECT_TEXT | 5 + N | `type(1) + length(4) + text(UTF-8, N 字节)`；服务端上限 300 字符 |
 | 2 | INJECT_TOUCH_EVENT | 32B | `type(1) + action(1) + pointer_id(8, 有符号) + x(4) + y(4) + screen_width(2) + screen_height(2) + pressure(2) + action_button(4) + buttons(4)` |
 | 3 | INJECT_SCROLL_EVENT | 21B | `type(1) + x(4) + y(4) + screen_width(2) + screen_height(2) + hScroll(2, i16) + vScroll(2, i16) + buttons(4)` |
 | 4 | BACK_OR_SCREEN_ON | 2B | `type(1) + action(1)` |
 | 5 | EXPAND_NOTIFICATION_PANEL | 1B | `type(1)` |
 | 6 | EXPAND_SETTINGS_PANEL | 1B | `type(1)` |
 | 7 | COLLAPSE_PANELS | 1B | `type(1)` |
+| 8 | GET_CLIPBOARD | 2B | `type(1) + copyKey(1)`（方案 54 G3-B；copyKey 非零先注入 COPY 键捕获选中文本） |
+| 9 | SET_CLIPBOARD | 14 + N | `type(1) + sequence(8) + paste(1) + length(4) + text(UTF-8, N 字节)`（方案 54 G3-A；sequence 恒 0=SEQUENCE_INVALID 不触发 ACK；paste=true 写后注入粘贴键） |
 | 10 | SET_DISPLAY_POWER | 2B | `type(1) + on(1, bool)` |
+| 17 | RESET_VIDEO | 1B | `type(1)`（空闲保活/反压恢复/回切催帧，方案 19/34） |
 
-`action` 取值：`0` = DOWN、`1` = UP、`2` = MOVE。触摸的 `pointer_id = -1` 表示虚拟鼠标；`pressure` 固定 `0xFFFF`（即 1.0）；`action_button`/`buttons` 固定 `1`（主键按下）。当前实现只使用了类型 0/1/2（类型 3–7、10 的方法已实现但 WS 层未暴露对应操作）。
+`action` 取值：`0` = DOWN、`1` = UP、`2` = MOVE。触摸的 `pointer_id = -1` 表示虚拟鼠标；`pressure` 固定 `0xFFFF`（即 1.0）；`action_button`/`buttons` 固定 `1`（主键按下）。类型 3（scroll）、8/9（剪贴板）已接入 WS 输入协议（方案 54）；类型 4–7、10、17 中 17 用于空闲探针，其余方法已实现但 WS 层未暴露对应操作。
+
+控制 socket 反向（device → host，方案 54 G3-B，`backend/app/scrcpy/device_messages.py`）：`CLIPBOARD` = `type(1)=0 + length(4) + text`、`ACK_CLIPBOARD` = `type(1)=1 + sequence(8)`、`UHID_OUTPUT` = `type(1)=2 + id(2) + length(2) + data`（消费保帧边界但不使用）。GET/SET 的应答不依赖 `clipboard_autosync`（上游 Controller 无条件分发，源码实证 logs/upstream/Controller.java）。
 
 ### B.2 WS 输入动作到控制消息的映射
 
@@ -842,13 +852,17 @@ SPS 与 PPS 不随帧转发，仅用于构造 `config` 消息的 `description`�
 | `{"action": "touch", "x": X, "y": Y}` | TOUCH(DOWN, X, Y) → TOUCH(UP, X, Y) |
 | `{"action": "swipe", "x1": .., "y1": .., "x2": .., "y2": .., "duration": D}` | TOUCH(DOWN, x1, y1) → N × TOUCH(MOVE, 插值点) → TOUCH(UP, x2, y2)；步长 5px、最多 100 步；距离 <10px 或 D <100ms 时仅 DOWN+UP |
 | `{"action": "long_press", "x": X, "y": Y, "duration": D}` | TOUCH(DOWN, X, Y) → 保持 D 毫秒 → TOUCH(UP, X, Y)；D 默认 1000 |
-| `{"action": "key", "keycode": K}` | KEYCODE(DOWN, K) → KEYCODE(UP, K) |
+| `{"action": "key", "keycode": K}` | KEYCODE(DOWN, K) → KEYCODE(UP, K)（缺省 `down`，向后兼容） |
+| `{"action": "key", "keycode": K, "down": true/false, "repeat": R, "meta": M}` | 单发 KEYCODE(DOWN/UP, K, R, M)（方案 54 物理键盘镜像） |
 | `{"action": "text", "text": T}` | TEXT(T) |
+| `{"action": "scroll", "x": X, "y": Y, "h_scroll": H, "v_scroll": V}` | SCROLL(X, Y, H, V)（方案 54） |
+| `{"action": "clipboard_set", "text": T, "paste": P}` | SET_CLIPBOARD(seq=0, P, T) |
+| `{"action": "clipboard_get", "copy_key": C}` | GET_CLIPBOARD(C) → 反向 CLIPBOARD 帧 → WS `clipboard`/`clipboard_error` |
 
-控制通道不可用（控制 socket 未建立或分辨率未知）或发送异常时，自动回退 `adb shell input tap/swipe/keyevent/text`（`ScrcpyEncoder._fallback_adb_input`）；`long_press` 的回退命令为同点 `input swipe X Y X Y D`。
+控制通道不可用（控制 socket 未建立或分辨率未知）或发送异常时，自动回退 `adb shell input tap/swipe/keyevent/text`（`ScrcpyEncoder._fallback_adb_input`）；`long_press` 的回退命令为同点 `input swipe X Y X Y D`。兜底语义降级如实记录（方案 54 硬约束）：`key` 的 `down=false` 在兜底态跳过（keyevent 无按下/抬起之分，防双触发），repeat/修饰键丢弃；`clipboard_set` 降级 `input text`（ASCII 尽力，paste 不生效）；`scroll` 无 adb 等效、忽略；`clipboard_get` 无拉取等效、回 `clipboard_error`。
 
 坐标系：控制消息使用设备物理坐标。后端启动 scrcpy-server 时强制 `max_size=0`（不缩放），保证视频帧尺寸等于设备物理分辨率，使前端 canvas 坐标可直接作为设备坐标使用。
 
 ### B.3 scrcpy-server 启动参数（协议相关）
 
-由 `ScrcpyEncoder.start` 构造，固定值含：`tunnel_forward=true`、`control=true`、`audio=false`、`show_touches=false`、`stay_awake=false`、`power_off_on_close=false`、`clipboard_autosync=false`、`video_codec=h264`，以及 `max_size`（强制 0）、`max_fps`、`video_bit_rate`（由 `stream.*` 配置换算为 bps）。socket 名固定 `scrcpy`，本地转发端口 `27183 + hash(device_id) % 100`。
+由 `ScrcpyEncoder.start` 构造，固定值含：`tunnel_forward=true`、`control=true`、`audio=false`、`show_touches=false`、`stay_awake=false`、`power_off_on_close=false`、`clipboard_autosync=false`、`video_codec=h264`，以及 `max_size`（强制 0）、`max_fps`、`video_bit_rate`（由 `stream.*` 配置换算为 bps）。socket 名固定 `scrcpy`，本地转发端口 `27183 + crc32(device_id) % 1000`（方案 51 B4）。`clipboard_autosync=false` 维持不动：方案 54 剪贴板为拉取式（GET/SET 应答不依赖 autosync），设备复制不自动外推（D3=A）。
