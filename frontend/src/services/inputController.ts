@@ -470,6 +470,11 @@ export class InputController {
     this.onInputSend?.()
   }
 
+  /** 方案 55：设备→PC 单向镜像开关（会话级、默认关；后端幂等开停轮询 task） */
+  sendClipboardMirror(enabled: boolean) {
+    this.ws.send({ action: 'clipboard_mirror', enabled })
+  }
+
   /**
    * 设备 → 浏览器：拉取剪贴板（copyKey=1 先注入复制键捕获选中文本）。
    * 应答经 handleClipboardMessage 关联；后端 3s 超时/失败 resolve(null)。

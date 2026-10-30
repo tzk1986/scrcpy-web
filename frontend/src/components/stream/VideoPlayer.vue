@@ -88,6 +88,9 @@
       <div v-if="capturing" class="keyboard-badge" @click="exitCapture">
         键盘已捕获 · 连按两次 Esc 或点此退出
       </div>
+
+      <!-- 镜像提示角标（方案55）：同步结果/失焦缓存/自停复位提示 -->
+      <div v-if="mirrorHint" class="mirror-badge">{{ mirrorHint }}</div>
     </div>
 
     <!-- 控制栏 -->
@@ -116,6 +119,11 @@
             文本
           </el-button>
         </el-button-group>
+        <!-- 剪贴板镜像开关（方案55）：设备复制自动同步 PC 剪贴板，会话级默认关 -->
+        <label class="mirror-toggle" title="设备复制的内容自动写入本机剪贴板（会话级，默认关；开启将覆盖 PC 剪贴板）">
+          <input type="checkbox" v-model="mirrorOn" :disabled="!wsConnected" @change="applyMirror" />
+          剪贴板镜像
+        </label>
       </div>
 
       <!-- 状态信息 -->
@@ -206,6 +214,15 @@ const PREFER_TEXT_KEY = 'osc.keyboardPreferText'
 const preferText = ref(localStorage.getItem(PREFER_TEXT_KEY) === '1')
 /** 800ms 内第二次 Esc 退出捕获；首次照常注入 ESC(111) */
 let lastEscapeAt = 0
+
+// ===== 方案55：剪贴板单向镜像（设备→PC） =====
+/** 镜像开关（会话级：ws 断开/换会话复位，不持久化） */
+const mirrorOn = ref(false)
+/** 角标提示：同步结果 / 失焦缓存 / 后端自停复位 */
+const mirrorHint = ref('')
+/** 失焦期缓存（覆盖式只留最新），回焦补写 */
+let mirrorPending: string | null = null
+let mirrorHintTimer: number | null = null
 
 const stateLabel = computed(() => {
   switch (state.value) {
@@ -452,6 +469,10 @@ function startScreenshotMode() {
 }
 
 onMounted(async () => {
+  // 方案55：回焦/回可见补写镜像缓存
+  window.addEventListener('focus', flushMirrorPending)
+  document.addEventListener('visibilitychange', flushMirrorPending)
+
   if (!canvasRef.value) return
 
   // 设置 canvas 初始尺寸（使用设备实际分辨率，保持比例）
@@ -497,7 +518,11 @@ onMounted(async () => {
     rawSetMessageHandler((data) => {
       if (typeof data === 'string') {
         try {
-          const msg = JSON.parse(data) as { type?: string; text?: string }
+          const msg = JSON.parse(data) as { type?: string; text?: string; enabled?: boolean }
+          if (msg && (msg.type === 'clipboard_push' || msg.type === 'clipboard_mirror')) {
+            handleMirrorFrame(msg)
+            return
+          }
           if (msg && (msg.type === 'clipboard' || msg.type === 'clipboard_error')) {
             inputController?.handleClipboardMessage({ type: msg.type, text: msg.text })
             return
@@ -560,11 +585,14 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('focus', flushMirrorPending)
+  document.removeEventListener('visibilitychange', flushMirrorPending)
   stopStatsTimer?.()
   stopRecoveryProbe()
   h264Stream?.stop()
   videoStream?.stop()
   ws?.close()
+  resetMirror()
 })
 
 // ===== 输入事件处理 =====
@@ -712,6 +740,88 @@ async function pullClipboard(copyKey: number) {
   }
   dialogText.value = text
 }
+
+// ===== 方案55：剪贴板镜像逻辑（焦点策略 D4：有焦点直写，失焦缓存回焦补写） =====
+
+function showMirrorHint(text: string, ms = 2500) {
+  mirrorHint.value = text
+  if (mirrorHintTimer !== null) clearTimeout(mirrorHintTimer)
+  mirrorHintTimer = window.setTimeout(() => {
+    mirrorHint.value = ''
+    mirrorHintTimer = null
+  }, ms)
+}
+
+function applyMirror() {
+  inputController?.sendClipboardMirror(mirrorOn.value)
+  if (mirrorOn.value) {
+    showMirrorHint('镜像已开启：设备复制将覆盖 PC 剪贴板', 3000)
+  } else {
+    mirrorPending = null
+    mirrorHint.value = ''
+  }
+}
+
+async function writeMirrorText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** WS 截流入口：clipboard_push 焦点写/缓存；clipboard_mirror 后端自停复位开关 */
+function handleMirrorFrame(msg: { type?: string; text?: string; enabled?: boolean }) {
+  if (msg.type === 'clipboard_mirror') {
+    mirrorOn.value = false
+    mirrorPending = null
+    showMirrorHint('设备剪贴板长时间不可用，镜像已自动停止', 4000)
+    return
+  }
+  if (!mirrorOn.value) return
+  const text = msg.text ?? ''
+  if (document.hasFocus() && !document.hidden) {
+    writeMirrorText(text).then((ok) => {
+      if (ok) showMirrorHint(`已同步设备 ${text.length} 字符`)
+      else {
+        mirrorPending = text
+        showMirrorHint('系统剪贴板写入被拒，聚焦页面后重试', 4000)
+      }
+    })
+  } else {
+    mirrorPending = text
+    showMirrorHint(`设备已复制 ${text.length} 字符，回焦自动同步`)
+  }
+}
+
+/** 回焦/回可见：补写失焦期缓存（一次性，成功即清） */
+function flushMirrorPending() {
+  if (!mirrorOn.value || mirrorPending === null) return
+  if (!document.hasFocus() || document.hidden) return
+  const text = mirrorPending
+  writeMirrorText(text).then((ok) => {
+    if (ok) {
+      mirrorPending = null
+      showMirrorHint(`已同步设备 ${text.length} 字符`)
+    }
+  })
+}
+
+function resetMirror() {
+  mirrorOn.value = false
+  mirrorPending = null
+  mirrorHint.value = ''
+  if (mirrorHintTimer !== null) {
+    clearTimeout(mirrorHintTimer)
+    mirrorHintTimer = null
+  }
+}
+
+// 会话级语义：ws 断连（含重连）即后端新会话，镜像开关复位为默认关
+watch(wsConnected, (connected) => {
+  if (!connected) resetMirror()
+})
 
 async function reconnect() {
   error.value = null
@@ -875,6 +985,37 @@ defineExpose({
   outline: none;
   padding: 0;
   z-index: 1;
+}
+
+/* 镜像开关（方案55）：控制栏内联 checkbox，同 prefer-text 风格 */
+.mirror-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-size: 12px;
+  color: #606266;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mirror-toggle input:disabled {
+  cursor: not-allowed;
+}
+
+/* 镜像角标（方案55）：复用捕获角标视觉，无点击行为 */
+.mirror-badge {
+  position: absolute;
+  bottom: 32px;
+  right: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #e6a23c;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(230, 162, 60, 0.5);
+  border-radius: 4px;
+  z-index: 10;
+  user-select: none;
 }
 
 /* 捕获角标（方案54）：右下角，点击退出捕获 */
