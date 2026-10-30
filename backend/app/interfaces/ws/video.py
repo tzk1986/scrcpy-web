@@ -35,9 +35,17 @@
           （方案 54 G3-A：写设备剪贴板，paste=true 同时注入粘贴键）
         { "action": "clipboard_get", "copy_key": 0 }
           （方案 54 G3-B：拉取设备剪贴板；copy_key=1 先注入复制键捕获选中文本）
+        { "action": "clipboard_mirror", "enabled": true }
+          （方案 55：设备→PC 单向镜像开关，会话级默认关；开启后会话内
+          1s 轮询设备剪贴板，仅变化时推送）
     服务端 → 客户端（方案 54 G3-B 剪贴板应答）：
         { "type": "clipboard", "text": "..." }
         { "type": "clipboard_error", "error": "..." }
+    服务端 → 客户端（方案 55 镜像推送）：
+        { "type": "clipboard_push", "text": "..." }
+          （设备复制自动同步：文本相对上次有变化或首轮时推送）
+        { "type": "clipboard_mirror", "enabled": false, "reason": "poll_failed" }
+          （连续拉取失败后端自停通知，前端开关复位）
 
 H.264 流处理：
     - 输入为 scrcpy-server 12B 包头协议切分后的完整包载荷
@@ -71,6 +79,7 @@ from app.scrcpy.constants import (
     NALU_TYPE_HEVC_PPS,
 )
 from app.core.logging import get_logger
+from app.interfaces.ws.clipboard_mirror import ClipboardMirror
 from app.interfaces.ws.protocol import parse_video_input
 from app.interfaces.ws.socket_opts import enable_tcp_nodelay
 
@@ -128,6 +137,9 @@ async def video_stream(
     pending_aus: list[bytes] = []
     # 方案 33：config 未就绪期的丢帧日志只打第一条，防异常流每帧刷屏
     config_pending_warned = False
+    # 方案 55：剪贴板单向镜像（设备→PC）——会话级实例，默认关，
+    # 由 clipboard_mirror 动作开停，finally 统一收口（不跨会话存活）
+    mirror = ClipboardMirror(device_id, stream_service)
 
     async def handle_input() -> None:
         """并发处理客户端输入事件；stats 上报喂自适应决策器，
@@ -138,7 +150,8 @@ async def video_stream(
                 data = parse_video_input(await websocket.receive_text())
                 if data is None:
                     continue  # 非法输入帧忽略，输入面不断
-                await _handle_input(device_id, data, stream_service, websocket)
+                await _handle_input(device_id, data, stream_service, websocket,
+                                    mirror)
                 pend = stream_service.peek_pending_bitrate(device_id)
                 if pend is not None and pend != last_notified:
                     last_notified = pend
@@ -345,6 +358,8 @@ async def video_stream(
             await input_task
         except asyncio.CancelledError:
             pass
+        # 方案 55：镜像轮询 task 随会话收口（E032 口径：awaited 清理不留 GC 尾巴）
+        await mirror.stop()
         # 方案 34 D4：按会话令牌释放（token 持有制）——旧会话释放
         # no-op 于新会话条目，反之亦然；只有持有者能停自己的流。
         await stream_service.release_stream(device_id, token)
@@ -463,6 +478,7 @@ async def _handle_input(
     data: dict[str, Any],
     stream_service: StreamService,
     websocket: WebSocket,
+    mirror: ClipboardMirror | None = None,
 ) -> None:
     """
     处理来自客户端的输入事件。
@@ -480,6 +496,8 @@ async def _handle_input(
         - clipboard_set: 写设备剪贴板（text, paste）
         - clipboard_get: 拉取设备剪贴板（copy_key）——需应答回传，
           经同一 WS 回 {type: clipboard / clipboard_error}
+        - clipboard_mirror: 单向镜像开关（enabled）——方案 55，会话级轮询
+          task 开停，设备剪贴板变化经 WS 推 {type: clipboard_push}
 
     另外支持客户端 1Hz 帧率上报（用于自适应码率决策）：
         { "op": "stats", "fps": 25 }
@@ -512,6 +530,15 @@ async def _handle_input(
             await websocket.send_json({"type": "clipboard", "text": text})
         return
 
+    if data.get("action") == "clipboard_mirror":
+        # 方案 55：单向镜像开关（幂等开停；正文不经此帧，无日志泄漏面）
+        enabled = bool(data.get("enabled"))
+        if mirror is not None:
+            await mirror.set_enabled(enabled, websocket.send_json)
+        logger.debug("clipboard_mirror_toggle", device=device_id,
+                     enabled=enabled)
+        return
+
     if data.get("action") == "clipboard_set":
         # 安全（方案 54 §3.3）：剪贴板正文不落日志，只记长度
         logger.debug("input_received", device=device_id, action="clipboard_set",
@@ -531,4 +558,7 @@ async def _handle_input(
     logger.debug("sending_input_via_encoder", device=device_id,
                 resolution=encoder.resolution)
     await encoder.send_input(data)
+    if data.get("action") == "clipboard_set" and mirror is not None:
+        # 方案 55 防环回：登记本次写入，镜像轮询读到同文一次不弹回
+        mirror.note_set(str(data.get("text", "")))
     logger.debug("input_sent", device=device_id)

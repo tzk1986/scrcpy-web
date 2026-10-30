@@ -732,6 +732,31 @@ def test_clipboard_set_forwarded_via_send_input(video_client):
         gate.set()
 
 
+def test_clipboard_mirror_pushes_over_ws(video_client, monkeypatch):
+    """方案 55：clipboard_mirror 开启 → 轮询推 {type:clipboard_push}；
+    关闭后输入面不受扰（clipboard_get 应答仍正常），会话收口干净。"""
+    from app.interfaces.ws import clipboard_mirror as cm
+    monkeypatch.setattr(cm, "DEFAULT_INTERVAL", 0.05)
+    gate = threading.Event()
+    encoder = FakeEncoder(clipboard_result="镜像内容")
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(0, IDR_0)
+        session.send_json({"action": "clipboard_mirror", "enabled": True})
+        assert recv_json(session) == {"type": "clipboard_push", "text": "镜像内容"}
+        # 同文轮次不重推；关闭后再拉取证明输入面健康
+        session.send_json({"action": "clipboard_mirror", "enabled": False})
+        session.send_json({"action": "clipboard_get"})
+        assert recv_json(session) == {"type": "clipboard", "text": "镜像内容"}
+        gate.set()
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
+
+
 def test_request_keyframe_op_dispatched(video_client):
     """客户端发送 {"op":"request_keyframe"} → 服务层 request_keyframe 被调用，
     记录设备 ID（方案 19 实施项 3：resume 回切请求关键帧）。"""

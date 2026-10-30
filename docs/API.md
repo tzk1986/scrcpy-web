@@ -655,6 +655,8 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `error`（JSON 文本） | `{"type": "error", "message": "..."}` | 流处理异常时尽力发送，随后连接结束 |
 | `clipboard`（JSON 文本） | `{"type": "clipboard", "text": "..."}` | `clipboard_get` 请求的应答（方案 54 G3-B 拉取式） |
 | `clipboard_error`（JSON 文本） | `{"type": "clipboard_error", "error": "..."}` | `clipboard_get` 失败（无控制通道/发送异常/3s 超时） |
+| `clipboard_push`（JSON 文本） | `{"type": "clipboard_push", "text": "..."}` | 单向镜像自动推送（方案 55）：镜像开启后设备剪贴板变化（含开启后首轮）时推送；正文不入日志 |
+| `clipboard_mirror`（JSON 文本） | `{"type": "clipboard_mirror", "enabled": false, "reason": "poll_failed"}` | 后端自停通知（方案 55）：连续 10 次拉取失败收口轮询 task，前端开关应复位 |
 
 #### 客户端 → 服务端
 
@@ -670,6 +672,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `scroll` | `x`, `y`（设备坐标）、`h_scroll`, `v_scroll`（±1 档位整数） | 滚轮注入（方案 54，adb 回退路径无等效命令、忽略） |
 | `clipboard_set` | `text`（字符串）、`paste`（可选布尔，默认 false） | 写设备剪贴板（方案 54 G3-A）；`paste=true` 服务端写后注入粘贴键直接落入焦点输入框（中文主路径，Android≥7）。控制不可用时降级 `input text`（ASCII 尽力） |
 | `clipboard_get` | `copy_key`（可选整数，0=直接读、1=先注入复制键捕获选中文本） | 拉取设备剪贴板（方案 54 G3-B）；应答经同 WS 回 `clipboard` / `clipboard_error`，超时 3s |
+| `clipboard_mirror` | `enabled`（布尔） | 单向镜像开关（方案 55，设备→PC）：会话级 1s 轮询 `GET_CLIPBOARD(0)` 纯读，变化推 `clipboard_push`；幂等开停、默认关、断会话自动收口；本会话 `clipboard_set` 写入文本一次性防环回不弹推 |
 
 帧率上报（自适应码率决策输入，前端约每 2s 一次）：
 
@@ -858,6 +861,7 @@ SPS 与 PPS 不随帧转发，仅用于构造 `config` 消息的 `description`�
 | `{"action": "scroll", "x": X, "y": Y, "h_scroll": H, "v_scroll": V}` | SCROLL(X, Y, H, V)（方案 54） |
 | `{"action": "clipboard_set", "text": T, "paste": P}` | SET_CLIPBOARD(seq=0, P, T) |
 | `{"action": "clipboard_get", "copy_key": C}` | GET_CLIPBOARD(C) → 反向 CLIPBOARD 帧 → WS `clipboard`/`clipboard_error` |
+| `{"action": "clipboard_mirror", "enabled": E}` | E=true 起会话级轮询（周期 GET_CLIPBOARD(0)），变化 → WS `clipboard_push`；false 停（方案 55，非单发控制消息） |
 
 控制通道不可用（控制 socket 未建立或分辨率未知）或发送异常时，自动回退 `adb shell input tap/swipe/keyevent/text`（`ScrcpyEncoder._fallback_adb_input`）；`long_press` 的回退命令为同点 `input swipe X Y X Y D`。兜底语义降级如实记录（方案 54 硬约束）：`key` 的 `down=false` 在兜底态跳过（keyevent 无按下/抬起之分，防双触发），repeat/修饰键丢弃；`clipboard_set` 降级 `input text`（ASCII 尽力，paste 不生效）；`scroll` 无 adb 等效、忽略；`clipboard_get` 无拉取等效、回 `clipboard_error`。
 
