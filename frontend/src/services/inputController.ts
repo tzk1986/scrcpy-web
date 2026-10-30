@@ -17,9 +17,39 @@
  * 使用方式：
  *   const controller = new InputController(ws, 1080, 1920)
  *   controller.handleMouseDown(event, canvasElement)
+ *
+ * 方案 54 新增：物理键盘镜像（handleKeyDown/Up + blur 补 up）、滚轮注入
+ * （handleWheel）、IME 组合输入（composition 期抑制 keydown 防双写）、
+ * 剪贴板双向（sendClipboardSet / requestClipboard + handleClipboardMessage）。
  */
 
 import type { WebSocketService } from './websocket'
+import {
+  isLetterCode,
+  keycodeForCode,
+  metaStateFromEvent,
+} from './keycodeMap'
+
+/** INJECT_TEXT 服务端单条上限（scrcpy ControlMessageReader v5.0.1 实证，超限断控制连接） */
+export const INJECT_TEXT_MAX_LENGTH = 300
+
+/** 按 UTF-16 码元切段（与 Java String.length 同口径），代理对不拆半 */
+export function splitTextChunks(
+  text: string,
+  limit = INJECT_TEXT_MAX_LENGTH,
+): string[] {
+  const chunks: string[] = []
+  let rest = text
+  while (rest.length > limit) {
+    let cut = limit
+    const prev = rest.charCodeAt(cut - 1)
+    if (prev >= 0xd800 && prev <= 0xdbff) cut -= 1  // 高代理对尾部：回退一格
+    chunks.push(rest.slice(0, cut))
+    rest = rest.slice(cut)
+  }
+  if (rest) chunks.push(rest)
+  return chunks
+}
 
 /** Android 常用按键码 */
 export const KeyCode = {
@@ -58,6 +88,14 @@ export class InputController {
   private enabled = true
   /** 输入发送后回调（方案 27：截图模式事件驱动截屏触发点） */
   private onInputSend?: () => void
+  /** 已按下待抬起的物理键（code→keycode）：blur/停用补发 up 防卡键（方案 54 G1） */
+  private pressedKeycodes = new Map<string, number>()
+  /** IME 组合输入进行中：期间抑制 keydown 镜像防字母双写（方案 54 G2） */
+  private composing = false
+  /** D2 拍板 A：字母注入路径开关（默认 keyevent；开=text 注入），持久化在 VideoPlayer 层 */
+  private preferText = false
+  /** clipboard_get 应答关联（同一时刻仅一个在途请求：UI 按钮触发） */
+  private clipboardPending: ((text: string | null) => void) | null = null
 
   /**
    * @param ws - WebSocket 连接
@@ -80,11 +118,15 @@ export class InputController {
 
   /**
    * 启用/停用输入处理（Page Visibility 降载，方案 17 实施项 4）。
-   * 停用期间指针事件处理函数直接返回，并取消挂起的长按定时器。
+   * 停用期间指针事件处理函数直接返回，并取消挂起的长按定时器；
+   * 方案 54：tab 隐藏时同步补发所有在按下键的 up（防回切后卡键）。
    */
   setEnabled(value: boolean) {
     this.enabled = value
-    if (!value) this.cancelLongPress()
+    if (!value) {
+      this.cancelLongPress()
+      this.releaseAllKeys()
+    }
   }
 
   /**
@@ -307,16 +349,147 @@ export class InputController {
     this.touchState = null
   }
 
-  /** 发送按键事件 */
-  sendKey(keycode: number) {
-    this.ws.send({ action: 'key', keycode })
+  /**
+   * 发送按键事件。
+   * 无 opts（4 虚拟键等旧调用）：维持 DOWN+UP 成对的旧协议格式；
+   * opts.down 显式给出：单发按下/抬起，透传 repeat/meta（方案 54 G1）。
+   */
+  sendKey(keycode: number, opts?: { down?: boolean; repeat?: number; meta?: number }) {
+    if (opts?.down === undefined) {
+      this.ws.send({ action: 'key', keycode })
+    } else {
+      this.ws.send({
+        action: 'key',
+        keycode,
+        down: opts.down,
+        repeat: opts.repeat ?? 0,
+        meta: opts.meta ?? 0,
+      })
+    }
     this.onInputSend?.()
   }
 
-  /** 发送文本输入 */
+  /** 发送文本输入（超 300 字符自动分段，防服务端协议校验断控，方案 54 G2） */
   sendText(text: string) {
-    this.ws.send({ action: 'text', text })
+    if (!text) return
+    for (const chunk of splitTextChunks(text)) {
+      this.ws.send({ action: 'text', text: chunk })
+    }
     this.onInputSend?.()
+  }
+
+  // -------------------------------------------------------------------------
+  // 物理键盘镜像（方案 54 G1）
+  // -------------------------------------------------------------------------
+
+  /** D2：字母注入路径开关（true=字母走 text 注入，默认 false=keyevent） */
+  setPreferText(value: boolean) {
+    this.preferText = value
+  }
+
+  /** IME 组合输入状态（compositionstart/end 挂接） */
+  setComposing(value: boolean) {
+    this.composing = value
+  }
+
+  /**
+   * keydown 镜像：composition 期间与 IME 处理中键（key=Process）抑制；
+   * 表内键单发 down（repeat 透传，设备 sdk 模式原生长按重复）；
+   * 表外键（未知组合）忽略不 preventDefault，交回浏览器。
+   */
+  handleKeyDown(e: KeyboardEvent) {
+    if (!this.enabled) return
+    if (this.composing || e.key === 'Process') return
+    const code = e.code
+    if (
+      this.preferText && isLetterCode(code) &&
+      !e.ctrlKey && !e.altKey && !e.metaKey
+    ) {
+      if (!e.repeat) this.sendText(e.key)
+      return
+    }
+    const keycode = keycodeForCode(code)
+    if (keycode === null) return
+    this.pressedKeycodes.set(code, keycode)
+    this.sendKey(keycode, {
+      down: true,
+      repeat: e.repeat ? 1 : 0,
+      meta: metaStateFromEvent(e),
+    })
+  }
+
+  /** keyup 镜像：仅补发曾按下过的键（prefer-text 路径的字母无按下态不补） */
+  handleKeyUp(e: KeyboardEvent) {
+    if (!this.enabled) return
+    const keycode = this.pressedKeycodes.get(e.code)
+    if (keycode === undefined) return
+    this.pressedKeycodes.delete(e.code)
+    this.sendKey(keycode, { down: false, meta: metaStateFromEvent(e) })
+  }
+
+  /** 失焦/退出捕获/隐藏：所有在按下键补发 up 防卡键 */
+  releaseAllKeys() {
+    for (const [code, keycode] of [...this.pressedKeycodes]) {
+      this.pressedKeycodes.delete(code)
+      this.sendKey(keycode, { down: false, meta: 0 })
+    }
+  }
+
+  /**
+   * IME 确认整段上屏（compositionend）：结束组合态并注入文本。
+   * 字母双写由 composing 抑制窗避免（keydown 在 start~end 期间被忽略）。
+   */
+  handleCompositionEnd(text: string) {
+    this.composing = false
+    if (text) this.sendText(text)
+  }
+
+  // -------------------------------------------------------------------------
+  // 滚轮注入（方案 54）
+  // -------------------------------------------------------------------------
+
+  /** wheel → scroll（±1 档位）；纯横向滚（如触控板）也支持 */
+  handleWheel(e: WheelEvent, canvas: HTMLCanvasElement) {
+    if (!this.enabled) return
+    const v = Math.sign(e.deltaY)
+    const h = Math.sign(e.deltaX)
+    if (v === 0 && h === 0) return
+    e.preventDefault?.()
+    const { x, y } = this.mapToScreen(e.clientX, e.clientY, canvas)
+    this.ws.send({ action: 'scroll', x, y, h_scroll: h, v_scroll: v })
+    this.onInputSend?.()
+  }
+
+  // -------------------------------------------------------------------------
+  // 剪贴板双向（方案 54 G3）
+  // -------------------------------------------------------------------------
+
+  /** 浏览器 → 设备：写剪贴板；paste=true 设备端直接粘贴入焦点框（中文主路径） */
+  sendClipboardSet(text: string, paste = false) {
+    this.ws.send({ action: 'clipboard_set', text, paste })
+    this.onInputSend?.()
+  }
+
+  /**
+   * 设备 → 浏览器：拉取剪贴板（copyKey=1 先注入复制键捕获选中文本）。
+   * 应答经 handleClipboardMessage 关联；后端 3s 超时/失败 resolve(null)。
+   * 新请求会丢弃旧的未决请求（resolve null）。
+   */
+  requestClipboard(copyKey = 0): Promise<string | null> {
+    return new Promise((resolve) => {
+      if (this.clipboardPending) this.clipboardPending(null)
+      this.clipboardPending = resolve
+      this.ws.send({ action: 'clipboard_get', copy_key: copyKey })
+    })
+  }
+
+  /** WS 服务端消息分发入口：消费 clipboard/clipboard_error；返回是否已处理 */
+  handleClipboardMessage(msg: { type: string; text?: string }): boolean {
+    if (msg.type !== 'clipboard' && msg.type !== 'clipboard_error') return false
+    const resolve = this.clipboardPending
+    this.clipboardPending = null
+    if (resolve) resolve(msg.type === 'clipboard' ? msg.text ?? '' : null)
+    return true
   }
 
   /** 取消长按检测 */
