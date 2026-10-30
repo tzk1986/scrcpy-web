@@ -72,6 +72,7 @@
 - [51-代码走查发现修复批次.md](./51-代码走查发现修复批次.md) - v0.7.13 基线走查 113 项分档修复批次：T1 P0 六项/T2 P1 三十一项/T3 P2 拍板九项/T4 P3 六十七项——文件管理 A9 软链误拦 403 修复、失联假空列表、失败显式提示、录屏产物保全、校验收紧 4xx、会话语义、env 优先级兑现等（已实施 2026-10-21，随 **v0.7.14 正式发布** 2026-10-23）
 - [52-B6依赖倒置Protocol化.md](./52-B6依赖倒置Protocol化.md) - 方案 51 缓批项 B6 独立立项：应用层对基础设施 6 处直依全治——VideoEncoder Protocol 回填六成员、4 纯逻辑件层位搬正、3 dataclass 入 domain/runtime、metrics_repo 必填化 + deps 单例注入，零运行时逻辑改动（已实施 2026-10-22 C1-C6，随 **v0.7.14 正式发布** 2026-10-23）
 - [53-exe调试终端关闭后std句柄投毒治理方案.md](./53-exe调试终端关闭后std句柄投毒治理方案.md) - v0.7.15 发布包报告：调试终端开→关后进程 stdin/stdout 标准句柄被 native 路径 CloseHandle 悬垂（PEB 值保留，外部探针实锤），一切 std 继承分支 spawn 永久 WinError 6 仅重启恢复——A 层 28 个 spawn 点显式 stdin=DEVNULL + B 层 std_guard 悬垂自愈（WinError 6 捕获即换 NUL，免重启下 tick 恢复）；触发点定位（疑 pywinpty ConPTY teardown）列复发观察项（已实施 2026-10-28，随 **v0.7.16 正式发布**）
+- [54-物理键盘镜像与文本注入及剪贴板同步方案.md](./54-物理键盘镜像与文本注入及剪贴板同步方案.md) - 上游对标识别的输入面缺口（路线图 20/21 项）：后端 INJECT_KEYCODE/INJECT_TEXT 已备而前端仅 4 虚拟键、sendText 零调用方、clipboard_autosync=false 钉死——G1 键盘镜像（keycodeMap/metaState/composition 互斥/补 up 防卡键）+ G2 文本注入（IME+对话框+300 分段，中文主路径走剪贴板 paste）+ G3 剪贴板双向（上游源码实证 GET=8/SET=9 不依赖 autosync、paste 标志注入 PASTE 键、控制 socket 全双工加 DeviceMessage reader）；**硬约束：保留 adb shell input 兜底链**（定稿待评审 2026-10-30，拟随 v0.7.17）
 
 ## 使用指南
 
