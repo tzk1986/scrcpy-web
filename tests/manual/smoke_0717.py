@@ -10,6 +10,8 @@
   ④text 300×2 分段不断控
   ⑤clipboard_set(中文) → clipboard_get 一致（exe 内 G3 主链路）
   ⑥clipboard_get copy_key=1 有协议应答（clipboard/clipboard_error 任一）
+  ⑬剪贴板镜像链（方案 55）：开镜像收到首轮 clipboard_push；set 同文后
+    连续两轮不弹推（环回抑制+基线同步）；关镜像后无新 push
   ⑦关 WS 后 devices 仍 200
   ⑧POST /api/system/shutdown → 进程干净退出 rc=0、运行期零 Traceback、
     关闭期仅放行 Exception ignored in 前缀的 asyncio GC 噪音（Windows
@@ -53,6 +55,7 @@ class Recorder:
         self.binary_frames = 0
         self.texts: list[dict] = []
         self.clipboard_events: asyncio.Queue[dict] = asyncio.Queue()
+        self.mirror_events: asyncio.Queue[dict] = asyncio.Queue()
         self.errors: list[dict] = []
         self.closed = False
 
@@ -67,6 +70,8 @@ class Recorder:
         self.texts.append(msg)
         if msg.get("type") in ("clipboard", "clipboard_error"):
             self.clipboard_events.put_nowait(msg)
+        elif msg.get("type") in ("clipboard_push", "clipboard_mirror"):
+            self.mirror_events.put_nowait(msg)
         elif msg.get("type") == "error":
             self.errors.append(msg)
 
@@ -195,6 +200,40 @@ async def main() -> int:
                       reply2.get("type") in ("clipboard", "clipboard_error"), str(reply2))
             except asyncio.TimeoutError:
                 check("⑥copy_key=1 有协议应答", False, "timeout")
+
+            # ⑬ 剪贴板镜像链（方案 55）：首轮推送 → set 环回不弹推 → 关闭后静默
+            await send({"action": "clipboard_mirror", "enabled": True})
+            mirror_seen: list[dict] = []
+            first_push: dict | None = None
+            deadline = time.time() + 4.0
+            while first_push is None and time.time() < deadline:
+                try:
+                    ev = await asyncio.wait_for(rec.mirror_events.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                mirror_seen.append(ev)
+                if ev.get("type") == "clipboard_push":
+                    first_push = ev
+            check("⑬镜像开启首轮推送", first_push is not None, str(mirror_seen))
+
+            mirror_text = "镜像冒烟MIRROR0717"
+            await send({"action": "clipboard_set", "text": mirror_text,
+                        "paste": False})
+            await settle(2.5)  # 覆盖 ≥2 轮轮询：抑制一次 + 基线同步后再读同文
+            while not rec.mirror_events.empty():
+                mirror_seen.append(rec.mirror_events.get_nowait())
+            loopback = any(e.get("type") == "clipboard_push"
+                           and e.get("text") == mirror_text for e in mirror_seen)
+            await send({"action": "clipboard_mirror", "enabled": False})
+            await settle(1.5)
+            tail_pushes = []
+            while not rec.mirror_events.empty():
+                ev = rec.mirror_events.get_nowait()
+                if ev.get("type") == "clipboard_push":
+                    tail_pushes.append(ev)
+            check("⑬环回抑制且关闭后静默",
+                  not loopback and not tail_pushes,
+                  f"loopback={loopback} tail={tail_pushes} seen={mirror_seen[-3:]}")
 
             await ws.close()
             pump_task.cancel()

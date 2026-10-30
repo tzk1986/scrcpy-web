@@ -111,8 +111,9 @@ class ClipboardMirror:
                 continue
             failures = 0
             if text == self._suppressed_text:
-                # 环回抑制一次性生效（此后设备侧真实变更照常推送）
+                # 环回抑制：本次写入视为「PC 已知」，同步基线防后续轮同文弹推
                 self._suppressed_text = None
+                self._last_text = text
                 continue
             if text != self._last_text:
                 self._last_text = text

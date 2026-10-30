@@ -71,8 +71,9 @@ async def test_first_read_pushed_and_duplicates_suppressed() -> None:
     assert not mirror.enabled
 
 
-async def test_loopback_suppression_is_one_shot() -> None:
-    mirror, _ = _mirror(["x", "y", "y", "y", "y", "y"])
+async def test_loopback_suppression_syncs_baseline() -> None:
+    # 两次读到被抑制文本 x：首轮一次性拦截、次轮基线同步不弹推（防 set 二次推送）
+    mirror, _ = _mirror(["x", "x", "y", "y", "y", "y"])
     sink = Sink()
     await mirror.set_enabled(True, sink.send)
     mirror.note_set("x")
