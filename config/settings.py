@@ -41,7 +41,7 @@ def _logger() -> "structlog.BoundLogger":
 
 class AppConfig(BaseSettings):
     name: str = "OpenScrcpy"
-    version: str = "0.7.16"
+    version: str = "0.7.17"
     debug: bool = False
     log_level: str = "INFO"
     config_watch: bool = True  # 配置文件（config/*.yaml）热重载监听开关
