@@ -93,6 +93,8 @@ const h = vi.hoisted(() => {
     // 方案54：onMounted 初始化与消息截流所需替身
     setPreferText = vi.fn()
     handleClipboardMessage = vi.fn()
+    // 方案56：旋转坐标反变换替身
+    setDisplayRotation = vi.fn()
 
     constructor() {
       MockInputController.instances.push(this)
@@ -303,9 +305,9 @@ describe('VideoPlayer 初始化与输入转发', () => {
   it('导航键按钮发送对应 KeyCode', async () => {
     const wrapper = await mountPlayer()
     const ic = h.MockInputController.instances[0]
-    // 方案54 后共 5 个：4 虚拟导航键 + 「文本」入口（对话框 stub 未开不渲染）
+    // 方案54 共 5 个 + 方案56 旋转 1 个 = 6：4 虚拟导航键 + 「文本」+「旋转」（对话框 stub 未开不渲染）
     const buttons = wrapper.findAll('el-button-stub')
-    expect(buttons.length).toBe(5)
+    expect(buttons.length).toBe(6)
 
     await buttons[0].trigger('click')
     await buttons[1].trigger('click')

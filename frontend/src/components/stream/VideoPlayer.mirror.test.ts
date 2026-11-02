@@ -87,6 +87,7 @@ const h = vi.hoisted(() => {
     setComposing = vi.fn()
     handleCompositionEnd = vi.fn()
     setPreferText = vi.fn()
+    setDisplayRotation = vi.fn()
     sendClipboardSet = vi.fn()
     sendClipboardMirror = vi.fn()
     requestClipboard = vi.fn()

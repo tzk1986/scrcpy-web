@@ -162,6 +162,72 @@ describe('mapToScreen 坐标映射', () => {
   })
 })
 
+describe('方案56 手动旋转坐标反变换', () => {
+  // 原生帧 200×100；旋转态渲染盒宽高比恒等于原生（无内部 letterbox），
+  // 故 getBoundingClientRect 即显示区，越界钳制到四角后反旋回原生坐标。
+  const rectL = { left: 0, top: 0, width: 100, height: 200 } // 90/270：宽高对调
+  const rectP = { left: 0, top: 0, width: 200, height: 100 } // 180：方向不变
+
+  it('rotation=0 与三参调用完全一致（回归护栏）', () => {
+    const ic = new InputController(makeWs(), 200, 100)
+    const canvas = makeCanvasWith(200, 100, { left: 0, top: 0, width: 200, height: 100 })
+    expect(ic.mapToScreen(50, 25, canvas, 0)).toEqual(ic.mapToScreen(50, 25, canvas))
+  })
+
+  it('90°：顺时针旋转，屏幕左上落回原生左下', () => {
+    const ic = new InputController(makeWs(), 200, 100)
+    const canvas = makeCanvasWith(200, 100, rectL)
+    expect(ic.mapToScreen(0, 0, canvas, 90)).toEqual({ x: 0, y: 100 })
+    expect(ic.mapToScreen(100, 0, canvas, 90)).toEqual({ x: 0, y: 0 })
+    expect(ic.mapToScreen(0, 200, canvas, 90)).toEqual({ x: 200, y: 100 })
+    expect(ic.mapToScreen(100, 200, canvas, 90)).toEqual({ x: 200, y: 0 })
+    expect(ic.mapToScreen(50, 100, canvas, 90)).toEqual({ x: 100, y: 50 })
+  })
+
+  it('180°：中心对称翻转', () => {
+    const ic = new InputController(makeWs(), 200, 100)
+    const canvas = makeCanvasWith(200, 100, rectP)
+    expect(ic.mapToScreen(0, 0, canvas, 180)).toEqual({ x: 200, y: 100 })
+    expect(ic.mapToScreen(200, 100, canvas, 180)).toEqual({ x: 0, y: 0 })
+    expect(ic.mapToScreen(100, 50, canvas, 180)).toEqual({ x: 100, y: 50 })
+  })
+
+  it('270°：逆时针旋转，屏幕左上落回原生右上', () => {
+    const ic = new InputController(makeWs(), 200, 100)
+    const canvas = makeCanvasWith(200, 100, rectL)
+    expect(ic.mapToScreen(0, 0, canvas, 270)).toEqual({ x: 200, y: 0 })
+    expect(ic.mapToScreen(100, 0, canvas, 270)).toEqual({ x: 200, y: 100 })
+    expect(ic.mapToScreen(0, 200, canvas, 270)).toEqual({ x: 0, y: 0 })
+    expect(ic.mapToScreen(100, 200, canvas, 270)).toEqual({ x: 0, y: 100 })
+  })
+
+  it('setDisplayRotation 后三参调用走旋转分支（默认值来源）', () => {
+    const ic = new InputController(makeWs(), 200, 100)
+    const canvas = makeCanvasWith(200, 100, rectL)
+    ic.setDisplayRotation(90)
+    expect(ic.mapToScreen(0, 0, canvas)).toEqual({ x: 0, y: 100 })
+    ic.setDisplayRotation(0)
+    expect(ic.mapToScreen(50, 50, canvas)).toEqual(ic.mapToScreen(50, 50, canvas, 0))
+  })
+
+  it('旋转态越界钳制到原生四角', () => {
+    const ic = new InputController(makeWs(), 200, 100)
+    const canvas = makeCanvasWith(200, 100, rectL)
+    expect(ic.mapToScreen(-10, -10, canvas, 90)).toEqual({ x: 0, y: 100 })
+    expect(ic.mapToScreen(110, 210, canvas, 90)).toEqual({ x: 200, y: 0 })
+  })
+
+  it('handleMouseDown 透传 displayRotation 到 tap 坐标', () => {
+    const ws = makeWs()
+    const ic = new InputController(ws, 200, 100)
+    const canvas = makeCanvasWith(200, 100, rectL)
+    ic.setDisplayRotation(90)
+    ic.handleMouseDown(makeMouseEvent(0, 0), canvas)
+    ic.handleMouseUp(makeMouseEvent(0, 0), canvas)
+    expect(ws.send).toHaveBeenCalledWith({ action: 'touch', x: 0, y: 100 })
+  })
+})
+
 describe('鼠标手势', () => {
   it('未按下时的移动/释放不产生事件', () => {
     const ws = makeWs()

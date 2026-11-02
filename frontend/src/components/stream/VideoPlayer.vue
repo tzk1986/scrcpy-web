@@ -36,6 +36,7 @@
       <canvas
         ref="canvasRef"
         class="video-canvas"
+        :style="canvasStyle"
         @mousedown="onMouseDown"
         @mousemove="onMouseMove"
         @mouseup="onMouseUp"
@@ -124,6 +125,17 @@
           <input type="checkbox" v-model="mirrorOn" :disabled="!wsConnected" @change="applyMirror" />
           剪贴板镜像
         </label>
+        <!-- 手动旋转按钮（方案56）：判定链正确但观感不对时点此修正显示与触摸映射 -->
+        <el-button
+          size="small"
+          class="rotate-button"
+          :title="rotation === 0
+            ? '手动旋转画面（判定链正确；若观感横竖不对可点此修正，含触摸坐标跟随）'
+            : '当前手动旋转 ' + rotation + '°，点击继续切换（0→90→180→270）'"
+          @click="cycleRotation"
+        >
+          旋转 {{ rotation }}°
+        </el-button>
       </div>
 
       <!-- 状态信息 -->
@@ -224,6 +236,16 @@ const mirrorHint = ref('')
 let mirrorPending: string | null = null
 let mirrorHintTimer: number | null = null
 
+// ===== 方案56：手动横竖屏旋转（判定链正确时的观感兜底） =====
+/** 按设备持久化旋转角（0/90/180/270），默认 0=信任自动判定 */
+const ROTATION_KEY_PREFIX = 'osc.videoRotation.'
+const rotation = ref(0)
+/** 视频容器像素尺寸（ResizeObserver 维护，供旋转态 contain-fit 计算） */
+const containerSize = ref({ w: 0, h: 0 })
+/** 帧原生像素尺寸（canvas 绘制缓冲 = 视频/截图实际尺寸，stats 回调刷新） */
+const frameSize = ref({ w: 0, h: 0 })
+let rotateObserver: ResizeObserver | null = null
+
 const stateLabel = computed(() => {
   switch (state.value) {
     case 'idle': return '连接中'
@@ -240,6 +262,66 @@ const stateLabel = computed(() => {
 const recoveringBadge = computed(
   () => hasStreamedOnce.value && (state.value === 'idle' || state.value === 'configuring'),
 )
+
+/**
+ * 方案56 画布内联样式：
+ *   rotation=0 → 返回空对象，完全交由 .video-canvas 类（width/height 100% +
+ *     object-fit:contain）渲染，与既有行为逐字节一致（回归护栏）。
+ *   rotation≠0 → 精确 contain：旋转后（屏幕可见）宽高比 effW×effH 按容器等比
+ *     缩放得 dispW×dispH；因 rotate 会使布局盒宽高对调，故未变换的布局盒取
+ *     boxW×boxH（90/270 时 = dispH×dispW），使变换后包围盒恰为 dispW×dispH。
+ *     绝对定位 inset:0+margin:auto 居中（规避 flex 溢出偏置），transform-origin
+ *     默认中心，旋转后包围盒仍居中。渲染盒宽高比恒等于原生帧 → getBoundingClientRect
+ *     即视频显示区，InputController 旋转反变换据此映射触摸。
+ */
+const canvasStyle = computed(() => {
+  const rot = rotation.value
+  if (rot === 0) return {} as Record<string, string>
+  const fw = frameSize.value.w
+  const fh = frameSize.value.h
+  const cw = containerSize.value.w
+  const ch = containerSize.value.h
+  if (!fw || !fh || !cw || !ch) return {} as Record<string, string>
+  const swap = rot === 90 || rot === 270
+  const effW = swap ? fh : fw
+  const effH = swap ? fw : fh
+  const scale = Math.min(cw / effW, ch / effH)
+  const dispW = effW * scale
+  const dispH = effH * scale
+  const boxW = swap ? dispH : dispW
+  const boxH = swap ? dispW : dispH
+  return {
+    position: 'absolute',
+    left: '0',
+    right: '0',
+    top: '0',
+    bottom: '0',
+    margin: 'auto',
+    width: `${boxW}px`,
+    height: `${boxH}px`,
+    objectFit: 'fill',
+    transform: `rotate(${rot}deg)`,
+  }
+})
+
+function cycleRotation() {
+  rotation.value = (rotation.value + 90) % 360
+  applyRotation()
+}
+
+/** 旋转角落地：同步输入控制器坐标反变换 + 按设备持久化 */
+function applyRotation() {
+  inputController?.setDisplayRotation(rotation.value)
+  localStorage.setItem(ROTATION_KEY_PREFIX + props.deviceId, String(rotation.value))
+}
+
+/** 从 canvas 绘制缓冲读取帧原生尺寸（h264/截图两模式统一以此为准） */
+function syncFrameSize() {
+  const c = canvasRef.value
+  if (c && (c.width !== frameSize.value.w || c.height !== frameSize.value.h)) {
+    frameSize.value = { w: c.width, h: c.height }
+  }
+}
 
 // state 的一切流转都汇于此处（h264 与截图两条链路的 onStateChange 均赋值 state），
 // 首次进入 streaming 即置位 hasStreamedOnce；重复置位幂等。
@@ -314,6 +396,7 @@ function attachH264Handlers() {
     fps.value = stats.fps
     frameCount.value = stats.frameCount
     droppedFrames.value = stats.droppedFrames
+    syncFrameSize()
     checkH264Fallback()
   })
 }
@@ -463,6 +546,7 @@ function startScreenshotMode() {
   videoStream.setStatsUpdateHandler((stats) => {
     fps.value = stats.fps
     frameCount.value = stats.frameCount
+    syncFrameSize()
   })
 
   videoStream.start()
@@ -507,6 +591,23 @@ onMounted(async () => {
     props.deviceHeight || 1920
   )
   inputController.setPreferText(preferText.value)
+
+  // 方案56：恢复按设备持久化的手动旋转角（非法值归零），并同步坐标反变换
+  const savedRot = Number(localStorage.getItem(ROTATION_KEY_PREFIX + props.deviceId))
+  rotation.value = savedRot === 90 || savedRot === 180 || savedRot === 270 ? savedRot : 0
+  inputController.setDisplayRotation(rotation.value)
+  frameSize.value = { w: canvasRef.value.width, h: canvasRef.value.height }
+
+  // 旋转态 contain-fit 依赖容器实时尺寸：ResizeObserver 维护（θ=0 时不影响渲染）
+  if (containerRef.value && typeof ResizeObserver !== 'undefined') {
+    const measure = () => {
+      const el = containerRef.value
+      if (el) containerSize.value = { w: el.clientWidth, h: el.clientHeight }
+    }
+    rotateObserver = new ResizeObserver(measure)
+    rotateObserver.observe(containerRef.value)
+    measure()
+  }
 
   // 方案54 G3：包装消息通道，截流剪贴板应答（clipboard/clipboard_error）。
   // WebSocketService.setMessageHandler 为单回调覆盖式，h264/截图链路各自注册，
@@ -587,6 +688,8 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('focus', flushMirrorPending)
   document.removeEventListener('visibilitychange', flushMirrorPending)
+  rotateObserver?.disconnect()
+  rotateObserver = null
   stopStatsTimer?.()
   stopRecoveryProbe()
   h264Stream?.stop()
@@ -823,6 +926,16 @@ watch(wsConnected, (connected) => {
   if (!connected) resetMirror()
 })
 
+// 方案56：同一实例切换设备时，按新设备重载持久化旋转角并同步坐标
+watch(
+  () => props.deviceId,
+  (id) => {
+    const r = Number(localStorage.getItem(ROTATION_KEY_PREFIX + id))
+    rotation.value = r === 90 || r === 180 || r === 270 ? r : 0
+    inputController?.setDisplayRotation(rotation.value)
+  },
+)
+
 async function reconnect() {
   error.value = null
   state.value = 'idle'
@@ -1001,6 +1114,11 @@ defineExpose({
 
 .mirror-toggle input:disabled {
   cursor: not-allowed;
+}
+
+/* 手动旋转按钮（方案56）：与镜像开关同区，留间距 */
+.rotate-button {
+  margin-left: 8px;
 }
 
 /* 镜像角标（方案55）：复用捕获角标视觉，无点击行为 */

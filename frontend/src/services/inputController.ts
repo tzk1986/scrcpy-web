@@ -96,6 +96,8 @@ export class InputController {
   private preferText = false
   /** clipboard_get 应答关联（同一时刻仅一个在途请求：UI 按钮触发） */
   private clipboardPending: ((text: string | null) => void) | null = null
+  /** 方案56 手动显示旋转角（0/90/180/270）：仅影响坐标反变换，默认 0=信任自动判定 */
+  private displayRotation = 0
 
   /**
    * @param ws - WebSocket 连接
@@ -114,6 +116,14 @@ export class InputController {
   /** 设置输入发送回调（每次 ws.send 输入事件后触发）。 */
   setInputHandler(handler: () => void) {
     this.onInputSend = handler
+  }
+
+  /**
+   * 方案56 手动显示旋转角（0/90/180/270）。VideoPlayer 切换按钮调用，
+   * 同步指针坐标反变换；非法值归一到 0（信任自动判定链，判定本身是对的）。
+   */
+  setDisplayRotation(deg: number) {
+    this.displayRotation = deg === 90 || deg === 180 || deg === 270 ? deg : 0
   }
 
   /**
@@ -141,15 +151,44 @@ export class InputController {
    * @param clientX - 浏览器 clientX
    * @param clientY - 浏览器 clientY
    * @param canvas - canvas DOM 元素
+   * @param rotation - 方案56 手动显示旋转角（0/90/180/270），缺省读 displayRotation；
+   *   0 走原 letterbox 线性映射（逐字节不变），非 0 走旋转反变换（渲染盒宽高比恒等
+   *   于原生、无内部 letterbox，rect 即视频显示区）
    * @returns 设备坐标 { x, y }
    */
-  mapToScreen(clientX: number, clientY: number, canvas: HTMLCanvasElement): { x: number; y: number } {
+  mapToScreen(
+    clientX: number,
+    clientY: number,
+    canvas: HTMLCanvasElement,
+    rotation = this.displayRotation,
+  ): { x: number; y: number } {
     const rect = canvas.getBoundingClientRect()
 
     // canvas 实际像素尺寸（考虑 HiDPI）
     // canvas.width/height 是实际像素，rect.width/height 是 CSS 像素
     const canvasPixelWidth = canvas.width
     const canvasPixelHeight = canvas.height
+
+    // 方案56 手动旋转：VideoPlayer 对旋转态精确 contain，使渲染盒宽高比恒等于
+    // 原生帧（无内部黑边），故 rect 即视频显示区。取屏幕相对位后按角反旋回原生帧。
+    // CSS rotate 正向为顺时针：90° 屏幕左上落回原生左下，270° 落回原生右上。
+    if (rotation === 90 || rotation === 180 || rotation === 270) {
+      const u = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+      const v = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))
+      let nu: number
+      let nv: number
+      if (rotation === 90) {
+        nu = v
+        nv = 1 - u
+      } else if (rotation === 180) {
+        nu = 1 - u
+        nv = 1 - v
+      } else {
+        nu = 1 - v
+        nv = u
+      }
+      return { x: Math.round(nu * canvasPixelWidth), y: Math.round(nv * canvasPixelHeight) }
+    }
 
     // 计算视频在 canvas 中的实际显示区域（处理 letterboxing）
     // 视频纵横比基于 canvas 像素尺寸
