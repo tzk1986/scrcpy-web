@@ -685,4 +685,29 @@ describe('方案58 D-08 剪贴板请求超时', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(await fresh).toBe(null)
   })
+
+  // 方案 58 F-05：clipboard_error 的 error 字段透出（API.md 承诺的失败区分度可用）
+  it('clipboard_error 带 error 记入 clipboardError 供分级提示；超时与新请求复位该字段', async () => {
+    vi.useFakeTimers()
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    expect(ic.clipboardError).toBeNull()
+
+    const p = ic.requestClipboard()
+    ic.handleClipboardMessage({ type: 'clipboard_error', error: 'unavailable_or_timeout' })
+    expect(await p).toBe(null)
+    expect(ic.clipboardError).toBe('unavailable_or_timeout')
+
+    // 超时路径无 error 回执 → 字段复位（调用方回落「应答超时」文案）
+    ic.requestClipboard()
+    expect(ic.clipboardError).toBeNull()
+    vi.advanceTimersByTime(5000)
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 正常应答也复位
+    const p2 = ic.requestClipboard()
+    ic.handleClipboardMessage({ type: 'clipboard', text: 'ok' })
+    expect(await p2).toBe('ok')
+    expect(ic.clipboardError).toBeNull()
+  })
 })

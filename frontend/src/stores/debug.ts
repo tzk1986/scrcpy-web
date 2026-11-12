@@ -410,7 +410,15 @@ export const useDebugStore = defineStore('debug', () => {
         wsConnected.value = false
         break
       case 'subscribed':
-        // 已知类型：确认订阅成功，无副作用（不落入 default 告警）
+      case 'unsubscribed':
+        // 已知类型：订阅/退订回执，无副作用（不落入 default 告警）
+        break
+      case 'filter_applied':
+        // 已知类型：过滤生效回执（58F-04 显式忽略——本前端过滤为本地生效，
+        // 载荷 applied/filter_applied 表意图不消费，防 unknown 告警刷屏）
+        break
+      case 'shell_output':
+        // 已知类型：execShell 整段输出回执；本前端走 PTY shell_stream，不消费
         break
       default:
         console.warn('[DebugStore] Unknown message type:', msg.type)

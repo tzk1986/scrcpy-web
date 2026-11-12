@@ -94,6 +94,7 @@ const h = vi.hoisted(() => {
     sendClipboardMirror = vi.fn()
     requestClipboard = vi.fn()
     handleClipboardMessage = vi.fn()
+    clipboardError: string | null = null
 
     constructor() {
       MockInputController.instances.push(this)
@@ -392,8 +393,12 @@ describe('方案54 clipboard 消息截流', () => {
     expect(ic.handleClipboardMessage).toHaveBeenCalledWith({ type: 'clipboard', text: '内容' })
     expect(streamSpy).not.toHaveBeenCalled()
 
-    wsInst.messageHandler!(JSON.stringify({ type: 'clipboard_error' }))
-    expect(ic.handleClipboardMessage).toHaveBeenCalledTimes(2)
+    // 方案 58 F-05：error 字段随透传（后端失败区分度不再被前端丢弃）
+    wsInst.messageHandler!(JSON.stringify({ type: 'clipboard_error', error: 'unavailable_or_timeout' }))
+    expect(ic.handleClipboardMessage).toHaveBeenCalledWith({
+      type: 'clipboard_error',
+      error: 'unavailable_or_timeout',
+    })
     expect(streamSpy).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -486,6 +491,21 @@ describe('方案54 输入文本对话框与 D4 禁用', () => {
     await flushPromises()
     expect(h.ElMessage.warning).toHaveBeenCalledWith('设备剪贴板不可用或应答超时')
     expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('clipboard_error 带原因时分级提示读取失败原因（方案 58 F-05）', async () => {
+    const wrapper = await mountPlayer()
+    await openDialog(wrapper)
+    const ic = h.MockInputController.instances[0]
+    ic.requestClipboard.mockResolvedValue(null)
+    ic.clipboardError = 'unavailable_or_timeout'
+
+    await buttonByText(wrapper, '取设备剪贴板').trigger('click')
+    await flushPromises()
+    expect(h.ElMessage.warning).toHaveBeenCalledWith(
+      '设备剪贴板读取失败：unavailable_or_timeout'
+    )
     wrapper.unmount()
   })
 

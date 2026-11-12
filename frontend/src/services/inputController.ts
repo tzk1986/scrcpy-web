@@ -102,6 +102,8 @@ export class InputController {
   private clipboardPending: ((text: string | null) => void) | null = null
   /** 剪贴板请求兜底超时定时器（方案 58 D-08） */
   private clipboardTimer: number | null = null
+  /** 最近一次 clipboard_error 回执的失败原因（方案 58 F-05：供 UI 分级提示；新请求复位） */
+  clipboardError: string | null = null
   /** 方案56 手动显示旋转角（0/90/180/270）：仅影响坐标反变换，默认 0=信任自动判定 */
   private displayRotation = 0
 
@@ -567,8 +569,9 @@ export class InputController {
    */
   requestClipboard(copyKey = 0): Promise<string | null> {
     return new Promise((resolve) => {
-      // 丢弃旧的未决请求（连同其兜底定时器）
+      // 丢弃旧的未决请求（连同其兜底定时器）；58F-05：新请求复位失败原因
       this.settleClipboard(null)
+      this.clipboardError = null
       this.clipboardPending = resolve
       this.clipboardTimer = window.setTimeout(
         () => this.settleClipboard(null),
@@ -590,9 +593,16 @@ export class InputController {
   }
 
   /** WS 服务端消息分发入口：消费 clipboard/clipboard_error；返回是否已处理 */
-  handleClipboardMessage(msg: { type: string; text?: string }): boolean {
+  handleClipboardMessage(msg: { type: string; text?: string; error?: string }): boolean {
     if (msg.type !== 'clipboard' && msg.type !== 'clipboard_error') return false
-    this.settleClipboard(msg.type === 'clipboard' ? msg.text ?? '' : null)
+    if (msg.type === 'clipboard') {
+      this.clipboardError = null
+      this.settleClipboard(msg.text ?? '')
+    } else {
+      // 58F-05：透出后端 error 原因（API.md 承诺的失败区分度），无字段时给缺省值
+      this.clipboardError = msg.error ?? 'unavailable_or_timeout'
+      this.settleClipboard(null)
+    }
     return true
   }
 

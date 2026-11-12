@@ -459,6 +459,15 @@ describe('debug store - 消息处理', () => {
     expect(console.log).not.toHaveBeenCalled()
   })
 
+  it('filter_applied/shell_output/unsubscribed 显式忽略不再落 unknown warn（方案 58 F-04）', async () => {
+    await connectStore(true)
+    emit(JSON.stringify({ type: 'filter_applied', applied: true, filter_applied: true }))
+    emit(JSON.stringify({ type: 'shell_output', output: 'x', success: true }))
+    emit(JSON.stringify({ type: 'unsubscribed' }))
+    expect(console.warn).not.toHaveBeenCalled()
+    expect(console.log).not.toHaveBeenCalled()
+  })
+
   it('非法 JSON 与非字符串消息被安全忽略', async () => {
     await connectStore(true)
     emit('{not-json')

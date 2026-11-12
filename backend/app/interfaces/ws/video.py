@@ -516,7 +516,7 @@ async def _handle_input(
         - clipboard_mirror: 单向镜像开关（enabled）——方案 55，会话级轮询
           task 开停，设备剪贴板变化经 WS 推 {type: clipboard_push}
 
-    另外支持客户端 1Hz 帧率上报（用于自适应码率决策）：
+    另外支持客户端 0.5Hz（每 2s）帧率上报（用于自适应码率决策，58F-07 注释对齐实际节奏）：
         { "op": "stats", "fps": 25 }
     fps 须为有限数值（方案 58 B-20：NaN/Inf/非数整帧忽略，越界钳制 0..120）。
 

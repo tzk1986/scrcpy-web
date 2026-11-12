@@ -631,13 +631,19 @@ onMounted(async () => {
             text?: string
             enabled?: boolean
             action?: string
+            error?: string
           }
           if (msg && (msg.type === 'clipboard_push' || msg.type === 'clipboard_mirror')) {
             handleMirrorFrame(msg)
             return
           }
           if (msg && (msg.type === 'clipboard' || msg.type === 'clipboard_error')) {
-            inputController?.handleClipboardMessage({ type: msg.type, text: msg.text })
+            // 58F-05：error 字段随透传，后端失败区分度直达分级提示
+            inputController?.handleClipboardMessage({
+              type: msg.type,
+              text: msg.text,
+              error: msg.error,
+            })
             return
           }
           if (msg && msg.type === 'input_degraded') {
@@ -856,7 +862,9 @@ async function pullClipboard(copyKey: number) {
   const text = await inputController?.requestClipboard(copyKey)
   if (text === undefined) return
   if (text === null) {
-    ElMessage.warning('设备剪贴板不可用或应答超时')
+    // 58F-05：有 clipboard_error 回执时透出后端原因，无回执（兜底超时）保持原文案
+    const reason = inputController?.clipboardError
+    ElMessage.warning(reason ? `设备剪贴板读取失败：${reason}` : '设备剪贴板不可用或应答超时')
     return
   }
   dialogText.value = text

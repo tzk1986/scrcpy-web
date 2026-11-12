@@ -21,7 +21,7 @@
 | 端口覆盖 | 环境变量 `BACKEND_HOST` / `BACKEND_PORT`（优先级最高） | `config/settings.py:get_settings()` |
 | 前端 dev server | `http://localhost:8080`，`/api` 与 `/ws` 由 Vite 代理到后端 | `frontend/vite.config.ts` |
 | API 前缀 | HTTP 业务端点为 `/api/*`；WS 为 `/ws/*`；另有根路径 `/health` | `backend/app/main.py` |
-| 交互式文档 | `/docs`（Swagger UI）、`/redoc`、`/openapi.json`（FastAPI 自动生成） | `FastAPI(title=..., version=...)` |
+| 交互式文档 | `/docs`（Swagger UI）、`/redoc`、`/openapi.json`（FastAPI 自动生成）；frozen 打包 exe 下三者均禁用（返回 404，A1 L5：局域网可达且无鉴权时文档即功能面） | `backend/app/main.py` `create_app`（58F-12 注记） |
 
 浏览器端不直接访问 8765，而是通过前端 dev server（或生产托管）同源代理访问 `/api`、`/ws`。
 
@@ -168,7 +168,7 @@
 ]
 ```
 
-字段说明（`backend/app/domain/device.py`）：`status` 取 `"online" | "offline" | "busy"`；`resolution` 为 `[宽, 高]` 数组；`ip`/`port` 为可选字段，当前 ADB 驱动（`infrastructure/adb/cli.py:get_device_info`）不填充，恒为 `null`。
+字段说明（`backend/app/domain/device.py`）：`status` 取 `"online" | "offline" | "busy"`，B5 失联行还直接携带 adb 原始态（如 `"unauthorized"`、`"offline"`）供列表呈现，消费端不应按三值枚举硬校验；`resolution` 为 `[宽, 高]` 数组；`ip`/`port` 为可选字段，当前 ADB 驱动（`infrastructure/adb/cli.py:get_device_info`）不填充，恒为 `null`。
 
 单台设备信息获取失败（最常见原因为 adb 响应慢）时该设备**保留在列表中**并置 `slow: true`（此时 model/resolution/battery 等字段为缓存值或默认值）；该设备 30s 冷却期内不重复查询，冷却到期自动恢复。查询成功时 `slow` 恒为 `false`。`slow` 为瞬态展示字段（不入库），前端据此在设备列表亮红色「adb 慢」标识。设备信息查询并发执行（设备级并发上限 8，单设备 4 条命令各 5s 短超时并发）。
 
@@ -707,6 +707,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `filter` | `level`（可选）、`tag`（可选）、`paused`（布尔，默认 `false`） | 设置本订阅者的服务端过滤条件；`level` 精确匹配日志级别，`tag` 子串匹配；`paused=true` 暂停推送（暂停状态可让后端停止 logcat 采集） |
 | `exec` | `command`（字符串） | 流式执行 shell 命令：逐行回 `shell_stream`（含 `done: false`），完成后回 `shell_output` |
 | `input` | `data`（base64 字符串） | PTY 模式透传原始按键到设备 shell（如 `\r`→`\n` 由前端转换）；输出由后台转发器以 `shell_stream` 回推 |
+| `resize` | `cols`, `rows`（正整数） | 调整设备 PTY 窗口大小（ConPTY `set_size`；管道降级路径 no-op，shell 不存在时静默跳过）。非正整数回 `error`；成功无回执帧（58F-02 补行） |
 | `unsubscribe` | — | 取消订阅并停止 shell 输出转发（58F-06 裁决：协议保留面——当前前端未使用，断开时后端自动退订；保留供第三方客户端显式退订） |
 
 日志导出不走本 WS（原 `export` 操作恒回未实现错误，2026-09-21 已移除）；用 HTTP 端 `GET /api/debug/sessions/{id}/logs/export`（json/csv 文件下载）。
@@ -720,7 +721,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `log` | `{"type": "log", "entry": LogEntry}` | 实时日志条目（受该订阅者 `filter`/`paused` 约束） |
 | `shell_stream` | `{"type": "shell_stream", "line": "..."}` 或 `{"type": "shell_stream", "line": "...", "done": false}` | shell 输出一行；`exec` 路径带 `done: false`，订阅初始输出与 PTY 转发路径不带 `done` |
 | `shell_output` | `{"type": "shell_output", "output": "", "success": true, "done": true}` | `exec` 命令结束标记；异常时 `success: false` 且 `output` 为错误文本 |
-| `filter_applied` | `{"type": "filter_applied", "level": ..., "tag": ..., "paused": ...}` | `filter` 应用确认，回显设置值 |
+| `filter_applied` | `{"type": "filter_applied", "filter_applied": true, "level": ..., "tag": ..., "paused": ...}` | `filter` 应用确认，回显设置值；`filter_applied` 为布尔回执——未先 `subscribe`（订阅者未命中）时回 `false`，消除假确认（方案 51 C16，58F-03 补字段说明） |
 | `unsubscribed` | `{"type": "unsubscribed"}` | `unsubscribe` 确认 |
 | `session_closed` | `{"type": "session_closed"}` | 会话被 `DELETE /api/debug/sessions/{id}` 关闭时主动推送 |
 | `error` | `{"type": "error", "message": "..."}` | 操作失败（如 `input` 发送异常） |

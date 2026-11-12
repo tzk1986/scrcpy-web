@@ -195,14 +195,16 @@ class StreamConfig(BaseSettings):
 
 
 class DebugConfig(BaseSettings):
+    # 出厂值以 base.yaml debug 节为准（58F-08：三值曾漂移 I/1000/100 vs V/2048/500，
+    # 模型默认仅 base.yaml 缺键兜底——对齐消除「文档出厂态=I」类误导）
     log_buffer_size: int = 50000
     session_ttl_days: int = 7
     log_retention_days: int = 7
     shell_history_days: int = 30
-    max_db_size_mb: int = 1000  # 最大数据库大小（MB），超过时自动清理旧日志
+    max_db_size_mb: int = 2048  # 最大数据库大小（MB），超过时自动清理旧日志
     cleanup_interval_hours: int = 1  # 自动清理间隔（小时）
-    min_log_level: str = "I"  # 最低日志级别：V/D/I/W/E/F（生产环境建议 W）
-    log_rate_limit: int = 100  # 每秒最大日志数，超过时自动丢弃低级别日志
+    min_log_level: str = "V"  # 最低日志级别：V/D/I/W/E/F（调试工具默认全量，同 base.yaml）
+    log_rate_limit: int = 500  # 每秒最大日志数，超过时自动丢弃低级别日志
     db_pool_size: int = 5  # SQLite 连接池大小
     log_batch_size: int = 100  # 日志批量写入缓冲条数
     restore_max_sessions: int = 20  # 重启最多恢复的会话数（限制恢复时间）
