@@ -1153,6 +1153,14 @@ class ScrcpyEncoder:
             self._writer = None
             self._reader = None
 
+        # 方案 58 A-03：pids 空但本地 server 进程存在时兜底重枚举一次——
+        # socket 连接失败早退（start :368-375 未及 :381 枚举）或枚举 5s 超时
+        # 返 []（慢设备 /proc 全扫描，如 .20 RK3568）都会让设备端
+        # app_process 成孤儿，下次 start 的 stray 检测终生阻断该设备推流。
+        # 命中 PID 属本会话（起流前 stray 检测已保证设备干净）。
+        if self._device_id and self.process is not None and not self._remote_pids:
+            self._remote_pids = await self._enumerate_remote_pids(self._device_id)
+
         # 方案 48 D2：先终止本会话设备端进程（原实现仅杀本地 adb 子进程，
         # 设备端 app_process 不保证随退 → 残留根因）
         if self._device_id and self._remote_pids:

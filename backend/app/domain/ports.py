@@ -537,7 +537,7 @@ class AdbDriver(Protocol):
         ...
 
     async def pull_recording(
-        self, device_id: str, remote_path: str, local_dir: str
+        self, device_id: str, remote_path: str, local_dir: str, timeout: int | None = None
     ) -> str | None:
         """
         将设备端录屏文件拉取到主机（方案 37 B2）。
@@ -549,6 +549,8 @@ class AdbDriver(Protocol):
             device_id: ADB 序列号。
             remote_path: 设备端文件路径。
             local_dir: 主机落盘目录。
+            timeout: 覆盖默认超时（秒）；大文件传输须显式传长超时
+                （方案 58 A-02，同 push/pull 口径）。
 
         返回：
             本地文件路径；远程不存在时 None。

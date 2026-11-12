@@ -302,6 +302,29 @@ describe('FileManager', () => {
     wrapper.unmount()
   })
 
+  it('乱序响应防覆盖（方案 58 E-01）：慢目录的迟到响应不得覆盖新目录列表', async () => {
+    const slow = { ...fileA, name: 'slow.txt' }
+    let resolveSlow: (v: unknown[]) => void = () => {}
+    const wrapper = await mountView()
+    // 进入 Download：请求挂起（慢盘/慢设备的 listFiles）
+    mockApi.listFiles.mockImplementationOnce(() => new Promise((res) => { resolveSlow = res }))
+    await wrapper.find(`.stub-row[data-name="Download"] .file-name`).trigger('click')
+    await nextTick()
+    // 挂起期间点 .. 回根目录：快请求完成并渲染根列表
+    mockApi.listFiles.mockImplementationOnce(() => Promise.resolve([fileA, fileB, dirD]))
+    const up = wrapper.findAll('.crumb').find((c) => c.text() === '..')
+    expect(up).toBeDefined()
+    await up!.trigger('click')
+    await flushPromises()
+    expect(rowWithText(wrapper, 'a.txt', '1.5 KB')).toBeTruthy()
+    // 迟到：慢响应此刻才返回——旧实现直接赋值把根列表覆盖成过期目录内容
+    resolveSlow([slow])
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('slow.txt')
+    expect(rowWithText(wrapper, 'a.txt', '1.5 KB')).toBeTruthy()
+    wrapper.unmount()
+  })
+
   it('点文件行名不导航（仍停留当前目录）', async () => {
     const wrapper = await mountView()
     await wrapper.find(`.stub-row[data-name="a.txt"] .file-name`).trigger('click')

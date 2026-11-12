@@ -143,10 +143,15 @@ async def video_stream(
 
     async def handle_input() -> None:
         """并发处理客户端输入事件；stats 上报喂自适应决策器，
-        检测到待生效码率切换时通知客户端进入重启宽限期。"""
-        try:
-            last_notified = None
-            while True:
+        检测到待生效码率切换时通知客户端进入重启宽限期。
+
+        单帧异常只记日志后继续（方案 58 B-01）：一条畸形帧（如 copy_key
+        非 int 的 clipboard_get、二进制帧令 receive_text 抛错）不得终结
+        整条输入通道——旧实现异常落入外层 catch-all 直接结束任务，
+        touch/key/text/clipboard 全会话静默失效且 restarting 预告断发。"""
+        last_notified = None
+        while True:
+            try:
                 data = parse_video_input(await websocket.receive_text())
                 if data is None:
                     continue  # 非法输入帧忽略，输入面不断
@@ -161,10 +166,12 @@ async def video_stream(
                                     device=device_id, bit_rate=pend)
                     except Exception:
                         pass
-        except WebSocketDisconnect:
-            pass
-        except Exception as e:
-            logger.debug("input_handler_stopped", device=device_id, error=str(e))
+            except WebSocketDisconnect:
+                return
+            except Exception as e:
+                # 单帧容错：畸形/意外异常不杀循环（正文不入日志，只记异常）
+                logger.debug("input_frame_error_ignored", device=device_id, error=str(e))
+                continue
 
     # 启动输入处理任务
     input_task = asyncio.create_task(handle_input())
@@ -520,7 +527,10 @@ async def _handle_input(
     if data.get("action") == "clipboard_get":
         # 方案 54 G3-B：拉取式应答回传；正文不入日志
         encoder = stream_service.get_encoder(device_id)
-        copy_key = int(data.get("copy_key", 0) or 0)
+        try:
+            copy_key = int(data.get("copy_key", 0) or 0)
+        except (TypeError, ValueError):
+            copy_key = 0  # 方案58 B-01 纵深：protocol 层已拦，此处兜底不冒泡
         text = (await encoder.get_device_clipboard(copy_key=copy_key)
                 if encoder is not None else None)
         if text is None:

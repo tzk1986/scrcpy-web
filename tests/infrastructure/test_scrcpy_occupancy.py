@@ -167,12 +167,73 @@ async def test_stop_kills_recorded_remote_pids(fake_adb) -> None:
 
 @pytest.mark.asyncio
 async def test_stop_without_pids_skips_kill(fake_adb) -> None:
-    """无记录 PID（起流早期失败/枚举降级）→ stop 不发 kill 命令，行为同旧。"""
+    """无记录 PID 且本地进程也不在（未起流）→ stop 不发 kill 也不重枚举。"""
     encoder = ScrcpyEncoder()
     encoder._device_id = DEV
     await encoder.stop()
     joined = [" ".join(c) for c in fake_adb.calls]  # type: ignore[attr-defined]
     assert not any("kill -9" in cmd for cmd in joined)
+    assert len(fake_adb.calls) == 1  # 仅 forward --remove 清理
+
+
+class FakeProcess:
+    """本地 server 子进程替身：stop() 的 terminate/wait 链用。"""
+
+    returncode = None
+
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        pass
+
+    async def wait(self) -> int:
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_stop_reenumerates_and_kills_orphans_when_pids_empty_but_process_exists(fake_adb) -> None:
+    """方案 58 A-03：pids 空但本地进程存在（socket 早败未及枚举 / 枚举 5s
+    超时返 []）→ stop 兜底重枚举一次再 kill，并登记收尾中——防设备端
+    app_process 孤儿令下次起流被 stray 检测终生阻断。"""
+    encoder = ScrcpyEncoder()
+    encoder._device_id = DEV
+    encoder.process = FakeProcess()
+    fake_adb.append(FakeProc(0, b"/proc/3100/cmdline\n"))  # 兜底枚举命中孤儿
+    await encoder.stop()
+    joined = [" ".join(c) for c in fake_adb.calls]  # type: ignore[attr-defined]
+    assert any("kill -9 3100" in cmd for cmd in joined)
+    assert encoder._remote_pids == []
+    entry = scrcpy_module._FINALIZING_PIDS[DEV]
+    assert set(entry) == {"3100"}
+    assert all(v > time.monotonic() for v in entry.values())
+
+
+@pytest.mark.asyncio
+async def test_stop_reenumerate_empty_result_skips_kill(fake_adb) -> None:
+    """兜底重枚举无命中（设备确已干净）→ 不发 kill、正常收尾。"""
+    encoder = ScrcpyEncoder()
+    encoder._device_id = DEV
+    encoder.process = FakeProcess()
+    fake_adb.append(FakeProc(1, b""))
+    await encoder.stop()
+    joined = [" ".join(c) for c in fake_adb.calls]  # type: ignore[attr-defined]
+    assert not any("kill -9" in cmd for cmd in joined)
+
+
+@pytest.mark.asyncio
+async def test_after_fallback_kill_next_start_not_blocked_by_stray(fake_adb) -> None:
+    """A-03 闭环：stop 兜底 kill 登记收尾中后，下次起流 stray 检测命中同
+    PID 走 _all_finalizing 跳过，不抛 Occupied。"""
+    encoder = ScrcpyEncoder()
+    encoder._device_id = DEV
+    encoder.process = FakeProcess()
+    fake_adb.append(FakeProc(0, b"/proc/3100/cmdline\n"))
+    await encoder.stop()
+    fake_adb.clear()
+    fake_adb.calls.clear()
+    fake_adb.append(FakeProc(0, b"/proc/3100/cmdline\n"))
+    await ScrcpyEncoder()._detect_stray_server(DEV)  # 不抛即通过
 
 
 # ---------------------------------------------------------------------------

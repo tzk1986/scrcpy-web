@@ -1122,6 +1122,25 @@ describe('挂起态重新 start（方案 51 F1-01）', () => {
 
     stream.stop()
   })
+
+  it('挂起态 start 后无新 config 到达：解码器不重建、不催 IDR（方案 58 D-01 死路钉）', () => {
+    // 后端同会话 config 只发一次（video.py:129 config_sent）。重连按钮若仍
+    // 只调 start()：永无 config → 解码器保持 suspend 关闭后的 null、也不发
+    // request_keyframe，每帧 noteDrop → 画面永久冻结。恢复只能经 resume()
+    // （initDecoder + request_keyframe）——故组件 reconnect() 挂起态走 resume。
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+    stream.suspend()
+
+    stream.start()
+    expect(stream.suspended).toBe(false)
+
+    ws.handler!(KEY_FRAME)
+    expect(FakeVideoDecoder.instances).toHaveLength(1)  // 未重建
+    expect(ws.sent).toEqual([])                          // 未 request_keyframe
+    stream.stop()
+  })
 })
 
 // ---------------------------------------------------------------------------

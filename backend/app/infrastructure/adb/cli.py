@@ -1351,7 +1351,7 @@ class AdbCliDriver:
         return remote_path
 
     async def pull_recording(
-        self, device_id: str, remote_path: str, local_dir: str
+        self, device_id: str, remote_path: str, local_dir: str, timeout: int | None = None
     ) -> str | None:
         """
         将设备端录屏文件拉取到主机目录（方案 37 B2）。
@@ -1365,6 +1365,9 @@ class AdbCliDriver:
             device_id: ADB 序列号。
             remote_path: 设备端文件路径。
             local_dir: 主机落盘目录。
+            timeout: 覆盖默认超时（秒）；大文件传输须显式传长超时
+                （方案 58 A-02：录屏产物可达数百 MB，走 adb.timeout 默认
+                30s 会在传输中途被误杀）。
 
         返回：
             成功时本地文件路径；远程不存在时 None。
@@ -1373,7 +1376,7 @@ class AdbCliDriver:
             AdbError: 远程不存在特征以外的拉取失败。
         """
         try:
-            await self._run_serial(device_id, "pull", remote_path, local_dir)
+            await self._run_serial(device_id, "pull", remote_path, local_dir, timeout=timeout)
         except AdbError as e:
             if "No such file" in str(e) or "does not exist" in str(e):
                 logger.debug("pull_recording_no_such_file", device=device_id, remote=remote_path)

@@ -215,8 +215,13 @@ class RecordingService:
         local_path: str | None
         try:
             local_dir.mkdir(parents=True, exist_ok=True)
+            # 慢 pull 显式长超时（方案 58 A-02）：time_limit+60，同
+            # start_recording（--time-limit+30）留余量口径，防默认 30s 误杀
             local_path = await self.adb.pull_recording(
-                device_id, session.remote_path, str(local_dir)
+                device_id,
+                session.remote_path,
+                str(local_dir),
+                timeout=device_recording_settings(device_id).time_limit + 60,
             )
         except AdbError as exc:
             logger.warning(

@@ -939,11 +939,22 @@ watch(
 async function reconnect() {
   error.value = null
   state.value = 'idle'
+  // 方案 58 D-23：重连即重新计时，防 watchdog 以旧 h264StartedAt 立即误判回退
+  h264StartedAt = Date.now()
 
   if (h264Stream) {
-    h264Stream.start()
-    // start() 重新注册了服务级 resume 回调，需再次覆盖为组件级复合处理器
-    ws?.setReconnectHandler(() => handleWsReconnect())
+    if (h264Stream.suspended) {
+      // 方案 58 D-01：回退挂起态（截图模式）重连不得再走 start()——start
+      // 只清状态不重建解码器，且后端同会话 config 只发一次（video.py:129），
+      // 画面会永久冻结。复用 WS 重连的截图恢复分支：停截图流、resume
+      // （initDecoder + request_keyframe）、复位回退状态机并重挂 watchdog
+      //（真死流会再按时回退截图，自愈闭环保持）。
+      handleWsReconnect()
+    } else {
+      h264Stream.start()
+      // start() 重新注册了服务级 resume 回调，需再次覆盖为组件级复合处理器
+      ws?.setReconnectHandler(() => handleWsReconnect())
+    }
   } else if (videoStream) {
     await videoStream.start()
   }

@@ -54,3 +54,26 @@ def test_video_touch_frame_passes_through():
 def test_video_stats_frame_passes_through():
     """帧率上报帧原样通过。"""
     assert parse_video_input('{"op": "stats", "fps": 25}') == {"op": "stats", "fps": 25}
+
+
+def test_video_clipboard_get_bad_copy_key_returns_none():
+    """方案 58 B-01：copy_key 不可 int 化（"abc"/dict/bool）归一 None 忽略——
+    畸形嵌套字段不得让 ValueError 进入输入循环（旧实现一发即杀整条输入通道）。"""
+    assert parse_video_input('{"action": "clipboard_get", "copy_key": "abc"}') is None
+    assert parse_video_input('{"action": "clipboard_get", "copy_key": {}}') is None
+    assert parse_video_input('{"action": "clipboard_get", "copy_key": true}') is None
+    assert parse_video_input('{"action": "clipboard_get", "copy_key": [1]}') is None
+
+
+def test_video_clipboard_get_int_like_copy_key_passes():
+    """int 与数字串照旧透传（copy_key 语义不变）；缺省/None 合法（handler or 0 兜底）。"""
+    assert parse_video_input('{"action": "clipboard_get", "copy_key": 7}') == {
+        "action": "clipboard_get", "copy_key": 7,
+    }
+    assert parse_video_input('{"action": "clipboard_get", "copy_key": "-3"}') == {
+        "action": "clipboard_get", "copy_key": "-3",
+    }
+    assert parse_video_input('{"action": "clipboard_get"}') == {"action": "clipboard_get"}
+    assert parse_video_input('{"action": "clipboard_get", "copy_key": null}') == {
+        "action": "clipboard_get", "copy_key": None,
+    }

@@ -26,6 +26,7 @@ from app.application.recording_service import RecordingService
 from app.core.config import settings
 from app.core.exceptions import AdbError, ConflictError
 from app.domain.recording import RecordingSession, RecordingState
+from config.settings import device_recording_settings
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,10 @@ async def test_pull_then_rm_remote(service, mock_adb, tmp_path):
     s = await service.start("d1")
     out = await service.stop("d1")
     assert out is not None and out.state == RecordingState.DONE.value
-    mock_adb.pull_recording.assert_called_once_with("d1", s.remote_path, str(tmp_path))
+    # 方案58 A-02：慢 pull 显式长超时（time_limit+60），勿回落 adb.timeout 默认
+    mock_adb.pull_recording.assert_called_once_with(
+        "d1", s.remote_path, str(tmp_path), timeout=device_recording_settings("d1").time_limit + 60
+    )
     mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
 
 
@@ -378,7 +382,9 @@ async def test_natural_end_auto_finalizes(service, mock_adb, tmp_path):
     assert s.state == RecordingState.DONE.value
     assert s.local_path == str(tmp_path / "rec.mp4")
     mock_adb.stop_recording.assert_called_once_with("d1")
-    mock_adb.pull_recording.assert_called_once_with("d1", s.remote_path, str(tmp_path))
+    mock_adb.pull_recording.assert_called_once_with(
+        "d1", s.remote_path, str(tmp_path), timeout=device_recording_settings("d1").time_limit + 60
+    )
     mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
 
 

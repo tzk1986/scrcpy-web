@@ -83,6 +83,14 @@ class DatabasePool:
         try:
             yield conn
         finally:
+            # 归还前回滚未提交事务（方案 58 A-01）：aiosqlite 默认隐式事务
+            # （isolation_level=''，首个 DML 自动 BEGIN），借用者写入中途抛错
+            # 时半事务会随连接回池，下一借用者的 commit 会把失败者的行幽灵提交。
+            # 无事务时 rollback 无害（SQLite 空事务回滚是 no-op）。
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
             await self._pool.put(conn)
 
     async def close(self) -> None:

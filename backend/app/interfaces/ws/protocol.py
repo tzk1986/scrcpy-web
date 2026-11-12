@@ -42,4 +42,16 @@ def parse_video_input(raw: str | bytes) -> dict[str, Any] | None:
         value = data.get(key)
         if value is not None and not isinstance(value, str):
             return None
+    # 已知嵌套字段类型校验（方案 58 B-01，8.1 入站校验层）：copy_key 仅
+    # clipboard_get 携带，须可 int 化（int 或数字串，bool 除外），否则归一
+    # None 忽略——不得把 ValueError 放进 handler 的 int() 终结输入循环。
+    copy_key = data.get("copy_key")
+    if copy_key is not None:
+        if isinstance(copy_key, bool):
+            return None
+        if isinstance(copy_key, str):
+            if not copy_key.lstrip("+-").isdigit():
+                return None
+        elif not isinstance(copy_key, int):
+            return None
     return data

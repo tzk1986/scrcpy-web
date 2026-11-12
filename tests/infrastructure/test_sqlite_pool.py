@@ -56,6 +56,44 @@ async def test_pool_concurrent_cap(db_path):
     await pool.close()
 
 
+async def test_pool_rolls_back_unfinished_transaction_on_release(db_path):
+    """方案 58 A-01：借用者写入中途抛错，半事务不得随连接回池污染下一借用者
+    （旧实现归还不 rollback，第二次 commit 会把上一失败者的行幽灵提交）。"""
+    pool = DatabasePool(db_path, pool_size=1)
+    await pool.initialize()
+    try:
+        with pytest.raises(RuntimeError):
+            async with pool.connection() as c:
+                await c.execute("CREATE TABLE t (v INTEGER)")
+                await c.commit()
+                await c.execute("INSERT INTO t VALUES (1)")
+                raise RuntimeError("mid-write failure")
+
+        async with pool.connection() as c:
+            await c.execute("INSERT INTO t VALUES (2)")
+            await c.commit()
+            rows = await c.execute_fetchall("SELECT v FROM t")
+        assert [r[0] for r in rows] == [2]
+    finally:
+        # aiosqlite 线程非守护：断言失败若不 close，pytest 退出会永久挂起
+        await pool.close()
+
+
+async def test_pool_normal_commit_path_unaffected_by_rollback(db_path):
+    """归还前 rollback 对已 commit 的正常路径无副作用。"""
+    pool = DatabasePool(db_path, pool_size=1)
+    await pool.initialize()
+    async with pool.connection() as c:
+        await c.execute("CREATE TABLE t (v INTEGER)")
+        await c.commit()
+        await c.execute("INSERT INTO t VALUES (7)")
+        await c.commit()
+    async with pool.connection() as c:
+        rows = await c.execute_fetchall("SELECT v FROM t")
+    assert [r[0] for r in rows] == [7]
+    await pool.close()
+
+
 async def test_get_pool_singleton_per_path(db_path):
     p1 = await get_pool(db_path)
     p2 = await get_pool(db_path)

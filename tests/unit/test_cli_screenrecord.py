@@ -243,6 +243,35 @@ async def test_pull_other_error_reraised(monkeypatch):
         await AdbCliDriver().pull_recording("d", "/sdcard/r.mp4", "C:/tmp")
 
 
+async def test_pull_passes_explicit_timeout(monkeypatch):
+    """方案58 A-02：pull_recording 须把显式 timeout 透传给 _run_serial。
+
+    大文件慢 pull 若走默认 adb.timeout（30s）会在传输中途被误杀
+    （录屏产物可达数百 MB，普通设备拉取常超 30s）。"""
+    seen: dict[str, object] = {}
+
+    async def fake_run(adr, *args, timeout=None):
+        seen["timeout"] = timeout
+        return ""
+
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    await AdbCliDriver().pull_recording("d", "/sdcard/r.mp4", "C:/tmp", timeout=120)
+    assert seen["timeout"] == 120
+
+
+async def test_pull_default_timeout_still_none(monkeypatch):
+    """不传 timeout 时保持原口径：透传 None 由 _run_serial 回落默认。"""
+    seen: dict[str, object] = {}
+
+    async def fake_run(adr, *args, timeout=None):
+        seen["timeout"] = timeout
+        return ""
+
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    await AdbCliDriver().pull_recording("d", "/sdcard/r.mp4", "C:/tmp")
+    assert seen["timeout"] is None
+
+
 async def test_rm_remote_sends_rm(monkeypatch):
     calls = []
     async def fake_run(adr, *args, timeout=None):

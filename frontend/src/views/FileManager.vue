@@ -149,6 +149,8 @@ const entries = ref<FileEntry[]>([])
 const selected = ref<FileEntry[]>([])
 const errorText = ref('')
 const errorRetryable = ref(false)
+// 目录列表请求代次（方案 58 E-01，8.3 范式）：慢响应迟到不得覆盖新目录列表
+let listEpoch = 0
 const transfers = reactive<TransferRow[]>([])
 const tableRef = ref<{ clearSelection: () => void } | null>(null)
 const uploadInputRef = ref<HTMLInputElement | null>(null)
@@ -194,9 +196,13 @@ const crumbs = computed<{ label: string; path: string }[]>(() => {
 
 async function loadList(): Promise<void> {
   errorText.value = ''
+  const epoch = ++listEpoch
   try {
-    entries.value = await api.listFiles(props.id, currentPath.value)
+    const res = await api.listFiles(props.id, currentPath.value)
+    if (epoch !== listEpoch) return  // 过期响应丢弃（快速连点/切设备防覆盖）
+    entries.value = res
   } catch (e) {
+    if (epoch !== listEpoch) return
     const { code, message } = errOf(e)
     entries.value = []
     if (code === 'PERMISSION_DENIED') {

@@ -674,6 +674,34 @@ def test_invalid_input_frames_ignored_and_input_survives(video_client):
     assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
 
+def test_malformed_clipboard_get_and_binary_do_not_kill_input(video_client):
+    """方案 58 B-01：copy_key 畸形帧与二进制帧不得终结输入循环。
+
+    旧实现循环仅捕 WebSocketDisconnect，ValueError（int("abc")）与
+    receive_text 遇二进制帧落入 catch-all 直接结束任务——全会话输入面
+    静默失效（touch/key/clipboard 全哑、restarting 预告断发）。修复后
+    畸形帧被忽略/容错，紧随的 touch 仍被转发、stats 仍触发 restarting。"""
+    gate = threading.Event()
+    encoder = FakeEncoder()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        fps_to_bitrate={25.0: 2_000_000},
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        assert recv_binary(session) == frame(0, IDR_0)
+        session.send_json({"action": "clipboard_get", "copy_key": "abc"})  # ValueError 向量
+        session.send_bytes(b"\x00\x01")                                    # 二进制帧向量
+        session.send_json({"action": "touch", "x": 1, "y": 2})
+        # 轮询而非阻塞接收：输入循环若被畸形帧杀死，touch 永不转发 → 2s 超时判负
+        assert wait_for(lambda: encoder.inputs == [{"action": "touch", "x": 1, "y": 2}])
+        assert encoder.clipboard_calls == []  # 畸形 copy_key 被忽略，未触达编码器
+        gate.set()
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
+
+
 def test_clipboard_get_returns_text_over_ws(video_client):
     """方案 54 G3-B：clipboard_get → 应答 {type:clipboard,text} 同 WS 回传，
     copy_key 透传编码器。"""

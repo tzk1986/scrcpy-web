@@ -66,8 +66,13 @@ const h = vi.hoisted(() => {
     probeStats = { frameCount: 0, lastFrameTime: 0 }
     start = vi.fn()
     stop = vi.fn()
-    suspend = vi.fn()
-    resume = vi.fn()
+    // 与真实实现对齐的挂起语义（方案 58 D-01：reconnect 按 suspended 分流）
+    suspend = vi.fn(() => {
+      this.suspended = true
+    })
+    resume = vi.fn(() => {
+      this.suspended = false
+    })
     setStateChangeHandler = vi.fn()
     setStatsUpdateHandler = vi.fn()
     // 默认解析为 PNG Blob（真实实现始终返回 Promise；个别用例按需 override）
@@ -386,11 +391,17 @@ describe('VideoPlayer H264 状态机与回退', () => {
     await nextTick()
     expect(wrapper.find('.status-text.error').text()).toContain('screenshot stream failed')
 
+    // 方案 58 D-01：回退挂起态点「重新连接」不得再走 start()（不重建解码器、
+    // 后端同会话不再下发 config → 画面永久冻结）；须走恢复路径：
+    // resume 重建解码器 + 停截图流 + mode 回 h264
     await wrapper.find('.status-text.error el-button-stub').trigger('click')
-    expect(h264.start).toHaveBeenCalledTimes(2)
+    await flushPromises()
+    expect(h264.start).toHaveBeenCalledTimes(1)  // 仅挂载那次
+    expect(h264.resume).toHaveBeenCalled()
+    expect(vs.stop).toHaveBeenCalled()
     await nextTick()
     expect(wrapper.find('.status-text.error').exists()).toBe(false)
-    expect(wrapper.text()).toContain('连接中')
+    expect(wrapper.text()).toContain('模式: h264')
     wrapper.unmount()
   })
 
