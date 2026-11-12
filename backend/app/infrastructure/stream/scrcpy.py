@@ -383,6 +383,10 @@ class ScrcpyEncoder:
                                        device=device_id,
                                        returncode=self.process.returncode)
                             break
+                        else:
+                            # 方案 58 A-14：EOF 但进程未退出时 readline 立即返
+                            # 空会热自旋；0.5s 退避，cancel 落在 sleep 即收口
+                            await asyncio.sleep(0.5)
                     except asyncio.TimeoutError:
                         continue
                     except Exception as e:
@@ -406,6 +410,12 @@ class ScrcpyEncoder:
                         device=device_id,
                         returncode=self.process.returncode,
                         stderr=error_msg)
+            # 方案 58 A-22：早退 raise 在 stream finally 之外，先收口 log_task
+            log_task.cancel()
+            try:
+                await log_task
+            except asyncio.CancelledError:
+                pass
             raise RuntimeError(f"scrcpy-server exited early: {error_msg}")
 
         # 7. 连接到 scrcpy-server 的 socket（视频 socket）
@@ -417,6 +427,12 @@ class ScrcpyEncoder:
             )
         except Exception as e:
             logger.error("socket_connect_failed", device=device_id, error=str(e))
+            # 方案 58 A-22：socket 失败早退同样先收口 log_task，防跨会话游离
+            log_task.cancel()
+            try:
+                await log_task
+            except asyncio.CancelledError:
+                pass
             raise RuntimeError(f"Failed to connect to scrcpy-server: {e}")
 
         logger.info("connected_to_scrcpy_server", device=device_id)

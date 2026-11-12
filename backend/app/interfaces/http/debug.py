@@ -243,7 +243,7 @@ async def cleanup_session_logs(
         session_id: 要清理的会话 ID（路径参数）。
 
     返回：
-        {"deleted": 删除的日志条数}。
+        {"deleted": 删除条数（日志 + shell 历史合并计数）}。
     """
     deleted = await service.cleanup_session(session_id)
     return {"deleted": deleted}

@@ -123,6 +123,38 @@ async def test_get_session_null_metadata_falls_back_to_empty_dict(debug_repo, db
     assert got.metadata == {}
 
 
+async def test_get_session_corrupt_metadata_degrades_to_empty(debug_repo, db_path):
+    """方案 58 A-20：metadata 脏 JSON → 降级 {} + 日志（不抛），日志不带原文。"""
+    from structlog.testing import capture_logs
+
+    await raw_exec(db_path, "INSERT INTO debug_sessions VALUES (?,?,?,?,?,?)",
+                   ("corrupt", "d1", "u1", 100.0, 200.0, '{"broken'))
+    with capture_logs() as logs:
+        got = await debug_repo.get_session("corrupt")
+    assert got is not None
+    assert got.metadata == {}
+    events = [e for e in logs if e.get("event") == "session_metadata_corrupt"]
+    assert events
+    assert '{"broken' not in str(events[0])
+    assert events[0]["raw_len"] == len('{"broken')
+
+
+async def test_list_recent_sessions_corrupt_row_does_not_poison_list(debug_repo, db_path):
+    """A-20：一行脏 metadata 不得毒化整个列表接口（原实现 JSONDecodeError 上抛，
+    重启恢复链路整批会话丢失）。"""
+    now = time.time()
+    await debug_repo.save_session(DebugSession(
+        id="good", device_id="d", user_id="u",
+        created_at=now, last_active=now, metadata={"a": 1}))
+    await raw_exec(db_path, "INSERT INTO debug_sessions VALUES (?,?,?,?,?,?)",
+                   ("corrupt", "d2", "u2", now - 5, now - 2, "{oops"))
+
+    recent = await debug_repo.list_recent_sessions(since_ts=now - 100)
+    assert [s.id for s in recent] == ["good", "corrupt"]
+    assert recent[0].metadata == {"a": 1}
+    assert recent[1].metadata == {}
+
+
 async def test_list_recent_sessions_order_filter_limit(debug_repo, db_path):
     now = time.time()
     await debug_repo.save_session(DebugSession(
@@ -271,7 +303,8 @@ async def test_delete_session_logs_also_clears_shell_history(debug_repo):
     await debug_repo.save_log("b", make_entry(3.0, message="b1"), seq=0)
     await debug_repo.save_shell_history("a", "cmd", "out")
 
-    assert await debug_repo.delete_session_logs("a") == 2  # 返回删除的日志条数
+    # 方案 58 A-23：计数合并 debug_logs + shell_history（2 日志 + 1 历史 = 3）
+    assert await debug_repo.delete_session_logs("a") == 3
     assert await debug_repo.query_logs_since("a", 0) == []
     assert await debug_repo.get_shell_history("a") == []
     assert [r["message"] for r in await debug_repo.query_logs_since("b", 0)] == ["b1"]

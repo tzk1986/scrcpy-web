@@ -63,6 +63,17 @@ GZIP_MAGIC = b"\x1f\x8b"
 _ADB_FAILED_PREFIX = "ADB command failed: "
 
 
+def _is_empty_stderr_failure(err: BaseException) -> bool:
+    """方案 58 A-13：pkill 无匹配的结构化判据。仅 _run 拼装的
+    「ADB command failed: + 空 stderr」（剥前缀后无余文）算无匹配；
+    旧版 endswith("failed: ") 会把恰含该后缀的无关错误文本
+    （如 `Screenshot failed: `）误判为无匹配而吞掉真实失败。"""
+    text = str(err)
+    if not text.startswith(_ADB_FAILED_PREFIX):
+        return False
+    return not text[len(_ADB_FAILED_PREFIX) :].strip()
+
+
 def _redact_pair_code(cmd: list[str]) -> list[str]:
     """方案 58 A-21（8.5 日志隐私）：adb pair 的 6 位配对码是短时效凭据，
     入日志/异常文本以 <code len=N> 占位（argv 形态 [adb, pair, target, code]）；
@@ -453,6 +464,7 @@ class AdbCliDriver:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()  # 方案 58 A-11：kill 后收尸，防僵尸句柄随泄漏路径累积
             logger.error("adb_command_timeout", cmd=display_cmd, timeout=timeout)
             raise AdbError(f"ADB command timed out after {timeout}s: {' '.join(display_cmd)}")
 
@@ -582,10 +594,9 @@ class AdbCliDriver:
             电量 0-100。解析失败时返回 0。
         """
         output = await self._run_serial(device_id, "shell", "dumpsys", "battery", timeout=timeout)
-        for line in output.split("\n"):
-            if "level" in line:
-                return int(line.split(":")[1].strip())
-        return 0
+        # 方案 58 A-19：收敛到 parse_battery 单实现（行首锚定正则），
+        # 旧版裸 "level" 子串会误命中 `Battery level indicator` 等噪声行抛 IndexError
+        return parse_battery(output).level
 
     async def get_rotation(self, device_id: str) -> int:
         """
@@ -673,6 +684,10 @@ class AdbCliDriver:
                 yield stderr_data.decode("utf-8", errors="replace")
         finally:
             stderr_task.cancel()
+            try:
+                await stderr_task  # 方案 58 A-15：await 取消收口，防游离任务
+            except asyncio.CancelledError:
+                pass
             if proc.returncode is None:
                 proc.kill()
 
@@ -855,7 +870,12 @@ class AdbCliDriver:
                 yield line.decode("utf-8", errors="replace").rstrip("\r\n")
         finally:
             stderr_task.cancel()
-            proc.kill()
+            try:
+                await stderr_task  # 方案 58 A-15：await 取消收口，防游离任务
+            except asyncio.CancelledError:
+                pass
+            if proc.returncode is None:
+                proc.kill()  # 方案 58 A-15：已退出进程不再 kill
 
     async def push(
         self, device_id: str, local: str, remote: str, timeout: int | None = None
@@ -1004,6 +1024,7 @@ class AdbCliDriver:
             )
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()  # 方案 58 A-11：kill 后收尸
             logger.error("screenshot_timeout", device=device_id, timeout=settings().adb.timeout)
             raise AdbError(f"Screenshot timed out after {settings().adb.timeout}s")
 
@@ -1051,6 +1072,7 @@ class AdbCliDriver:
             )
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()  # 方案 58 A-11：kill 后收尸
             logger.error("screenshot_raw_timeout", device=device_id, timeout=settings().adb.timeout)
             raise AdbError(f"Raw screenshot timed out after {settings().adb.timeout}s")
 
@@ -1336,7 +1358,7 @@ class AdbCliDriver:
         try:
             await self._run_serial(device_id, "shell", "pkill", "-INT", "screenrecord")
         except AdbError as e:
-            if str(e).endswith("failed: "):
+            if _is_empty_stderr_failure(e):
                 # rc≠0 且 stderr 空 = 无匹配进程：screenrecord 已退出。但可能
                 # 是自然完成收尾写 MP4 恰与本次 stop 竞态——先探产物，在位则
                 # 返回路径交 pull 收尾（自然完成竞态不再白录，方案 51 A04），

@@ -856,7 +856,7 @@ class DebugRepository(Protocol):
             session_id: 要清理的会话 ID。
 
         返回：
-            删除的日志条数。
+            删除条数（日志 + shell 历史合并计数）。
         """
         ...
 

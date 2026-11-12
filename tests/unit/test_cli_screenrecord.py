@@ -216,6 +216,36 @@ async def test_stop_falls_back_to_kill_pid(monkeypatch):
     assert ("d", "shell", "kill", "-INT", "1234") in calls
 
 
+def test_pkill_no_match_predicate_structured():
+    """方案 58 A-13：「rc≠0 且 stderr 空」判据结构化——只认
+    "ADB command failed: "（空 error_msg）本体；其他 "…failed: " 结尾文案
+    （如截图失败空 stderr）不得误判为无匹配。"""
+    from app.infrastructure.adb.cli import _ADB_FAILED_PREFIX, _is_empty_stderr_failure
+
+    assert _is_empty_stderr_failure(AdbError(_ADB_FAILED_PREFIX))
+    assert not _is_empty_stderr_failure(AdbError(_ADB_FAILED_PREFIX + "boom"))
+    assert not _is_empty_stderr_failure(AdbError("Screenshot failed: "))
+    assert not _is_empty_stderr_failure(ValueError("other error"))
+
+
+async def test_stop_pkill_unrelated_failed_text_falls_to_toybox(monkeypatch):
+    """A-13 行为面：pkill 抛非「空 stderr 契约」的 failed: 尾文案 → 不得按
+    无匹配走探产物分支，应进 toybox pidof 兜底。"""
+    calls = []
+    async def fake_run(adr, *args, timeout=None):
+        calls.append(args)
+        if "pkill" in args:
+            raise AdbError("Screenshot failed: ")  # 契约外文本（尾缀巧合）
+        if "pidof" in args:
+            return ""  # 设备端确无 screenrecord 进程
+        return ""
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    d = AdbCliDriver()
+    await d.start_recording("d", "/sdcard/r.mp4", "4M", 60)
+    assert await d.stop_recording("d") == ""
+    assert ("d", "shell", "pidof", "screenrecord") in calls
+
+
 async def test_pull_success_returns_local_path(monkeypatch):
     calls = []
     async def fake_run(adr, *args, timeout=None):

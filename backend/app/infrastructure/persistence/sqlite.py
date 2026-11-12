@@ -52,6 +52,20 @@ from app.domain.session import DebugSession
 logger = get_logger(__name__)
 
 
+def _parse_metadata(raw: Any, session_id: str) -> dict[str, Any]:
+    """方案 58 A-20：解析 debug_sessions.metadata 列。空值 → {}；脏 JSON
+    降级 {} 并记长度告警（原文可能含环境信息不入日志），单条脏行不再
+    打崩 get_session / list_recent_sessions 整页。"""
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)  # type: ignore[no-any-return]
+    except (ValueError, TypeError):
+        logger.warning("session_metadata_corrupt",
+                       session=session_id, raw_len=len(str(raw)))
+        return {}
+
+
 class DatabasePool:
     """aiosqlite 连接池：initialize 后池内恒有 pool_size 条连接循环复用。"""
 
@@ -240,7 +254,7 @@ class SqliteDebugRepository(DebugRepository):
                 user_id=row[2],
                 created_at=row[3],
                 last_active=row[4],
-                metadata=json.loads(row[5]) if row[5] else {},
+                metadata=_parse_metadata(row[5], row[0]),
             )
 
     async def save_log(self, session_id: str, entry: LogEntry, seq: int = 0) -> None:
@@ -282,7 +296,7 @@ class SqliteDebugRepository(DebugRepository):
             rows = list(await cursor.fetchall())
         out = []
         for r in rows:
-            meta = json.loads(r[5]) if r[5] else {}
+            meta = _parse_metadata(r[5], r[0])
             out.append(DebugSession(id=r[0], device_id=r[1], user_id=r[2],
                                     created_at=r[3], last_active=r[4], metadata=meta))
         return out
@@ -459,26 +473,30 @@ class SqliteDebugRepository(DebugRepository):
 
     async def delete_session_logs(self, session_id: str) -> int:
         """
-        删除指定会话的所有日志。
+        删除指定会话的所有日志和 shell 历史。
 
         参数：
             session_id: 要清理的会话 ID。
 
         返回：
-            删除的日志条数。
+            删除条数（debug_logs + shell_history 合并计数，方案 58 A-23——
+            旧版 history 删除数被丢弃，返回值与实删不符）。
         """
         pool = await get_pool(self.db_path)
         async with pool.connection() as conn:
-            cursor = await conn.execute(
+            logs_cursor = await conn.execute(
                 "DELETE FROM debug_logs WHERE session_id=?", (session_id,)
             )
-            await conn.execute(
+            logs_deleted: int = logs_cursor.rowcount
+            history_cursor = await conn.execute(
                 "DELETE FROM shell_history WHERE session_id=?", (session_id,)
             )
+            history_deleted: int = history_cursor.rowcount
             await conn.commit()
-            deleted: int = cursor.rowcount
+        deleted = logs_deleted + history_deleted
         if deleted > 0:
-            logger.info("session_logs_deleted", session=session_id, count=deleted)
+            logger.info("session_logs_deleted", session=session_id, count=deleted,
+                        logs=logs_deleted, history=history_deleted)
         return deleted
 
     async def get_db_size_bytes(self) -> int:

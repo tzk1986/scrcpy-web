@@ -35,6 +35,7 @@
 
 import asyncio
 import sys
+import time
 import uuid
 from typing import AsyncGenerator, Callable
 
@@ -163,15 +164,23 @@ class InteractiveShell:
     ) -> None:
         """读取初始输出，直到看到 shell prompt，并转发给回调。
 
-        超时策略：每次 read 最多等待 5s（网络设备延迟较高）。
-        循环读取直到检测到 prompt 或超时。
+        超时策略：每次 read 最多等待 5s（网络设备延迟较高），总时限 30s
+        兜底。循环读取直到检测到 prompt、总时限到达或超时。
         """
         assert self._proc is not None and self._proc.stdout is not None
+        # 方案 58 A-18：设备缓慢滴输出且 prompt 永不出现时，单轮 5s 超时
+        # 会无限轮读；deadline 到达放行已累积的部分初始输出。
+        deadline = time.monotonic() + 30.0
         try:
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.info("initial_output_deadline_reached",
+                                total_len=len(self._initial_output))
+                    break
                 chunk = await asyncio.wait_for(
                     self._proc.stdout.read(4096),
-                    timeout=5.0
+                    timeout=min(5.0, remaining)
                 )
                 if not chunk:
                     break

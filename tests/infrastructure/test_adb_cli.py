@@ -109,12 +109,60 @@ class TestAdbRun:
             proc = MagicMock()
             proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
             proc.kill = MagicMock()
+            proc.wait = AsyncMock(return_value=-9)
             return proc
 
         with patch('asyncio.create_subprocess_exec', side_effect=timeout_mock):
             driver = AdbCliDriver()
             with pytest.raises(AdbError, match="timed out"):
                 await driver._run("devices")
+
+
+class TestTimeoutReapsChild:
+    """方案 58 A-11：超时 kill 后必须 await proc.wait() 收尸（51-A01 规格残留
+    半边）——否则 Windows 子进程句柄未回收、adb 服务端会话可能被瞬态残留占用。"""
+
+    @staticmethod
+    def _timeout_proc(captured: list):
+        async def create_mock_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.returncode = None
+            proc.kill = MagicMock()
+            proc.wait = AsyncMock(return_value=-9)
+            proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+            captured.append(proc)
+            return proc
+        return create_mock_proc
+
+    @pytest.mark.asyncio
+    async def test_run_timeout_awaits_wait_after_kill(self):
+        procs: list = []
+        with patch('asyncio.create_subprocess_exec', side_effect=self._timeout_proc(procs)):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="timed out"):
+                await driver._run("devices")
+        procs[0].kill.assert_called_once()
+        procs[0].wait.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_screenshot_timeout_awaits_wait_after_kill(self):
+        procs: list = []
+        with patch('asyncio.create_subprocess_exec', side_effect=self._timeout_proc(procs)):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="[Tt]imed out"):
+                await driver.screenshot("dev1")
+        procs[0].kill.assert_called_once()
+        procs[0].wait.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_screenshot_raw_gzip_timeout_awaits_wait_after_kill(self):
+        procs: list = []
+        with patch('asyncio.create_subprocess_exec', side_effect=self._timeout_proc(procs)):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError, match="[Tt]imed out"):
+                await driver.screenshot_raw_gzip("dev1")
+        procs[0].kill.assert_called_once()
+        procs[0].wait.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +544,7 @@ class TestPairCodeRedaction:
             proc = MagicMock()
             proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
             proc.kill = MagicMock()
+            proc.wait = AsyncMock(return_value=-9)
             return proc
 
         with (
@@ -639,6 +688,7 @@ class TestScreenshotRawGzip:
             proc = MagicMock()
             proc.returncode = None
             proc.kill = MagicMock()
+            proc.wait = AsyncMock(return_value=-9)
             proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
             procs.append(proc)
             return proc
@@ -675,6 +725,7 @@ class TestScreenshotPng:
             proc = MagicMock()
             proc.returncode = None
             proc.kill = MagicMock()
+            proc.wait = AsyncMock(return_value=-9)
             proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
             procs.append(proc)
             return proc
@@ -896,6 +947,96 @@ class TestStreamLogcat:
 
         assert first == "line1"
         proc.kill.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 流式收尾卫生（方案 58 A-15）
+# ---------------------------------------------------------------------------
+
+class _HangStderrReader:
+    """永不返回数据的 stderr 替身：让 _consume_stderr 任务保持挂起，
+    用于验证 finally 是否 await 了 cancel（而非裸 cancel 遗留 pending 任务）。"""
+
+    async def readline(self) -> bytes:
+        await asyncio.sleep(3600)
+        return b""
+
+    async def read(self) -> bytes:
+        return b""
+
+
+class TestStreamFinallyHygiene:
+    """方案 58 A-15：stream_logcat/shell_stream 收尾必须 await stderr_task 的
+    cancel；stream_logcat 的 kill 需 returncode 守卫（已退出不重复 kill）。"""
+
+    @pytest.mark.asyncio
+    async def test_stream_logcat_finally_awaits_stderr_cancel(self, mock_device_id):
+        captured: list = []
+        real_create = asyncio.create_task
+
+        def spy(coro, *a, **kw):
+            t = real_create(coro, *a, **kw)
+            captured.append(t)
+            return t
+
+        proc = _make_logcat_proc([b"line1\n", b"line2\n"])
+        proc.stderr = _HangStderrReader()
+
+        async def mock_exec(*args, **kwargs):
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=mock_exec), \
+                patch('asyncio.create_task', new=spy):
+            driver = AdbCliDriver()
+            gen = driver.stream_logcat(mock_device_id)
+            first = await gen.__anext__()
+            await gen.aclose()
+
+        assert first == "line1"
+        assert captured and captured[0].done(), "stderr_task cancel 未被 await（游离任务）"
+
+    @pytest.mark.asyncio
+    async def test_stream_logcat_skips_kill_when_process_exited(self, mock_device_id):
+        """EOF 收尾时进程已退出（returncode 非 None）→ 不得再 kill（防竞态
+        ProcessLookupError / 重复信号）。"""
+        proc = _make_logcat_proc([b"line1\n"])
+        proc.returncode = 130  # 模拟 SIGINT 收尾已退出
+
+        async def mock_exec(*args, **kwargs):
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=mock_exec):
+            driver = AdbCliDriver()
+            seen = [line async for line in driver.stream_logcat(mock_device_id)]
+
+        assert seen == ["line1"]
+        proc.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shell_stream_finally_awaits_stderr_cancel(self, mock_device_id):
+        captured: list = []
+        real_create = asyncio.create_task
+
+        def spy(coro, *a, **kw):
+            t = real_create(coro, *a, **kw)
+            captured.append(t)
+            return t
+
+        proc = _make_logcat_proc([b"out1\n"])
+        proc.stderr = _HangStderrReader()
+
+        async def mock_exec(*args, **kwargs):
+            return proc
+
+        with patch('asyncio.create_subprocess_exec', side_effect=mock_exec), \
+                patch('asyncio.create_task', new=spy):
+            driver = AdbCliDriver()
+            gen = driver.shell_stream(mock_device_id, "ls")
+            first = await gen.__anext__()
+            await gen.aclose()
+
+        assert first.startswith("out1")
+        assert captured and captured[0].done(), "stderr_task cancel 未被 await（游离任务）"
 
 
 # ---------------------------------------------------------------------------

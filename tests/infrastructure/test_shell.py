@@ -210,6 +210,54 @@ class TestReadUntilPromptPrivacy:
         assert detected[0]["log_level"] == "info"
 
 
+class TestReadUntilPromptDeadline:
+    """方案 58 A-18：慢速滴流无 prompt 时可令会话启动无限挂起——
+    须有总时限（30s）兜底，部分输出照常放行（不丢已读 banner）。"""
+
+    async def test_slow_drip_without_prompt_hits_total_deadline(self, monkeypatch):
+        from structlog.testing import capture_logs
+
+        class _FakeTime:
+            def __init__(self, start: float = 1000.0) -> None:
+                self.now = start
+
+            def monotonic(self) -> float:
+                return self.now
+
+        clock = _FakeTime()
+
+        class _DripStdout:
+            """每次 read 推进假时间 6s（单次 <5s 读超时永不触发），永不含 prompt。"""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def read(self, n: int = -1) -> bytes:
+                self.calls += 1
+                if self.calls > 30:
+                    raise AssertionError("read past total deadline (no guard)")
+                clock.now += 6.0
+                return b"chatter "
+
+        shell = InteractiveShell()
+        proc = _make_proc()
+        proc.stdout = _DripStdout()
+        shell._proc = proc
+        shell._initial_output = ""
+        monkeypatch.setattr("app.infrastructure.adb.shell.time", clock)
+
+        with capture_logs() as logs:
+            await shell._read_until_prompt()
+
+        assert proc.stdout.calls <= 6  # 假时间 30s ÷ 每次 6s → 5 次读后触顶
+        assert shell._initial_output.startswith("chatter")  # 部分输出放行
+        deadline_events = [
+            e for e in logs if e.get("event") == "initial_output_deadline_reached"
+        ]
+        assert deadline_events
+        assert "chatter" not in str(deadline_events[0])  # 隐私：只记长度
+
+
 # ---------------------------------------------------------------------------
 # _background_reader：输出路由
 # ---------------------------------------------------------------------------

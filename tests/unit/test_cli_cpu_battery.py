@@ -196,3 +196,12 @@ async def test_get_battery_info_propagates_adb_error(monkeypatch):
     monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
     with pytest.raises(AdbError):
         await AdbCliDriver().get_battery_info("d1")
+
+async def test_get_battery_level_robust_to_substring_lines(monkeypatch):
+    """方案 58 A-19：_get_battery_level 收敛 parse_battery 单实现——含
+    "level" 子串但非行首锚定的噪声行不得 IndexError（旧脆弱版陷阱）。"""
+    fake_run, _ = _make_fake_run(
+        "Current Battery Service state:\nBattery level indicator\n  level: 42\n"
+    )
+    monkeypatch.setattr(AdbCliDriver, "_run_serial", fake_run)
+    assert await AdbCliDriver()._get_battery_level("d1") == 42

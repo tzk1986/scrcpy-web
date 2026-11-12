@@ -21,6 +21,7 @@ mock 策略（沿用 test_encoder.py / test_stream_adaptive.py 风格）：
 import asyncio
 import struct
 import time
+from typing import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -109,8 +110,11 @@ class FakeStderr:
         self._raise_count = 0
         self._block = block
         self.on_line = on_line
+        # 方案 58 A-14 用：readline 调用计数（检测 EOF 空读热自旋）
+        self.reads = 0
 
     async def readline(self) -> bytes:
+        self.reads += 1
         if self._items:
             item = self._items.pop(0)
             if isinstance(item, BaseException):
@@ -383,6 +387,93 @@ async def test_start_raises_when_video_socket_connect_fails():
     with pytest.raises(RuntimeError, match="Failed to connect to scrcpy-server"):
         await drive_start(encoder, harness=SubprocessHarness(server_stderr=stderr), conn=conn)
     await let_background_tasks_settle()
+
+
+# ---------------------------------------------------------------------------
+# start()：早退分支游离 log_task（方案 58 A-22）与 EOF 空读退避（方案 58 A-14）
+# ---------------------------------------------------------------------------
+
+def _make_create_task_spy() -> tuple[list, Callable]:
+    """记录 read_server_logs 协程被创建的任务，供早退分支断言其收口。"""
+    created: list[asyncio.Task] = []
+    real_create = asyncio.create_task
+
+    def spy(coro, *a, **kw):  # type: ignore[no-untyped-def]
+        t = real_create(coro, *a, **kw)
+        if "read_server_logs" in getattr(coro, "__qualname__", ""):
+            created.append(t)
+        return t
+
+    return created, spy
+
+
+async def test_exited_early_branch_cancels_log_task():
+    """A-22：exited-early 早退 raise 前必须 cancel+await log_task——否则任务
+    游离，复用时跨会话读旧 stderr。"""
+    encoder = ScrcpyEncoder()
+    created, spy = _make_create_task_spy()
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    proc = FakeServerProcess(stderr)
+
+    def _die_after_device(line: bytes) -> None:
+        if b"Device:" in line:
+            proc.returncode = 1
+
+    stderr.on_line = _die_after_device
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    with patch("asyncio.create_subprocess_exec", new=SubprocessHarness(server_process=proc)), \
+            patch("asyncio.open_connection", new=ConnectionHarness(make_reader())), \
+            patch("asyncio.create_task", new=spy):
+        with pytest.raises(RuntimeError, match="scrcpy-server exited early"):
+            async for _ in encoder.start(DEVICE_ID, EncoderOpts()):
+                pass
+    assert created, "未捕获到 log_task（夹具异常）"
+    assert created[0].done(), "log_task 游离：早退分支未 cancel/await"
+
+
+async def test_video_connect_failure_cancels_log_task():
+    """A-22：视频 socket 连接失败 raise 前必须 cancel+await log_task。"""
+    encoder = ScrcpyEncoder()
+    created, spy = _make_create_task_spy()
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    conn = ConnectionHarness(make_reader(), video_error=OSError("connection refused"))
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    with patch("asyncio.create_subprocess_exec", new=SubprocessHarness(server_stderr=stderr)), \
+            patch("asyncio.open_connection", new=conn), \
+            patch("asyncio.create_task", new=spy):
+        with pytest.raises(RuntimeError, match="Failed to connect to scrcpy-server"):
+            async for _ in encoder.start(DEVICE_ID, EncoderOpts()):
+                pass
+    assert created, "未捕获到 log_task（夹具异常）"
+    assert created[0].done(), "log_task 游离：早退分支未 cancel/await"
+    await let_background_tasks_settle()
+
+
+async def test_log_task_backs_off_when_stderr_eof_but_process_alive():
+    """A-14：stderr EOF 但进程未退出（returncode None）→ 空读必须 sleep 退避。
+    未修复实现每轮事件循环空转一次 readline，100 拍泵送即百余次热读。"""
+    encoder = ScrcpyEncoder()
+    payload = b"\x00\x00\x00\x01a" + b"\xcc" * 8
+    stream = (
+        make_handshake()
+        + make_session(720, 1280)
+        + make_frame_header(0, len(payload)) + payload
+    )
+    stderr = FakeStderr([b"Device: test-device\n"])  # Device 用尽 → 立即 EOF b""
+    harness = SubprocessHarness(server_stderr=stderr)
+    conn = ConnectionHarness(make_reader(stream, eof=False))  # 视频流保持活跃
+    encoder._server_manager.push_server = AsyncMock(return_value=True)
+    with patch("asyncio.create_subprocess_exec", new=harness), \
+            patch("asyncio.open_connection", new=conn):
+        agen = encoder.start(DEVICE_ID, EncoderOpts())
+        first = await agen.__anext__()
+        assert first == (0, payload)
+        for _ in range(100):
+            await asyncio.sleep(0)
+        assert stderr.reads <= 6, f"EOF 空读热自旋：{stderr.reads} 次 readline"
+        encoder._running = False
+        with pytest.raises(StopAsyncIteration):
+            await agen.__anext__()
 
 
 # ---------------------------------------------------------------------------

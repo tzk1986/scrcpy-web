@@ -1010,13 +1010,13 @@ class DebugService:
 
     async def cleanup_session(self, session_id: str) -> int:
         """
-        手动清理指定会话的所有日志。
+        手动清理指定会话的所有日志与 shell 历史。
 
         参数：
             session_id: 要清理的会话 ID。
 
         返回：
-            删除的日志条数。
+            删除条数（日志 + shell 历史合并计数）。
         """
         return await self.repo.delete_session_logs(session_id)
 
