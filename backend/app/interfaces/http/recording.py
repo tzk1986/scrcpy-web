@@ -39,8 +39,13 @@ from app.core.exceptions import RecordingDeleteError, RecordingNotFoundError
 from app.core.logging import get_logger
 from app.deps import get_recording_service
 from app.domain.recording import RecordingSession, RecordingState
+from app.interfaces.http.device_guard import require_valid_device_id
 
-router = APIRouter(prefix="/api/recording", tags=["recording"])
+router = APIRouter(
+    prefix="/api/recording", tags=["recording"],
+    # 方案 58 C-16：/{device_id} 路径参数统一守卫
+    dependencies=[Depends(require_valid_device_id)],
+)
 
 logger = get_logger(__name__)
 

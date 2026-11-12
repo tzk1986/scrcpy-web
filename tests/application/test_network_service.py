@@ -165,6 +165,32 @@ async def test_single_failure_recovers_below_threshold(monkeypatch, fast_loop) -
     await service.stop_monitoring(DEV)
 
 
+async def test_release_clears_last_access(monkeypatch, fast_loop) -> None:
+    """方案 58 C-15（E11 残边）：_release_device 随其余暂存一并清
+    _last_access——陈旧时间戳残留既缓增 dict，又让重连后空闲守卫误判。"""
+    monkeypatch.setattr(settings().metrics, "idle_ttl_seconds", 100)
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
+    await service.start_monitoring(DEV)
+    assert DEV in service._last_access
+
+    await service.stop_monitoring(DEV)
+
+    assert DEV not in service._last_access
+
+
+async def test_start_monitoring_resets_last_access_on_reconnect(monkeypatch, fast_loop) -> None:
+    """方案 58 C-15：重连刷新时间戳为当下（原 setdefault 继承上一生命周期
+    的陈旧值，空闲守卫会把刚启动的采样误判为已闲置）。"""
+    monkeypatch.setattr(settings().metrics, "idle_ttl_seconds", 100)
+    service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())
+    service._last_access[DEV] = time.time() - 9999  # 上一生命周期遗留
+
+    await service.start_monitoring(DEV)
+
+    assert time.time() - service._last_access[DEV] < 5
+    await service.stop_monitoring(DEV)
+
+
 async def test_stop_monitoring_idempotent() -> None:
     """stop 未监控设备不抛异常，可重复调用。"""
     service = NetworkService(FakeAdb(std_outputs()), metrics_repo=SqliteMetricsRepository())

@@ -298,6 +298,49 @@ def test_batch_install(fake: FakeDeviceService) -> None:
     assert fake.calls == [("batch_install", ("d1", "d2"), "/tmp/app.apk")]
 
 
+def test_batch_install_dedup_preserves_order(fake: FakeDeviceService) -> None:
+    """方案 58 C-12：重复序列号只装一次、按首次出现保序（同设备并发双装互踩）。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/batch/install",
+            json=["d1", "d1", "d2"],
+            params={"apk_path": "/tmp/app.apk"},
+        )
+
+    assert response.status_code == 200
+    assert fake.calls == [("batch_install", ("d1", "d2"), "/tmp/app.apk")]
+
+
+def test_batch_install_invalid_id_400(fake: FakeDeviceService) -> None:
+    """方案 58 C-12：任一条非法 device_id → 400 INVALID_IDENTIFIER，不部分执行。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/batch/install",
+            json=["d1", "evil id"],
+            params={"apk_path": "/tmp/app.apk"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_IDENTIFIER"
+    assert fake.calls == []
+
+
+def test_batch_install_oversize_422(fake: FakeDeviceService) -> None:
+    """方案 58 C-12：条数上限 64（任务风暴面），超限 422 且不触达服务层。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post(
+            "/api/devices/batch/install",
+            json=[f"d{i}" for i in range(65)],
+            params={"apk_path": "/tmp/app.apk"},
+        )
+
+    assert response.status_code == 422
+    assert fake.calls == []
+
+
 def test_screenshot(fake: FakeDeviceService) -> None:
     """截图返回 PNG 二进制与 Content-Type，并携带 X-Rotation（方案 38 B6）。"""
     client = make_client()
@@ -506,6 +549,29 @@ def test_disconnect_device_without_port_400(fake: FakeDeviceService) -> None:
     client = make_client()
     with override(get_device_service, fake):
         response = client.post(f"/api/devices/{DEV}/disconnect")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_IDENTIFIER"
+    assert fake.calls == []
+
+
+def test_disconnect_non_ipv4_segment_400(fake: FakeDeviceService) -> None:
+    """方案 58 C-05（A06 残边）：ip 段须 IPv4——原实现只查冒号与端口段，
+    域名等任意 host 串直通 disconnect_tcp/reachability 探测原语。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/evil.example.com:5555/disconnect")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_IDENTIFIER"
+    assert fake.calls == []
+
+
+def test_disconnect_empty_ip_400(fake: FakeDeviceService) -> None:
+    """方案 58 C-05：空 ip 段（":5555"）→ 400，不得驱动空主机探测。"""
+    client = make_client()
+    with override(get_device_service, fake):
+        response = client.post("/api/devices/:5555/disconnect")
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_IDENTIFIER"

@@ -25,10 +25,15 @@ from fastapi.encoders import jsonable_encoder
 from app.application.app_service import AppInfo, AppService
 from app.deps import get_app_service
 from app.core.logging import get_logger
+from app.interfaces.http.device_guard import require_valid_device_id
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/apps", tags=["apps"])
+router = APIRouter(
+    prefix="/api/apps", tags=["apps"],
+    # 方案 58 C-16：/{device_id} 路径参数统一守卫
+    dependencies=[Depends(require_valid_device_id)],
+)
 
 
 def _app_to_dict(app: AppInfo) -> dict[str, Any]:

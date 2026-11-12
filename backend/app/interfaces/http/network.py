@@ -31,9 +31,14 @@ from fastapi.responses import StreamingResponse
 
 from app.application.network_service import NetworkService
 from app.deps import get_network_service
+from app.interfaces.http.device_guard import require_valid_device_id
 from app.interfaces.http.export_safety import csv_safe, sanitize_export_filename
 
-router = APIRouter(prefix="/api/network", tags=["network"])
+router = APIRouter(
+    prefix="/api/network", tags=["network"],
+    # 方案 58 C-16：/{device_id} 路径参数统一守卫
+    dependencies=[Depends(require_valid_device_id)],
+)
 
 # 导出 CSV 列顺序（方案 18 Step 4）
 _CSV_HEADER = [

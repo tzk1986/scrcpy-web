@@ -145,3 +145,38 @@ async def test_create_session_rejects_invalid_identifiers():
     with pytest.raises(InvalidIdentifierError):
         await svc.create_session("dev1", "")                 # 空 user_id
     assert svc.sessions == {}
+
+
+async def test_join_rejects_invalid_user_id():
+    """方案 58 C-11（C13 残边）：join 的 user_id 与 create 同口径校验——
+    控制字符入 participants 键会伪造/混淆用户标识。"""
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+    with pytest.raises(InvalidIdentifierError):
+        await svc.join_session(session["id"], "bad\x1cuser")
+    with pytest.raises(InvalidIdentifierError):
+        await svc.join_session(session["id"], "a|b")
+    with pytest.raises(InvalidIdentifierError):
+        await svc.join_session(session["id"], "")
+    assert session["participants"] == {"alice": "admin"}
+
+
+async def test_leave_rejects_invalid_user_id():
+    """方案 58 C-11：leave 校验先行，非法 user_id 不得静默 pop。"""
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+    with pytest.raises(InvalidIdentifierError):
+        await svc.leave_session(session["id"], "a|b")
+    assert session["participants"] == {"alice": "admin"}
+
+
+async def test_transfer_rejects_invalid_user_ids():
+    """方案 58 C-11：transfer 两端 user_id 均校验。"""
+    svc = SessionService()
+    session = await svc.create_session("dev1", "alice")
+    await svc.join_session(session["id"], "bob")
+    with pytest.raises(InvalidIdentifierError):
+        await svc.transfer_control(session["id"], "alice", "bad\x1ctarget")
+    with pytest.raises(InvalidIdentifierError):
+        await svc.transfer_control(session["id"], "bad\x1cfrom", "bob")
+    assert session["active_controller"] == "alice"

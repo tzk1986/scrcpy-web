@@ -477,6 +477,22 @@ class DeviceService:
         finally:
             self._scan_inflight = False
 
+    def _cleanup_device_caches(self, device_id: str) -> None:
+        """设备缓存清理单点（方案 58 C-04，8.4）：disconnect_tcp 与刷新
+        循环消失路径共用，消灭两路口径漂移。
+
+        - _info_cooldown：防止断开后残留冷却/任务占用内存（方案 35 D4），
+          且冷却延迟重连首查（方案 35 D5 口径）；
+        - _info_tasks：在飞查询必须回收，只 pop 引用会让晚到的 save
+          复活已删行（方案 51 A02）；
+        - _rotation_cache：失败收敛值不跨生命周期存活（方案 41）。
+        """
+        self._info_cooldown.pop(device_id, None)
+        fetch_task = self._info_tasks.pop(device_id, None)
+        if fetch_task is not None and not fetch_task.done():
+            fetch_task.cancel()
+        self._rotation_cache.pop(device_id, None)
+
     async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
         """
         断开 TCP/IP 连接。
@@ -489,14 +505,7 @@ class DeviceService:
         await self.adb.disconnect_tcp(ip, port)
         # 从仓库中删除设备
         await self.repo.delete(device_id)
-        # 清理查询缓存（方案 35 D4）：防止断开后残留冷却/任务占用内存
-        self._info_cooldown.pop(device_id, None)
-        # 在飞查询必须回收：只 pop 引用会让晚到的 save 复活已删行（方案 51 A02）
-        fetch_task = self._info_tasks.pop(device_id, None)
-        if fetch_task is not None and not fetch_task.done():
-            fetch_task.cancel()
-        # 方案 41：断开即清 rotation 缓存，失败收敛值不跨生命周期存活
-        self._rotation_cache.pop(device_id, None)
+        self._cleanup_device_caches(device_id)
 
     async def start(self) -> None:
         """
@@ -568,9 +577,12 @@ class DeviceService:
                                 self._trigger_unreachable_callbacks(device_id, state))
 
                     # 从表中消失的序列号：清除登记并播 disconnected
+                    # （方案 58 C-04：与 disconnect_tcp 共用缓存清理单点——
+                    # 原路径只删行，冷却/在飞任务/rotation 残留）
                     for device_id in previous_ids - current_ids:
                         try:
                             await self.repo.delete(device_id)
+                            self._cleanup_device_caches(device_id)
                             await self._trigger_disconnected_callbacks(device_id)
                         except Exception as e:
                             logger.error("disconnect_device_error", device=device_id, error=str(e))

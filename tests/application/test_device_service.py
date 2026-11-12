@@ -926,6 +926,31 @@ class TestRefreshLoop:
         mock_repo.delete.assert_called_with("old-device")
 
     @pytest.mark.asyncio
+    async def test_disappearance_clears_device_caches(self, service, mock_adb, mock_repo):
+        """方案 58 C-04：消失路径与 disconnect_tcp 共用缓存清理单点——
+        原实现只删行，_info_cooldown/_info_tasks/_rotation_cache 残留：
+        慢速内存增长、失败收敛 0 跨生命周期存活 30s（违方案 41 语义）、
+        冷却延迟重连首查（违方案 35 D4/D5 断开即清口径）。"""
+        service._previous_states = {"old-device": "device"}
+        service._info_cooldown["old-device"] = 12345.0
+        service._info_tasks["old-device"] = None  # 占位条目
+        service._rotation_cache["old-device"] = (0, time.monotonic())
+        mock_adb.list_device_states.return_value = {}
+
+        service._refresh_interval = 0.01
+        task = asyncio.create_task(service._refresh_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert "old-device" not in service._info_cooldown
+        assert "old-device" not in service._info_tasks
+        assert "old-device" not in service._rotation_cache
+
+    @pytest.mark.asyncio
     async def test_refresh_error_does_not_stop_loop(self, service, mock_adb):
         """测试单次刷新失败不会停止整个循环"""
         call_count = 0

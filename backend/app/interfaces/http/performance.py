@@ -30,11 +30,16 @@ from app.application.performance_service import PerformanceService
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.deps import get_performance_service
+from app.interfaces.http.device_guard import require_valid_device_id
 from app.interfaces.http.export_safety import csv_safe, sanitize_export_filename
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/perf", tags=["performance"])
+router = APIRouter(
+    prefix="/api/perf", tags=["performance"],
+    # 方案 58 C-16：/{device_id} 路径参数统一守卫
+    dependencies=[Depends(require_valid_device_id)],
+)
 
 # 导出 CSV 列顺序（方案 18 Step 4）；方案 37 D4 additive：旧 9 列前缀
 # 序不变，新 4 列置尾（旧读取方按位解析零回归）

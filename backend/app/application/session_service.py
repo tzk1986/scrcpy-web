@@ -42,6 +42,19 @@ _MAX_COLLAB_SESSIONS = 32  # 活跃协作会话上限（A1 L2：无鉴权下防�
 _PERMISSIONS = ("admin", "viewer")  # join 角色白名单（A1 L2）
 
 
+def _validate_user_id(user_id: str) -> None:
+    """user_id 统一校验（方案 58 C-11，抽自方案 51 C13 的 create 内联规则）。
+
+    拒空、含 `|` 或控制字符：create 中它是派生哈希的拼接盐，join/leave/
+    transfer 中它是 participants 字典键与身份比对值——控制字符入键会造成
+    用户标识伪造/混淆，各方法共用本单点。
+    """
+    if not user_id or "|" in user_id or any(
+        ord(ch) < 0x20 or ord(ch) == 0x7F for ch in user_id
+    ):
+        raise InvalidIdentifierError("user_id")
+
+
 class SessionService:
     """协作会话管理用例。"""
 
@@ -77,11 +90,7 @@ class SessionService:
         """
         if not is_valid_device_id(device_id):
             raise InvalidIdentifierError("device_id")
-        # user_id 是 sha256 派生 ID 的拼接盐：拒分隔符与控制字符，杜绝拼接碰撞伪装
-        if not user_id or "|" in user_id or any(
-            ord(ch) < 0x20 or ord(ch) == 0x7F for ch in user_id
-        ):
-            raise InvalidIdentifierError("user_id")
+        _validate_user_id(user_id)
         session_id = hashlib.sha256(f"{device_id}|{user_id}".encode("utf-8")).hexdigest()[:12]
         existing = self.sessions.get(session_id)
         if existing is not None:
@@ -109,8 +118,10 @@ class SessionService:
 
         异常：
             SessionNotFoundError: 如果 session_id 不存在。
-            InvalidIdentifierError: permission 不在白名单（A1 L2，400）。
+            InvalidIdentifierError: permission 不在白名单（A1 L2，400）、
+                user_id 非法（方案 58 C-11，与 create 同口径）。
         """
+        _validate_user_id(user_id)
         if permission not in _PERMISSIONS:
             raise InvalidIdentifierError("permission")
         session = self.sessions.get(session_id)
@@ -131,7 +142,11 @@ class SessionService:
         参数：
             session_id: 要离开的会话。
             user_id: 离开的用户。
+
+        异常：
+            InvalidIdentifierError: user_id 非法（方案 58 C-11，400）。
         """
+        _validate_user_id(user_id)
         session = self.sessions.get(session_id)
         if not session:
             return
@@ -168,7 +183,10 @@ class SessionService:
             SessionNotFoundError: 如果 session_id 不存在。
             PermissionDeniedError: 如果 from_user 不是 admin，
                 或 to_user 不是会话参与者（方案 51 C4：原静默假成功）。
+            InvalidIdentifierError: 任一 user_id 非法（方案 58 C-11，400）。
         """
+        _validate_user_id(from_user)
+        _validate_user_id(to_user)
         session = self.sessions.get(session_id)
         if not session:
             raise SessionNotFoundError(session_id)

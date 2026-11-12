@@ -26,9 +26,9 @@ import json
 import re
 from collections.abc import AsyncIterator
 from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import Response, StreamingResponse
 
 from app.application.device_service import DeviceService, ScanResult
@@ -43,9 +43,15 @@ from app.core.exceptions import (
 from app.core.launcher import is_shutdown_requested
 from app.deps import get_device_service
 from app.domain.device import DeviceInfo
+from app.domain.identifiers import is_valid_device_id
+from app.interfaces.http.device_guard import require_valid_device_id
 from config.settings import device_alias
 
-router = APIRouter(prefix="/api/devices", tags=["devices"])
+router = APIRouter(
+    prefix="/api/devices", tags=["devices"],
+    # 方案 58 C-16：/{device_id} 路径参数统一守卫（字面路由无该参数自动放行）
+    dependencies=[Depends(require_valid_device_id)],
+)
 
 
 @router.get("")
@@ -61,7 +67,7 @@ async def list_devices(service: DeviceService = Depends(get_device_service)) -> 
 
 @router.post("/batch/install")
 async def batch_install(
-    device_ids: list[str],
+    device_ids: Annotated[list[str], Body(max_length=64)],
     apk_path: str,
     service: DeviceService = Depends(get_device_service),
 ) -> dict[str, Any]:
@@ -69,13 +75,29 @@ async def batch_install(
     在多个设备上批量安装同一个 APK。
 
     参数：
-        device_ids: 设备 ADB 序列号列表（请求体）。
+        device_ids: 设备 ADB 序列号列表（请求体，至多 64 条——方案 58
+            C-12：原无上限，任意长列表可驱动任务风暴）。
         apk_path: APK 文件路径（查询参数）。
 
     返回：
         {"success": True, "results": ["device1: success", "device2: failed - ..."]}。
+
+    异常：
+        InvalidIdentifierError: 任一条 device_id 格式非法（400，不部分执行）。
+        RequestValidationError: 条数超 64（422）。
+
+    去重（方案 58 C-12）：重复序列号按首次出现保留一条，杜绝同设备
+    并发双装互踩。
     """
-    results = await service.batch_install(device_ids, apk_path)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for device_id in device_ids:
+        if not is_valid_device_id(device_id):
+            raise InvalidIdentifierError("device_id")
+        if device_id not in seen:
+            seen.add(device_id)
+            unique.append(device_id)
+    results = await service.batch_install(unique, apk_path)
     return {"success": True, "results": results}
 
 
@@ -500,7 +522,9 @@ async def disconnect_device(
     异常：
         InvalidIdentifierError: 无冒号（USB 序列号，方案 51 A06——本端点仅
         TCP 断开，USB 下线走 DELETE /devices/{id}）、端口段非数字或越界
-        （400，A1 L3；原裸 int() 会落 500 兜底）。
+        （400，A1 L3；原裸 int() 会落 500 兜底）、ip 段非 IPv4（400，
+        方案 58 C-05 A06 残边：对齐 /connect 校验面，域名等任意 host
+        串不得驱动 disconnect_tcp/可达性探测原语）。
     """
     # 方案 51 A06：无冒号即 400，消除 USB 序列号假成功 no-op
     if ":" not in device_id:
@@ -513,5 +537,12 @@ async def disconnect_device(
         port = int(port_text)
     else:
         port = 5555
+    # 方案 58 C-05：ip 段校验与 /connect 同口径（IPv4 字面量、非空）
+    try:
+        addr = ip_address(ip)
+    except ValueError:
+        raise InvalidIdentifierError("ip")
+    if not isinstance(addr, IPv4Address):
+        raise InvalidIdentifierError("ip")
     await service.disconnect_tcp(ip, port)
     return {"success": True}

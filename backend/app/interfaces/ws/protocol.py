@@ -14,6 +14,30 @@ import json
 import math
 from typing import Any
 
+# 方案 58 A-04：duration/hand 量程（毫秒 / scroll 幅值单位）
+_DURATION_MIN, _DURATION_MAX = 0, 5000
+_HAND_MIN, _HAND_MAX = -1000, 1000
+
+
+def _clamp_int(value: Any, lo: int, hi: int) -> int | None:
+    """数值化并钳制到 [lo, hi]；不可数值化（bool / 非数串 / 非有限 / 其它类型）
+    返回 None（调用侧据此拒绝该帧）。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return None
+        return max(lo, min(hi, int(value)))
+    if isinstance(value, str):
+        try:
+            num = float(value)
+        except ValueError:
+            return None
+        if not math.isfinite(num):
+            return None
+        return max(lo, min(hi, int(num)))
+    return None
+
 
 def parse_ws_message(raw: str | bytes) -> dict[str, Any] | None:
     try:
@@ -67,4 +91,24 @@ def parse_video_input(raw: str | bytes) -> dict[str, Any] | None:
                 return None
         except ValueError:
             return None
+    # 方案 58 A-04（8.1 入站校验层）：duration/hand 量程钳制。超大 duration
+    # 会把 long_press 的 sleep / swipe 的 step_delay 睡死输入通道（服务端长
+    # 阻塞），负值致 swipe `duration < 100` 直落 UP、负 sleep 令 DOWN/UP
+    # 乱序；scroll 的 h_scroll/v_scroll 同钳幅值。控制 socket 与 adb 兜底
+    # 两路共享同一份钳后 data，天然同口径。不可数值化/bool/非有限 → 整帧
+    # 归一 None（B-01 同风格），把 ValueError 挡在下游 int()/sleep 之前。
+    action = data.get("action")
+    if action in ("long_press", "swipe") and data.get("duration") is not None:
+        clamped = _clamp_int(data["duration"], _DURATION_MIN, _DURATION_MAX)
+        if clamped is None:
+            return None
+        data["duration"] = clamped
+    elif action == "scroll":
+        for key in ("h_scroll", "v_scroll"):
+            if data.get(key) is None:
+                continue
+            clamped = _clamp_int(data[key], _HAND_MIN, _HAND_MAX)
+            if clamped is None:
+                return None
+            data[key] = clamped
     return data

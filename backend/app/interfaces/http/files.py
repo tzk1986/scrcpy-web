@@ -30,8 +30,13 @@ from starlette.background import BackgroundTask
 from app.application.file_service import FileService
 from app.deps import get_file_service
 from app.domain.files import FileEntry, TransferJob
+from app.interfaces.http.device_guard import require_valid_device_id
 
-router = APIRouter(prefix="/api/devices", tags=["files"])
+router = APIRouter(
+    prefix="/api/devices", tags=["files"],
+    # 方案 58 C-16：/{device_id} 路径参数统一守卫
+    dependencies=[Depends(require_valid_device_id)],
+)
 
 
 class RenameRequest(BaseModel):

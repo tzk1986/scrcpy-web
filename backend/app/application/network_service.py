@@ -96,7 +96,9 @@ class NetworkService(RecordingSupportMixin):
         self._buffers[device_id] = deque(
             maxlen=settings().metrics.network_buffer_size
         )
-        self._last_access.setdefault(device_id, time.time())
+        # 方案 58 C-15：直接刷新（原 setdefault 会继承上一生命周期遗留的
+        # 陈旧值，刚启动的采样立即被空闲守卫误判闲置）
+        self._last_access[device_id] = time.time()
         self._alert_engines[device_id] = AlertEngine(
             notify_window=max(3 * float(settings().metrics.network_interval), 5.0)
         )
@@ -201,6 +203,9 @@ class NetworkService(RecordingSupportMixin):
         self._samplers.pop(device_id, None)
         self._buffers.pop(device_id, None)
         self._alert_engines.pop(device_id, None)
+        # 方案 58 C-15（E11 残边）：一并清访问时间戳——陈旧值既缓增 dict，
+        # 又让重连后的空闲守卫把刚启动的采样误判为已闲置
+        self._last_access.pop(device_id, None)
 
     # ------------------------------------------------------------------
     # 读取（HTTP 层入口）

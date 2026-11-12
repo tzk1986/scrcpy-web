@@ -103,3 +103,52 @@ def test_video_stats_good_fps_passes():
     assert parse_video_input('{"op": "stats", "fps": -50}') is not None
     assert parse_video_input('{"op": "stats"}') is not None
     assert parse_video_input('{"op": "stats", "fps": null}') is not None
+
+
+# ---------------------------------------------------------------------------
+# parse_video_input：duration/hand 量程钳制（方案 58 A-04，8.1 入站校验层）
+# ---------------------------------------------------------------------------
+
+def test_video_duration_clamped_to_max():
+    """超大 duration 钳到 5000ms：long_press 的 sleep 与 swipe 的 step_delay
+    都在协议层封顶，输入通道不再被睡死；控制/兜底两路共享钳后值（同口径）。"""
+    data = parse_video_input('{"action": "long_press", "x": 1, "y": 2, "duration": 999999}')
+    assert data is not None and data["duration"] == 5000
+    data = parse_video_input('{"action": "swipe", "x1": 0, "y1": 0, "x2": 9, "y2": 9, "duration": 1e12}')
+    assert data is not None and data["duration"] == 5000
+
+
+def test_video_duration_clamped_to_floor():
+    """负 duration 钳到 0：swipe 的 `duration < 100` 直落 UP 与负 sleep 的
+    DOWN/UP 乱序都不再发生。"""
+    data = parse_video_input('{"action": "long_press", "x": 1, "y": 2, "duration": -100}')
+    assert data is not None and data["duration"] == 0
+    data = parse_video_input('{"action": "swipe", "x1": 0, "y1": 0, "x2": 9, "y2": 9, "duration": -100}')
+    assert data is not None and data["duration"] == 0
+
+
+def test_video_duration_non_numeric_rejects_frame():
+    """不可数值化/bool/非有限值的 duration → 整帧归一 None（B-01 同风格），
+    不得把 ValueError 放进下游 int()/sleep。"""
+    assert parse_video_input('{"action": "long_press", "duration": "abc"}') is None
+    assert parse_video_input('{"action": "long_press", "duration": true}') is None
+    assert parse_video_input('{"action": "long_press", "duration": {}}') is None
+    assert parse_video_input('{"action": "swipe", "x1": 0, "y1": 0, "x2": 9, "y2": 9, "duration": [1]}') is None
+    assert parse_video_input('{"action": "long_press", "duration": "1e400"}') is None
+
+
+def test_video_duration_normal_values_untouched():
+    """量程内与缺省（下游默认 1000/300）不改动。"""
+    data = parse_video_input('{"action": "long_press", "x": 1, "y": 2, "duration": 600}')
+    assert data is not None and data["duration"] == 600
+    data = parse_video_input('{"action": "long_press", "x": 1, "y": 2}')
+    assert data is not None and "duration" not in data
+
+
+def test_video_scroll_hand_clamped_and_guarded():
+    """scroll 的 h_scroll/v_scroll 幅值钳到 ±1000；非数值同帧拒绝。"""
+    data = parse_video_input('{"action": "scroll", "x": 1, "y": 1, "h_scroll": -5000, "v_scroll": 5000}')
+    assert data is not None and data["h_scroll"] == -1000 and data["v_scroll"] == 1000
+    data = parse_video_input('{"action": "scroll", "x": 1, "y": 1, "h_scroll": -1, "v_scroll": 1}')
+    assert data is not None and data["h_scroll"] == -1 and data["v_scroll"] == 1
+    assert parse_video_input('{"action": "scroll", "x": 1, "y": 1, "v_scroll": "xx"}') is None
