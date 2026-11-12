@@ -193,6 +193,8 @@ function createRecordingCtx() {
   const fontLog: string[] = []
   const alphaLog: number[] = []
   const drawImageLog: unknown[][] = []
+  const textAlignLog: string[] = []
+  const textBaselineLog: string[] = []
   const record = (name: string) => () => {
     calls.push(name)
   }
@@ -202,6 +204,8 @@ function createRecordingCtx() {
     fontLog,
     alphaLog,
     drawImageLog,
+    textAlignLog,
+    textBaselineLog,
     clearRect: record('clearRect'),
     drawImage: (...args: unknown[]) => {
       calls.push('drawImage')
@@ -234,8 +238,12 @@ function createRecordingCtx() {
       alphaLog.push(v)
     },
     set imageSmoothingEnabled(_v: boolean) {},
-    set textAlign(_v: CanvasTextAlign) {},
-    set textBaseline(_v: CanvasTextBaseline) {},
+    set textAlign(v: CanvasTextAlign) {
+      textAlignLog.push(v)
+    },
+    set textBaseline(v: CanvasTextBaseline) {
+      textBaselineLog.push(v)
+    },
   }
 }
 
@@ -251,6 +259,8 @@ describe('drawCmd 渲染路径（T4 新工具）', () => {
     ctx.fontLog.length = 0
     ctx.alphaLog.length = 0
     ctx.drawImageLog.length = 0
+    ctx.textAlignLog.length = 0
+    ctx.textBaselineLog.length = 0
     offscreens.length = 0
     // happy-dom 无真实 2d 实现：getContext 桩把所有画布（含离屏 canvas）指向同一记录器
     ;(HTMLCanvasElement.prototype as unknown as { getContext: unknown }).getContext = vi.fn(
@@ -298,6 +308,22 @@ describe('drawCmd 渲染路径（T4 新工具）', () => {
     expect(ctx.calls.indexOf('arc')).toBeLessThan(ctx.calls.indexOf('fill'))
     expect(ctx.fillTextLog.some((a) => a[0] === '2')).toBe(true)
     expect(ctx.fontLog.some((v) => v.startsWith('bold '))).toBe(true)
+  })
+
+  it('方案 58 D-03：number 绘制后接 text 不泄露 textAlign——text 分支显式落 start/alphabetic 基准', () => {
+    const number: NumberCmd = { kind: 'number', at: { x: 100, y: 100 }, index: 1, color: '#f00', fontSize: 0.045 }
+    drawCmd(asCtx, number, 800, null)
+    expect(ctx.textAlignLog).toEqual(['center']) // number 自身置居中
+    expect(ctx.textBaselineLog).toEqual(['middle'])
+
+    ctx.textAlignLog.length = 0
+    ctx.textBaselineLog.length = 0
+    const text: TextCmd = { kind: 'text', at: { x: 100, y: 200 }, text: '告警', color: '#f00', fontSize: 0.05 }
+    drawCmd(asCtx, text, 800, null)
+    // text 分支必须显式设回左对齐/基线（cmdBBox 与命中按左对齐推算，泄露即绘制错位）
+    expect(ctx.textAlignLog).toEqual(['start'])
+    expect(ctx.textBaselineLog).toEqual(['alphabetic'])
+    expect(ctx.fillTextLog.some((a) => a[0] === '告警')).toBe(true)
   })
 
   it('mosaic 无底图静默返回；宽高 <1 不画；有底图经离屏 canvas 缩-放（drawImage ≥ 2）', () => {

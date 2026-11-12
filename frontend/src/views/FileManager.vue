@@ -115,9 +115,13 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type FileEntry } from '@/services/api'
 import { createEpochGuard } from '@/utils/fetchGuard'
+import { errOf } from '@/services/apiError'
+
+const router = useRouter()
 
 // 设备间直跳（A→B）时组件复用，全部设备引用必须走 props.id 动态读取，
 // 不能启动期捕获（方案 51 F2-15）
@@ -134,16 +138,8 @@ interface TransferRow {
   error: string | null
 }
 
-/** axios 错误体 → {code,message}（后端 {error:{code,message}} 约定） */
-function errOf(e: unknown): { code: string; message: string } {
-  const resp = (e as { response?: { data?: { error?: { code?: string; message?: string } } } })
-    ?.response
-  const code = resp?.data?.error?.code ?? ''
-  const message =
-    resp?.data?.error?.message ?? (e instanceof Error ? e.message : String(e))
-  return { code, message }
-}
-
+// errOf（axios 错误体 → {code,message}，后端 {error:{code,message}} 约定）
+// 已上提为方案 58 E-17 共享助手 services/apiError.ts
 const offline = ref(false)
 const currentPath = ref('/sdcard')
 const entries = ref<FileEntry[]>([])
@@ -242,8 +238,15 @@ function onSelChange(rows: FileEntry[]): void {
   selected.value = rows
 }
 
+/** 方案 58 E-30：上一条历史恰为设备详情页用 back（不垫栈）；直达/无历史时兜底 push，
+ *  旧实现纯 history.back 在无历史入口静默失效 */
 function goBack(): void {
-  window.history.back()
+  const target = `/device/${encodeURIComponent(props.id)}`
+  if (window.history.state?.back === target) {
+    window.history.back()
+  } else {
+    router.push(target)
+  }
 }
 
 function newTransfer(kind: TransferRow['kind'], label: string): TransferRow {

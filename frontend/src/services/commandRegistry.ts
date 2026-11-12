@@ -7,7 +7,8 @@
  * 命令来源（v1）：
  *   导航   — Dashboard、打开各在线设备
  *   设备   — 断开当前设备（仅设备页上下文）
- *   调试   — 切换 DebugPanel 五个 Tab（经 CustomEvent 广播）
+ *   调试   — 切换 DebugPanel 五个 Tab（经 CustomEvent 广播，仅 DebugPanel
+ *            挂载的设备详情页注册——方案 58 E-29：非该页无人监听即静默无效）
  *   视图   — 全屏切换
  */
 
@@ -31,6 +32,8 @@ export interface CommandDeps {
   navigate: (path: string) => void
   disconnect: (deviceId: string) => void
   setDebugTab: (tab: string) => void
+  /** 当前页面是否挂载 DebugPanel（设备详情页），false 时不注册切 Tab 命令。 */
+  debugAvailable: boolean
   toggleFullscreen: () => void
 }
 
@@ -68,14 +71,16 @@ export function buildCommands(deps: CommandDeps): Command[] {
     })
   }
 
-  for (const tab of DEBUG_TABS) {
-    cmds.push({
-      id: `debug.tab.${tab}`,
-      title: `切换到 ${tab} 面板`,
-      section: '调试',
-      keywords: `tab ${tab} 面板`,
-      run: () => deps.setDebugTab(tab),
-    })
+  if (deps.debugAvailable) {
+    for (const tab of DEBUG_TABS) {
+      cmds.push({
+        id: `debug.tab.${tab}`,
+        title: `切换到 ${tab} 面板`,
+        section: '调试',
+        keywords: `tab ${tab} 面板`,
+        run: () => deps.setDebugTab(tab),
+      })
+    }
   }
 
   cmds.push({

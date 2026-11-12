@@ -164,7 +164,8 @@ import { GridComponent, TooltipComponent, DataZoomComponent } from 'echarts/comp
 import { api } from '@/services/api'
 import { WebSocketService } from '@/services/websocket'
 import { alertLabel, createAlertNotifier, extractAlerts, type AlertItem } from '@/services/alerts'
-import { runExport, errText, type ExportCommand } from '@/services/exportKit'
+import { runExport, type ExportCommand } from '@/services/exportKit'
+import { errText } from '@/services/apiError'
 
 // 注册 ECharts 组件
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, DataZoomComponent])
@@ -470,7 +471,6 @@ function connectWebSocket() {
   })
 
   ws.setCloseHandler(() => {
-    console.log('[PerfView] WebSocket closed')
     wsConnected.value = false
   })
 

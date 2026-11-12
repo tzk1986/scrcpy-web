@@ -86,6 +86,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type RecordingFileItem } from '@/services/api'
+import { errText } from '@/services/apiError'
 import { exportWebmClip, isWebmRecorderSupported } from '@/utils/webmExporter'
 
 const route = useRoute()
@@ -213,8 +214,9 @@ async function remove(f: RecordingFileItem) {
     await api.deleteRecordingFile(f.filename)
     ElMessage.success('已删除')
     await load()
-  } catch {
-    ElMessage.error('删除失败，文件可能正被占用')
+  } catch (e) {
+    // 方案 58 E-25：透出后端真实原因，无错误体时兜底原猜测文案
+    ElMessage.error(`删除失败: ${errText(e, '文件可能正被占用')}`)
   }
 }
 

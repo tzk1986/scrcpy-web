@@ -253,6 +253,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/services/api'
 import type { RuntimeInfo } from '@/services/api'
+import { errText } from '@/services/apiError'
 
 interface AppInfo {
   package_name: string
@@ -366,7 +367,7 @@ async function launchApp(packageName: string) {
     await loadApps(true)
   } catch (e) {
     console.error('[AppsView] Failed to launch app:', e)
-    ElMessage.error(`启动失败: ${packageName}`)
+    ElMessage.error(`启动失败: ${errText(e, '未知错误')}`)
   }
 }
 
@@ -377,7 +378,7 @@ async function stopApp(packageName: string) {
     await loadApps(true)
   } catch (e) {
     console.error('[AppsView] Failed to stop app:', e)
-    ElMessage.error(`停止失败: ${packageName}`)
+    ElMessage.error(`停止失败: ${errText(e, '未知错误')}`)
   }
 }
 
@@ -395,7 +396,7 @@ async function handleCommand(command: string, packageName: string) {
     } catch (e) {
       if (e !== 'cancel') {
         console.error('[AppsView] Failed to clear data:', e)
-        ElMessage.error(`清除数据失败: ${packageName}`)
+        ElMessage.error(`清除数据失败: ${errText(e, '未知错误')}`)
       }
     }
   } else if (command === 'uninstall') {
@@ -411,7 +412,7 @@ async function handleCommand(command: string, packageName: string) {
     } catch (e) {
       if (e !== 'cancel') {
         console.error('[AppsView] Failed to uninstall:', e)
-        ElMessage.error(`卸载失败: ${packageName}`)
+        ElMessage.error(`卸载失败: ${errText(e, '未知错误')}`)
       }
     }
   }
@@ -473,6 +474,10 @@ async function refreshDetail() {
     }
   } catch (e) {
     console.error('[AppsView] Failed to load app detail:', e)
+    // 方案 58 E-17：不再全静默——轻提示透出后端原因；改选后迟到失败不打扰（58E-15 同款守卫）
+    if (selectedApp.value?.package_name === pkg) {
+      ElMessage.warning(`详情刷新失败: ${errText(e, '未知错误')}`)
+    }
   } finally {
     if (selectedApp.value?.package_name === pkg) detailLoading.value = false
   }

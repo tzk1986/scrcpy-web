@@ -1476,3 +1476,108 @@ describe('h265 config 路由（方案 45 T4）', () => {
     stream.stop()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 方案 58 批5-3：D-12 suspend 期 canvas 改写闪白 / D-18 frame 泄漏 / D-21 宽限配置化
+// ---------------------------------------------------------------------------
+
+describe('方案58 D-12 suspend 期间不改写 canvas 尺寸', () => {
+  it('suspend 期 config 只更新统计不改 canvas，resume 时才应用', () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    const stream = makeStream(ws, canvas)
+    startWithConfig(stream, ws) // canvas 640x480
+    expect(canvas.width).toBe(640)
+
+    stream.suspend()
+    ws.handler!(JSON.stringify({
+      type: 'config', codec: 'avc1.42E01E', width: 1280, height: 720,
+      description: '000000016742e01e890000000168ce3880',
+    }))
+
+    // canvas.width 赋值即使同值也会清空位图——suspend 期间截图回退层
+    // 仍在向同一 canvas 供画，此刻改写会闪白一帧
+    expect(canvas.width).toBe(640)
+    expect(canvas.height).toBe(480)
+    // 统计口径照常先行更新
+    expect(stream.stats.width).toBe(1280)
+    expect(stream.stats.height).toBe(720)
+
+    stream.resume()
+    expect(canvas.width).toBe(1280)
+    expect(canvas.height).toBe(720)
+    stream.stop()
+  })
+
+  it('suspend 期间无新 config：resume 不动 canvas', () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    const stream = makeStream(ws, canvas)
+    startWithConfig(stream, ws)
+    stream.suspend()
+
+    stream.resume()
+
+    expect(canvas.width).toBe(640)
+    expect(canvas.height).toBe(480)
+    stream.stop()
+  })
+})
+
+describe('方案58 D-18 输出帧 close 兜底', () => {
+  it('drawImage 抛异常时 frame 仍被关闭（异常上抛走解码器错误回退链）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    const dec = startWithConfig(stream, ws)
+    ctxDrawImage.mockImplementationOnce(() => { throw new Error('draw boom') })
+    const frame = {
+      displayWidth: 640, displayHeight: 480, close: vi.fn(),
+    } as unknown as VideoFrame
+
+    expect(() => dec.init.output(frame)).toThrow('draw boom')
+    expect(frame.close).toHaveBeenCalledTimes(1)
+
+    stream.stop()
+  })
+})
+
+describe('方案58 D-21 restarting 宽限配置化', () => {
+  it('默认仍为 15s（现状护栏）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    ws.handler!(JSON.stringify({ type: 'restarting' }))
+
+    expect(stream.restartGraceUntil).toBe(Date.now() + 15_000)
+    stream.stop()
+  })
+
+  it('options.restartGraceMs 覆盖宽限时长', () => {
+    const ws = new FakeWs()
+    const stream = new H264VideoStream(
+      ws as unknown as WebSocketService,
+      makeCanvas(),
+      { restartGraceMs: 8000 },
+    )
+    stream.start()
+
+    ws.handler!(JSON.stringify({ type: 'restarting' }))
+
+    expect(stream.restartGraceUntil).toBe(Date.now() + 8000)
+    stream.stop()
+  })
+
+  it('resume 清零宽限期（D-10 统一复位集护栏）', () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    startWithConfig(stream, ws)
+    ws.handler!(JSON.stringify({ type: 'restarting' }))
+    expect(stream.restartGraceUntil).toBeGreaterThan(0)
+
+    stream.suspend()
+    stream.resume()
+    expect(stream.restartGraceUntil).toBe(0)
+    stream.stop()
+  })
+})

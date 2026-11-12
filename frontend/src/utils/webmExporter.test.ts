@@ -69,7 +69,7 @@ function makeFakeVideo(overrides: FakeVideoOverrides = {}): FakeVideo {
   const base = {
     duration: 10,
     currentTime: 5,
-    captureStream: vi.fn(() => ({}) as MediaStream),
+    captureStream: vi.fn(() => ({ getTracks: () => [] }) as unknown as MediaStream),
     play: vi.fn(() => Promise.resolve()),
     pause: vi.fn(),
   }
@@ -176,6 +176,85 @@ describe('exportWebmClip', () => {
       '视频时长无效',
     )
     await expect(exportWebmClip(makeFakeVideo({ duration: 0 }))).rejects.toThrow('视频时长无效')
+  })
+
+  // 方案 58 D-15：captureStream tracks 停止 + onstop 落定后才 seek 复位
+  it('D-15：收尾停 tracks，且进度条复位晚于 onstop（竞态钉）', async () => {
+    const events: string[] = []
+
+    // 模拟真实实现的延迟收尾：onstop 在 stop() 之后的任务里才触发，
+    // 若实现先 seek 复位，录制器未读完帧时会把复位段尾帧混进产物
+    class LateStopRecorder {
+      static isTypeSupported = vi.fn(() => true)
+      ondataavailable: ((event: BlobEvent) => void) | null = null
+      onstop: (() => void) | null = null
+      onerror: (() => void) | null = null
+      mimeType: string
+      state = 'inactive'
+      constructor(_stream: MediaStream, options?: MediaRecorderOptions) {
+        this.mimeType = options?.mimeType ?? ''
+      }
+      start(): void {
+        this.state = 'recording'
+      }
+      stop(): void {
+        if (this.state === 'inactive') return
+        this.state = 'inactive'
+        events.push('recorder-stop')
+        setTimeout(() => {
+          this.ondataavailable?.({
+            data: new Blob(['c'], { type: this.mimeType }),
+          } as BlobEvent)
+          events.push('onstop')
+          this.onstop?.()
+        }, 0)
+      }
+    }
+    vi.stubGlobal('MediaRecorder', LateStopRecorder)
+
+    const stream = {
+      getTracks: () => [{ stop: () => events.push('track-stop') }],
+    } as unknown as MediaStream
+    const video = makeFakeVideo({ duration: 2, captureStream: vi.fn(() => stream) })
+    let ct = 5
+    Object.defineProperty(video, 'currentTime', {
+      get: () => ct,
+      set: (v: number) => {
+        events.push('seek')
+        ct = v
+      },
+      configurable: true,
+    })
+
+    const p = exportWebmClip(video)
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(2_000)
+    // 推进 recorder.stop() 内调度的延迟 onstop（setTimeout 0）
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+
+    expect(events[0]).toBe('seek') // 录制前从头播放
+    expect(events.slice(1)).toEqual([
+      'recorder-stop',
+      'track-stop',
+      'onstop',
+      'seek', // 复位发生在 onstop 落定之后
+    ])
+    expect(ct).toBe(5)
+  })
+
+  it('D-15：录制失败路径也停 tracks 并还原进度', async () => {
+    const trackStop = vi.fn()
+    const stream = { getTracks: () => [{ stop: trackStop }] } as unknown as MediaStream
+    const video = makeFakeVideo({
+      captureStream: vi.fn(() => stream),
+      play: vi.fn(() => Promise.reject(new Error('play blocked'))) as never,
+    })
+
+    await expect(exportWebmClip(video)).rejects.toThrow('play blocked')
+    expect(trackStop).toHaveBeenCalled()
+    expect(video.currentTime).toBe(5)
+    expect(video.pause).toHaveBeenCalledTimes(1)
   })
 })
 

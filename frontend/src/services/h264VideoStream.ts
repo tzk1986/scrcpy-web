@@ -143,6 +143,11 @@ export interface H264StreamOptions {
    * 不传则使用浏览器默认。
    */
   hardwareAcceleration?: HardwareAcceleration
+  /**
+   * restarting 预告后的宽限时长 ms（方案 58 D-21，默认 15000）。
+   * 慢起后端（低码率重协商、低端设备编码器重启）可调大，防宽限到期误回退。
+   */
+  restartGraceMs?: number
 }
 
 export interface H264StreamStats {
@@ -201,15 +206,36 @@ export class H264VideoStream {
   // 最近一次 config 的解析结果（suspend 期间新到的 config 暂存于此，resume 时复用）
   private _lastCodec: string | null = null
   private _lastAvccDesc: BufferSource | null = null
+  // 方案 58 D-12：suspend 期间 config 携带的新分辨率暂存——canvas.width
+  // 赋值即使同值也会清空位图，回退截图层仍在供画，改写会闪白；resume 时应用
+  private _pendingCanvasSize: { width: number; height: number } | null = null
   // 后端 RESET_VIDEO 保活间隔（config.idle_reset_seconds×1000，0 表示关闭/未知）
   private _keepaliveMs = 0
   // 解码硬件加速偏好（实验开关，方案 17 实施项 4）
   private _hardwareAcceleration?: HardwareAcceleration
+  // restarting 宽限时长 ms（方案 58 D-21，默认 15s）
+  private _restartGraceMs: number
 
   constructor(ws: WebSocketService, canvas: HTMLCanvasElement, options?: H264StreamOptions) {
     this.ws = ws
     this.canvas = canvas
     this._hardwareAcceleration = options?.hardwareAcceleration
+    this._restartGraceMs = options?.restartGraceMs ?? 15_000
+  }
+
+  /**
+   * 复位接收/探测/宽限统计到干净初始态（方案 58 D-10）：
+   * start 与 resume 共用同一集合，防两处复位清单漂移。
+   */
+  private resetMetrics() {
+    this._error = null
+    this._frameCount = 0
+    this._droppedFrames = 0
+    this._fpsCounter = 0
+    this._lastFrameTime = 0
+    this._probeFrameCount = 0
+    this._probeLastFrameTime = 0
+    this._restartGraceUntil = 0
   }
 
   /** 当前状态 */
@@ -326,10 +352,7 @@ export class H264VideoStream {
     // 后续 config 只暂存、帧只计数不解码 → 永久黑屏（方案 51 F1-01）
     this._suspended = false
     this._state = 'configuring'
-    this._error = null
-    this._frameCount = 0
-    this._droppedFrames = 0
-    this._fpsCounter = 0
+    this.resetMetrics()
     this.onStateChange?.(this._state)
 
     // FPS 计算定时器（每秒更新一次）
@@ -437,14 +460,14 @@ export class H264VideoStream {
     this._suspended = false
     // 回切即新接收端加入：请求服务端立即产出 IDR，消灭 configuring 长等待
     this.ws.send({ op: 'request_keyframe' })
-    this._error = null
-    this._frameCount = 0
-    this._droppedFrames = 0
-    this._fpsCounter = 0
-    this._lastFrameTime = 0
-    this._probeFrameCount = 0
-    this._probeLastFrameTime = 0
-    this._restartGraceUntil = 0
+    // 方案 58 D-12：suspend 期间暂存的新分辨率此时才落到 canvas
+    // （截图回退层已让位，改写尺寸不再闪白）
+    if (this._pendingCanvasSize) {
+      this.canvas.width = this._pendingCanvasSize.width
+      this.canvas.height = this._pendingCanvasSize.height
+      this._pendingCanvasSize = null
+    }
+    this.resetMetrics()
     this._state = 'configuring'
     if (this._fpsTimer === null) {
       this._fpsTimer = window.setInterval(() => {
@@ -541,10 +564,17 @@ export class H264VideoStream {
       // InputController 的坐标映射基于 canvas.width/height（绘制缓冲区）和
       // getBoundingClientRect()（CSS 盒），自动处理 letterboxing。
       if (width > 0 && height > 0) {
-        this.canvas.width = width
-        this.canvas.height = height
         this._width = width
         this._height = height
+        if (this._suspended) {
+          // 方案 58 D-12：suspend（截图回退）期间不触碰 canvas——canvas.width
+          // 赋值即使同值也清空位图，此刻回退截图层仍在向同一 canvas 供画，
+          // 改写即闪白；分辨率暂存，resume 时应用
+          this._pendingCanvasSize = { width, height }
+        } else {
+          this.canvas.width = width
+          this.canvas.height = height
+        }
       }
 
       // 暂存 config 解析结果（suspend 期间仅暂存；resume 时复用重建解码器）
@@ -565,7 +595,8 @@ export class H264VideoStream {
     } else if (type === 'restarting') {
       // 服务端自适应码率重启预告：1-3s 黑屏属预期，宽限期内
       // 暂停回退 watchdog 与 stats 上报（重启后 config 会再次到达并重建解码器）
-      this._restartGraceUntil = Date.now() + 15_000
+      // 方案 58 D-21：宽限时长可经 options.restartGraceMs 配置（默认 15s）
+      this._restartGraceUntil = Date.now() + this._restartGraceMs
     } else if (type === 'stream_ended') {
       // 后端编码器/流已结束：立即报错走回退链，不再等 watchdog（方案 19 实施项 5）
       this.setError('视频流已结束')
@@ -705,8 +736,14 @@ export class H264VideoStream {
           this._sizeMismatchWarned = false
           this._sizeMismatchCount = 0
         }
-        ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height)
-        frame.close()
+        // 方案 58 D-18：draw 异常（context lost 等）也必须释放帧，
+        // 否则 VideoFrame 句柄持续泄漏；异常继续上抛，由解码器 error
+        // 回调走 setError → 回退链
+        try {
+          ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height)
+        } finally {
+          frame.close()
+        }
 
         // 首次输出帧时标记为 streaming
         if (this._state !== 'streaming') {

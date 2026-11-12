@@ -189,7 +189,7 @@ describe('DebugPanel', () => {
     // Ctrl+L → 回到 Logcat
     wrapper.findComponent(ElTabs).vm.$emit('update:modelValue', 'perf')
     await nextTick()
-    const ev2 = pressKey({ key: 'l', ctrlKey: true })
+    const ev2 = pressKey({ key: 'l', code: 'KeyL', ctrlKey: true })
     await nextTick()
     expect(ev2.defaultPrevented).toBe(true)
     expect(wrapper.find('.view-LogcatView').exists()).toBe(true)
@@ -215,7 +215,7 @@ describe('DebugPanel', () => {
     await nextTick()
 
     // Ctrl+L 交还终端（不清屏被抢走切到 Logcat）
-    const ev1 = pressKey({ key: 'l', ctrlKey: true })
+    const ev1 = pressKey({ key: 'l', code: 'KeyL', ctrlKey: true })
     await nextTick()
     expect(ev1.defaultPrevented).toBe(false)
     expect(wrapper.find('.view-ShellView').exists()).toBe(true)
@@ -225,6 +225,54 @@ describe('DebugPanel', () => {
     await nextTick()
     expect(ev2.defaultPrevented).toBe(false)
     expect(wrapper.emitted('position-change')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('CapsLock 开启时 Ctrl+L（e.key 漂移为大写 L）仍能切回 Logcat（方案 58 E-28）', async () => {
+    const wrapper = mountPanel()
+    await nextTick()
+    wrapper.findComponent(ElTabs).vm.$emit('update:modelValue', 'perf')
+    await nextTick()
+
+    // 旧实现按 e.key==='l' 判定，CapsLock/Shift 布局漂移时永不触发
+    const ev = pressKey({ key: 'L', code: 'KeyL', ctrlKey: true })
+    await nextTick()
+    expect(ev.defaultPrevented).toBe(true)
+    expect(wrapper.find('.view-LogcatView').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('弹层打开时快捷键让位：el-overlay / cmd-overlay 均不动作，撤除后恢复（方案 58 E-28）', async () => {
+    const wrapper = mountPanel()
+    await nextTick()
+
+    const overlay = document.createElement('div')
+    overlay.className = 'el-overlay'
+    document.body.appendChild(overlay)
+
+    const ev1 = pressKey({ code: 'Backquote', ctrlKey: true })
+    const ev2 = pressKey({ key: 'l', code: 'KeyL', ctrlKey: true })
+    await nextTick()
+    expect(ev1.defaultPrevented).toBe(false)
+    expect(ev2.defaultPrevented).toBe(false)
+    expect(wrapper.emitted('position-change')).toBeUndefined()
+    overlay.remove()
+
+    // 命令面板自绘遮罩同样让位
+    const cmdOverlay = document.createElement('div')
+    cmdOverlay.className = 'cmd-overlay'
+    document.body.appendChild(cmdOverlay)
+    const ev3 = pressKey({ code: 'Backquote', ctrlKey: true, shiftKey: true })
+    expect(ev3.defaultPrevented).toBe(false)
+    cmdOverlay.remove()
+
+    // 弹层撤除后恢复正常
+    const ev4 = pressKey({ code: 'Backquote', ctrlKey: true })
+    await nextTick()
+    expect(ev4.defaultPrevented).toBe(true)
+    expect(wrapper.emitted('position-change')?.[0]).toEqual(['bottom'])
 
     wrapper.unmount()
   })

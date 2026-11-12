@@ -4,11 +4,13 @@
  *
  * PerfView ≡ NetworkView 逐字重复的导出块（下拉命令 → blob 下载 →
  * X-Export-* 头回显 → 404/错误提示）纯下沉至此；LogcatView 同型的
- * triggerDownload/errText 一并并入。两视图唯一差异是 api 调用与文件
- * 名前缀，抽为 runExport 参数，组件侧行为不变。
+ * triggerDownload 一并并入（errText 已升级为方案 58 E-17 共享的
+ * services/apiError 助手，本模块转从其导入）。两视图唯一差异是 api
+ * 调用与文件名前缀，抽为 runExport 参数，组件侧行为不变。
  */
 import type { AxiosResponse } from 'axios'
 import { ElMessage } from 'element-plus'
+import { errText } from './apiError'
 
 export type ExportFormat = 'csv' | 'json'
 export type ExportSource = 'buffer' | 'cache'
@@ -67,11 +69,6 @@ export function triggerDownload(blob: Blob, filename: string) {
   a.download = filename
   a.click()
   URL.revokeObjectURL(url)
-}
-
-export function errText(e: unknown, fallback: string): string {
-  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-  return detail || fallback
 }
 
 function formatTs(ts: number): string {

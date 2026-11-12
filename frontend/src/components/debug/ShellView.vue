@@ -167,11 +167,15 @@ onMounted(async () => {
   term.open(terminalRef.value)
   fitAddon.fit()
 
-  // 显示欢迎信息
+  // 显示欢迎信息（方案 58 E-32：英文原文保留、逐行中文对照）
   term.writeln('OpenScrcpy Shell (PTY Mode)')
+  term.writeln('OpenScrcpy 命令行终端（PTY 模式）')
   term.writeln(`Terminal: ${term.cols}x${term.rows}`)
+  term.writeln(`终端尺寸：${term.cols} 列 × ${term.rows} 行`)
   term.writeln('Features: Tab completion, interactive commands, copy/paste')
+  term.writeln('功能：Tab 补全、交互式命令、复制/粘贴')
   term.writeln('Use input box below for quick commands, or type directly in terminal')
+  term.writeln('可在下方输入框快速执行命令，或直接在终端输入')
   term.writeln('')
 
   // 先设置输出处理器（在 connectWebSocket 之前，否则初始 prompt 丢失）

@@ -428,6 +428,10 @@ export function drawCmd(
     case 'text': {
       ctx.fillStyle = cmd.color
       ctx.font = `${fontPx(cmd.fontSize, canvasWidth)}px sans-serif`
+      // 方案 58 D-03：显式落左对齐/基线基准——number 分支把 center/middle 泄露进
+      // 共享 ctx，不还原则后续文字按居中绘制，与 cmdBBox/命中的左对齐推算错位
+      ctx.textAlign = 'start'
+      ctx.textBaseline = 'alphabetic'
       ctx.fillText(cmd.text, cmd.at.x, cmd.at.y)
       break
     }

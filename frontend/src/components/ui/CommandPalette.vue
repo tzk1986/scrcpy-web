@@ -10,11 +10,19 @@
     Esc         关闭
     ↑ / ↓       移动选中项
     Enter       执行选中命令
+    Tab         焦点锁定在面板内，关闭后归还唤起前元素（方案 58 E-11）
 -->
 <template>
   <Teleport to="body">
     <div v-if="open" class="cmd-overlay" @mousedown.self="close">
-      <div class="cmd-panel">
+      <!-- 方案 58 E-11：补 dialog 语义与 Tab 焦点陷阱（面板内仅输入框可聚焦） -->
+      <div
+        class="cmd-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="命令面板"
+        @keydown.tab.prevent="focusInput"
+      >
         <input
           ref="inputRef"
           v-model="query"
@@ -54,12 +62,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useDeviceStore } from '@/stores/device'
 import { buildCommands, filterCommands, type Command } from '@/services/commandRegistry'
-
-/** E-24/E-12：面板断开的成败提示用，取后端 detail，缺省「未知错误」 */
-function disconnectErrorText(e: unknown): string {
-  const detail = (e as { response?: { data?: { detail?: string } } } | null)?.response?.data?.detail
-  return detail || '未知错误'
-}
+// E-24/E-12 断开成败提示改用方案 58 E-17 共享助手（error.message 优先、detail 兼容）
+import { errText } from '@/services/apiError'
 
 const router = useRouter()
 const route = useRoute()
@@ -117,11 +121,13 @@ function refreshCommands() {
         await deviceStore.disconnectDevice(id)
         ElMessage.success(`已断开 ${id}`)
       } catch (e) {
-        ElMessage.error(`断开失败: ${disconnectErrorText(e)}`)
+        ElMessage.error(`断开失败: ${errText(e, '未知错误')}`)
       }
     },
     setDebugTab: (tab) =>
       window.dispatchEvent(new CustomEvent('openscrcpy:set-debug-tab', { detail: tab })),
+    // 方案 58 E-29：DebugPanel 仅挂载于设备详情页，非该页不注册切 Tab 命令（旧实现静默无效）
+    debugAvailable: route.name === 'device-detail',
     toggleFullscreen: () => {
       if (document.fullscreenElement) document.exitFullscreen()
       else document.documentElement.requestFullscreen?.()
@@ -136,7 +142,11 @@ function onGlobalKey(e: KeyboardEvent) {
   }
 }
 
+/** 方案 58 E-11：唤起面板前的焦点元素，关闭后归还。 */
+let lastFocused: HTMLElement | null = null
+
 function show() {
+  lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
   refreshCommands()
   query.value = ''
   activeIndex.value = 0
@@ -146,6 +156,13 @@ function show() {
 
 function close() {
   open.value = false
+  // 方案 58 E-11：避免焦点随面板销毁掉回页面顶部
+  lastFocused?.focus()
+}
+
+/** 方案 58 E-11：Tab 焦点陷阱——面板内仅输入框可聚焦，Tab 一律拉回输入框。 */
+function focusInput() {
+  inputRef.value?.focus()
 }
 
 function move(delta: number) {

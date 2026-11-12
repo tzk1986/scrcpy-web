@@ -33,6 +33,10 @@ import {
 /** INJECT_TEXT 服务端单条上限（scrcpy ControlMessageReader v5.0.1 实证，超限断控制连接） */
 export const INJECT_TEXT_MAX_LENGTH = 300
 
+/** clipboard_get 前端兜底超时（方案 58 D-08）：后端自身 3s 超时的放大护栏，
+ *  应答消息丢失/连接半死时防调用方 await 永久挂起 */
+const CLIPBOARD_TIMEOUT_MS = 5000
+
 /** 按 UTF-16 码元切段（与 Java String.length 同口径），代理对不拆半 */
 export function splitTextChunks(
   text: string,
@@ -96,6 +100,8 @@ export class InputController {
   private preferText = false
   /** clipboard_get 应答关联（同一时刻仅一个在途请求：UI 按钮触发） */
   private clipboardPending: ((text: string | null) => void) | null = null
+  /** 剪贴板请求兜底超时定时器（方案 58 D-08） */
+  private clipboardTimer: number | null = null
   /** 方案56 手动显示旋转角（0/90/180/270）：仅影响坐标反变换，默认 0=信任自动判定 */
   private displayRotation = 0
 
@@ -154,20 +160,27 @@ export class InputController {
    * @param rotation - 方案56 手动显示旋转角（0/90/180/270），缺省读 displayRotation；
    *   0 走原 letterbox 线性映射（逐字节不变），非 0 走旋转反变换（渲染盒宽高比恒等
    *   于原生、无内部 letterbox，rect 即视频显示区）
-   * @returns 设备坐标 { x, y }
+   * @returns 设备坐标 { x, y }；画布零尺寸（display:none/未布局/像素为 0）返回
+   *   null（方案 58 D-19：此时除零产生 NaN 坐标，注入即垃圾点）
    */
   mapToScreen(
     clientX: number,
     clientY: number,
     canvas: HTMLCanvasElement,
     rotation = this.displayRotation,
-  ): { x: number; y: number } {
+  ): { x: number; y: number } | null {
     const rect = canvas.getBoundingClientRect()
 
     // canvas 实际像素尺寸（考虑 HiDPI）
     // canvas.width/height 是实际像素，rect.width/height 是 CSS 像素
     const canvasPixelWidth = canvas.width
     const canvasPixelHeight = canvas.height
+
+    // 方案 58 D-19：任一维零尺寸时比例计算除零（0/0=NaN 或 x/0=±Inf），
+    // 钳制对 NaN 无效——直接拒映射
+    if (!rect.width || !rect.height || !canvasPixelWidth || !canvasPixelHeight) {
+      return null
+    }
 
     // 方案56 手动旋转：VideoPlayer 对旋转态精确 contain，使渲染盒宽高比恒等于
     // 原生帧（无内部黑边），故 rect 即视频显示区。取屏幕相对位后按角反旋回原生帧。
@@ -234,7 +247,9 @@ export class InputController {
   handleMouseDown(e: MouseEvent, canvas: HTMLCanvasElement) {
     if (!this.enabled) return
     e.preventDefault()
-    const { x, y } = this.mapToScreen(e.clientX, e.clientY, canvas)
+    const p = this.mapToScreen(e.clientX, e.clientY, canvas)
+    if (!p) return
+    const { x, y } = p
 
     this.touchState = {
       startX: x,
@@ -265,7 +280,9 @@ export class InputController {
     if (!this.touchState || !this.touchState.isTracking) return
     e.preventDefault()
 
-    const { x, y } = this.mapToScreen(e.clientX, e.clientY, canvas)
+    const p = this.mapToScreen(e.clientX, e.clientY, canvas)
+    if (!p) return
+    const { x, y } = p
     const dx = Math.abs(x - this.touchState.startX)
     const dy = Math.abs(y - this.touchState.startY)
 
@@ -286,7 +303,9 @@ export class InputController {
 
     this.cancelLongPress()
 
-    const { x, y } = this.mapToScreen(e.clientX, e.clientY, canvas)
+    const p = this.mapToScreen(e.clientX, e.clientY, canvas)
+    if (!p) return
+    const { x, y } = p
     const duration = Date.now() - this.touchState.startTime
     const dx = Math.abs(x - this.touchState.startX)
     const dy = Math.abs(y - this.touchState.startY)
@@ -315,7 +334,9 @@ export class InputController {
     if (e.touches.length !== 1) return
 
     const touch = e.touches[0]
-    const { x, y } = this.mapToScreen(touch.clientX, touch.clientY, canvas)
+    const p = this.mapToScreen(touch.clientX, touch.clientY, canvas)
+    if (!p) return
+    const { x, y } = p
 
     this.touchState = {
       startX: x,
@@ -347,7 +368,9 @@ export class InputController {
     if (e.touches.length !== 1) return
 
     const touch = e.touches[0]
-    const { x, y } = this.mapToScreen(touch.clientX, touch.clientY, canvas)
+    const p = this.mapToScreen(touch.clientX, touch.clientY, canvas)
+    if (!p) return
+    const { x, y } = p
     const dx = Math.abs(x - this.touchState.startX)
     const dy = Math.abs(y - this.touchState.startY)
 
@@ -368,7 +391,9 @@ export class InputController {
     this.cancelLongPress()
 
     const touch = e.changedTouches[0]
-    const { x, y } = this.mapToScreen(touch.clientX, touch.clientY, canvas)
+    const p = this.mapToScreen(touch.clientX, touch.clientY, canvas)
+    if (!p) return
+    const { x, y } = p
     const duration = Date.now() - this.touchState.startTime
     const dx = Math.abs(x - this.touchState.startX)
     const dy = Math.abs(y - this.touchState.startY)
@@ -487,15 +512,34 @@ export class InputController {
   // 滚轮注入（方案 54）
   // -------------------------------------------------------------------------
 
-  /** wheel → scroll（±1 档位）；纯横向滚（如触控板）也支持 */
+  /**
+   * wheel → scroll（±1 档位）；纯横向滚（如触控板）也支持。
+   * 方案 58 D-07：delta 是屏幕坐标系的速度向量，随 mapToScreen 同一旋转
+   * 反变换映射回原生帧坐标轴（线性部分与点位反变换一致），否则手动旋转
+   * 态下「向下滚」滚动的是错的轴。
+   */
   handleWheel(e: WheelEvent, canvas: HTMLCanvasElement) {
     if (!this.enabled) return
-    const v = Math.sign(e.deltaY)
-    const h = Math.sign(e.deltaX)
-    if (v === 0 && h === 0) return
+    const dy = Math.sign(e.deltaY)
+    const dx = Math.sign(e.deltaX)
+    if (dy === 0 && dx === 0) return
     e.preventDefault?.()
-    const { x, y } = this.mapToScreen(e.clientX, e.clientY, canvas)
-    this.ws.send({ action: 'scroll', x, y, h_scroll: h, v_scroll: v })
+    const p = this.mapToScreen(e.clientX, e.clientY, canvas)
+    if (!p) return
+    let h = dx
+    let v = dy
+    if (this.displayRotation === 90) {
+      h = dy
+      v = -dx
+    } else if (this.displayRotation === 180) {
+      h = -dx
+      v = -dy
+    } else if (this.displayRotation === 270) {
+      h = -dy
+      v = dx
+    }
+    // `|| 0` 归一 -0（反变换取负产生负零，协议上 -0 序列化同为 0，但防深比较歧义）
+    this.ws.send({ action: 'scroll', x: p.x, y: p.y, h_scroll: h || 0, v_scroll: v || 0 })
     this.onInputSend?.()
   }
 
@@ -518,21 +562,37 @@ export class InputController {
    * 设备 → 浏览器：拉取剪贴板（copyKey=1 先注入复制键捕获选中文本）。
    * 应答经 handleClipboardMessage 关联；后端 3s 超时/失败 resolve(null)。
    * 新请求会丢弃旧的未决请求（resolve null）。
+   * 方案 58 D-08：前端加 5s 兜底超时——后端应答在连接半死/消息丢失时
+   * 永不到达，无超时的 Promise 让调用方 await 挂死（按钮无反馈）。
    */
   requestClipboard(copyKey = 0): Promise<string | null> {
     return new Promise((resolve) => {
-      if (this.clipboardPending) this.clipboardPending(null)
+      // 丢弃旧的未决请求（连同其兜底定时器）
+      this.settleClipboard(null)
       this.clipboardPending = resolve
+      this.clipboardTimer = window.setTimeout(
+        () => this.settleClipboard(null),
+        CLIPBOARD_TIMEOUT_MS,
+      )
       this.ws.send({ action: 'clipboard_get', copy_key: copyKey })
     })
+  }
+
+  /** 决断当前剪贴板请求：清定时器、摘 pending 并 resolve（无在途请求时静默）。 */
+  private settleClipboard(text: string | null) {
+    if (this.clipboardTimer !== null) {
+      clearTimeout(this.clipboardTimer)
+      this.clipboardTimer = null
+    }
+    const resolve = this.clipboardPending
+    this.clipboardPending = null
+    resolve?.(text)
   }
 
   /** WS 服务端消息分发入口：消费 clipboard/clipboard_error；返回是否已处理 */
   handleClipboardMessage(msg: { type: string; text?: string }): boolean {
     if (msg.type !== 'clipboard' && msg.type !== 'clipboard_error') return false
-    const resolve = this.clipboardPending
-    this.clipboardPending = null
-    if (resolve) resolve(msg.type === 'clipboard' ? msg.text ?? '' : null)
+    this.settleClipboard(msg.type === 'clipboard' ? msg.text ?? '' : null)
     return true
   }
 

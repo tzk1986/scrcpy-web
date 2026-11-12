@@ -99,6 +99,16 @@ describe('ShellView', () => {
     expect(term.options).toMatchObject({ cols: 80, rows: 24 })
     expect(term.open).toHaveBeenCalledWith(wrapper.find('.terminal').element)
     expect(term.writeln).toHaveBeenCalledWith('OpenScrcpy Shell (PTY Mode)')
+    // 方案 58 E-32：欢迎信息逐行中文对照
+    const written: string[] = term.writeln.mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(written).toEqual(
+      expect.arrayContaining([
+        'OpenScrcpy 命令行终端（PTY 模式）',
+        '功能：Tab 补全、交互式命令、复制/粘贴',
+        '可在下方输入框快速执行命令，或直接在终端输入',
+      ]),
+    )
+    expect(written.some((l) => l.startsWith('终端尺寸：'))).toBe(true)
 
     const addon = h.MockFitAddon.instances[0]
     expect(term.loadAddon).toHaveBeenCalledWith(addon)

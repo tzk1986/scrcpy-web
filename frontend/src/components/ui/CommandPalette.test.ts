@@ -8,6 +8,7 @@
  *   - Enter 执行选中命令（路由跳转）并关闭面板
  *   - 点击「切换到 logcat 面板」派发 openscrcpy:set-debug-tab CustomEvent
  *   - 方案58 E-24/E-12：面板断开走确认+await+成败播报
+ *   - 方案58 E-29：调试切 Tab 命令仅设备详情页注册；E-11：role=dialog/焦点陷阱/焦点归还
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
@@ -103,7 +104,8 @@ afterEach(() => {
 
 describe('CommandPalette', () => {
   it('Ctrl+K 打开面板并渲染命令分组与设备命令', async () => {
-    const w = await mountPalette()
+    // 方案58 E-29 后「调试」分组仅设备详情页注册，四分组断言须在设备页做
+    const w = await mountPalette('/device/dev-a')
     expect(w.find('.cmd-overlay').exists()).toBe(false)
 
     const store = useDeviceStore()
@@ -169,7 +171,7 @@ describe('CommandPalette', () => {
   })
 
   it('点击调试 Tab 命令派发 openscrcpy:set-debug-tab CustomEvent', async () => {
-    const w = await mountPalette()
+    const w = await mountPalette('/device/dev-a')
     const received: string[] = []
     const onTab = (e: Event) => received.push((e as CustomEvent).detail)
     window.addEventListener('openscrcpy:set-debug-tab', onTab)
@@ -185,6 +187,49 @@ describe('CommandPalette', () => {
     expect(w.find('.cmd-overlay').exists()).toBe(false)
 
     window.removeEventListener('openscrcpy:set-debug-tab', onTab)
+  })
+
+  // 方案58 E-29：切 Tab 命令此前无条件注册，在 Dashboard 等非设备页点了静默无效
+  it('E-29：非设备详情页不出现「调试」分组命令', async () => {
+    const w = await mountPalette('/')
+    pressCtrlK()
+    await flushPromises()
+
+    expect(w.findAll('.cmd-section').map((s) => s.text())).toEqual(['导航', '视图'])
+    expect(listItemTexts(w).some((t) => t.startsWith('切换到'))).toBe(false)
+  })
+
+  // 方案58 E-11：面板是无障碍孤岛——补 role=dialog/aria-modal、Tab 焦点陷阱、关闭归还焦点
+  it('E-11：面板 role=dialog/aria-modal，Tab 焦点不逃逸出面板', async () => {
+    const w = await mountPalette()
+    pressCtrlK()
+    await flushPromises()
+
+    const panel = w.find('.cmd-panel')
+    expect(panel.attributes('role')).toBe('dialog')
+    expect(panel.attributes('aria-modal')).toBe('true')
+
+    const input = w.find('.cmd-input').element
+    expect(document.activeElement).toBe(input)
+    const ev = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    input.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('E-11：Esc 关闭面板后焦点归还唤起前元素', async () => {
+    const w = await mountPalette()
+    const opener = document.createElement('button')
+    document.body.appendChild(opener)
+    opener.focus()
+
+    pressCtrlK()
+    await flushPromises()
+    expect(document.activeElement).toBe(w.find('.cmd-input').element)
+
+    await w.find('.cmd-input').trigger('keydown', { key: 'Escape' })
+    expect(document.activeElement).toBe(opener)
+    opener.remove()
   })
 
   // 方案58 E-24 裁决 a + E-12：面板断开统一确认、await 完成并播报成败

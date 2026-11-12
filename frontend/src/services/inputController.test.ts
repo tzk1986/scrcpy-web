@@ -13,7 +13,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { InputController, KeyCode } from './inputController'
 
 function makeWs() {
-  return { send: vi.fn() } as unknown as ConstructorParameters<typeof InputController>[0]
+  // 交叉保留 Mock 类型（mockClear 等断言辅助），同时满足 InputController 构造参数
+  return { send: vi.fn() } as unknown as ConstructorParameters<typeof InputController>[0] & {
+    send: ReturnType<typeof vi.fn>
+  }
 }
 
 /** 100x100、无 letterbox 的假 canvas（坐标映射返回原像素坐标）。 */
@@ -532,5 +535,154 @@ describe('输入发送回调（setInputHandler，方案 27）', () => {
     const ic = new InputController(makeWs(), 100, 100)
     expect(() => ic.sendKey(KeyCode.BACK)).not.toThrow()
     expect(() => ic.sendText('x')).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 方案 58 批5-3：D-19 零尺寸守卫 / D-07 滚轮旋转反变换 / D-08 剪贴板超时
+// ---------------------------------------------------------------------------
+
+describe('方案58 D-19 mapToScreen 零尺寸守卫', () => {
+  it('CSS 宽为 0：返回 null（旋转分支同样守卫）', () => {
+    const ic = new InputController(makeWs(), 100, 100)
+    const canvas = makeCanvasWith(100, 100, { left: 0, top: 0, width: 0, height: 100 })
+    expect(ic.mapToScreen(50, 50, canvas)).toBeNull()
+    expect(ic.mapToScreen(50, 50, canvas, 90)).toBeNull()
+  })
+
+  it('CSS 高为 0：返回 null', () => {
+    const ic = new InputController(makeWs(), 100, 100)
+    const canvas = makeCanvasWith(100, 100, { left: 0, top: 0, width: 100, height: 0 })
+    expect(ic.mapToScreen(50, 50, canvas)).toBeNull()
+  })
+
+  it('display 为 none 时按下/释放不产生任何注入', () => {
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const canvas = makeCanvasWith(100, 100, { left: 0, top: 0, width: 0, height: 0 })
+    ic.handleMouseDown(makeMouseEvent(50, 50), canvas)
+    ic.handleMouseUp(makeMouseEvent(50, 50), canvas)
+    expect(ws.send).not.toHaveBeenCalled()
+  })
+
+  it('零尺寸画布上滚轮不注入', () => {
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const canvas = makeCanvasWith(100, 100, { left: 0, top: 0, width: 0, height: 0 })
+    const wheel = {
+      deltaX: 0, deltaY: 120, clientX: 50, clientY: 50, preventDefault: vi.fn(),
+    } as unknown as WheelEvent
+    ic.handleWheel(wheel, canvas)
+    expect(ws.send).not.toHaveBeenCalled()
+  })
+
+  it('零像素画布（width 属性为 0）也守卫：videoAspect 为 NaN', () => {
+    const ic = new InputController(makeWs(), 100, 100)
+    const canvas = makeCanvasWith(0, 0, { left: 0, top: 0, width: 100, height: 100 })
+    expect(ic.mapToScreen(50, 50, canvas)).toBeNull()
+  })
+})
+
+describe('方案58 D-07 滚轮旋转反变换', () => {
+  function makeWheel(deltaX: number, deltaY: number) {
+    return {
+      deltaX, deltaY, clientX: 50, clientY: 50, preventDefault: vi.fn(),
+    } as unknown as WheelEvent
+  }
+
+  /** 中心点在任何旋转角下都映射回像素中心（100x100 rect=100x100），便于只断言轴向。 */
+  function centered(rotation: number) {
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    ic.setDisplayRotation(rotation)
+    return { ws, ic }
+  }
+
+  it('rotation=0：纵向滚轮 → v_scroll，横向 → h_scroll（现状护栏）', () => {
+    const { ws, ic } = centered(0)
+    ic.handleWheel(makeWheel(0, 120), makeCanvas())
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'scroll', x: 50, y: 50, h_scroll: 0, v_scroll: 1 })
+    ws.send.mockClear()
+    ic.handleWheel(makeWheel(120, 0), makeCanvas())
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'scroll', x: 50, y: 50, h_scroll: 1, v_scroll: 0 })
+  })
+
+  it('rotation=90：屏幕向下滚动落为原生帧 +x 方向（h_scroll=1）', () => {
+    const { ws, ic } = centered(90)
+    ic.handleWheel(makeWheel(0, 120), makeCanvas())
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'scroll', x: 50, y: 50, h_scroll: 1, v_scroll: 0 })
+  })
+
+  it('rotation=90：屏幕向右滚动落为原生帧 -y 方向（v_scroll=-1）', () => {
+    const { ws, ic } = centered(90)
+    ic.handleWheel(makeWheel(120, 0), makeCanvas())
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'scroll', x: 50, y: 50, h_scroll: 0, v_scroll: -1 })
+  })
+
+  it('rotation=180：纵向滚轮反号', () => {
+    const { ws, ic } = centered(180)
+    ic.handleWheel(makeWheel(0, 120), makeCanvas())
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'scroll', x: 50, y: 50, h_scroll: 0, v_scroll: -1 })
+    ws.send.mockClear()
+    ic.handleWheel(makeWheel(120, 0), makeCanvas())
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'scroll', x: 50, y: 50, h_scroll: -1, v_scroll: 0 })
+  })
+
+  it('rotation=270：屏幕向下滚动落为原生帧 -x 方向（h_scroll=-1）', () => {
+    const { ws, ic } = centered(270)
+    ic.handleWheel(makeWheel(0, 120), makeCanvas())
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'scroll', x: 50, y: 50, h_scroll: -1, v_scroll: 0 })
+  })
+})
+
+describe('方案58 D-08 剪贴板请求超时', () => {
+  it('5s 无应答 resolve null，不再挂死', async () => {
+    vi.useFakeTimers()
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const p = ic.requestClipboard()
+    vi.advanceTimersByTime(4000)
+    let done = false
+    p.then(() => { done = true })
+    await Promise.resolve()
+    expect(done).toBe(false)
+    vi.advanceTimersByTime(1000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await p).toBe(null)
+  })
+
+  it('超时前正常应答 resolve 文本，定时器被清除', async () => {
+    vi.useFakeTimers()
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const p = ic.requestClipboard(1)
+    expect(ic.handleClipboardMessage({ type: 'clipboard', text: 'abc' })).toBe(true)
+    expect(await p).toBe('abc')
+    // 应答后推进超过 5s：已决断的 promise 不受影响，且无未清理定时器抛错
+    vi.advanceTimersByTime(6000)
+    expect(await p).toBe('abc')
+  })
+
+  it('超时后才到达的应答被丢弃（返回已处理但不再 resolve）', async () => {
+    vi.useFakeTimers()
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const p = ic.requestClipboard()
+    vi.advanceTimersByTime(5000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await p).toBe(null)
+    expect(ic.handleClipboardMessage({ type: 'clipboard', text: 'late' })).toBe(true)
+  })
+
+  it('新请求丢弃旧未决请求时同时清除旧定时器', async () => {
+    vi.useFakeTimers()
+    const ws = makeWs()
+    const ic = new InputController(ws, 100, 100)
+    const stale = ic.requestClipboard()
+    const fresh = ic.requestClipboard()
+    expect(await stale).toBe(null)
+    vi.advanceTimersByTime(5000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await fresh).toBe(null)
   })
 })

@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 
 const h = vi.hoisted(() => ({
-  ElMessage: { success: vi.fn(), error: vi.fn() },
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
   ElMessageBox: { confirm: vi.fn() },
 }))
 vi.mock('element-plus', () => ({
@@ -29,6 +29,8 @@ const mockApi = vi.hoisted(() => ({
   getAppRuntime: vi.fn(),
   launchApp: vi.fn().mockResolvedValue({}),
   stopApp: vi.fn().mockResolvedValue({}),
+  clearAppData: vi.fn().mockResolvedValue({}),
+  uninstallApp: vi.fn().mockResolvedValue({}),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
@@ -136,8 +138,12 @@ beforeEach(() => {
   mockApi.getAppRuntime.mockReset()
   mockApi.launchApp.mockClear()
   mockApi.stopApp.mockClear()
+  mockApi.clearAppData.mockClear()
+  mockApi.uninstallApp.mockClear()
   h.ElMessage.success.mockClear()
   h.ElMessage.error.mockClear()
+  h.ElMessage.warning.mockClear()
+  h.ElMessageBox.confirm.mockReset().mockResolvedValue(undefined)
 })
 
 describe('AppsView', () => {
@@ -374,5 +380,112 @@ describe('AppsView', () => {
 
     expect(mockApi.listApps).toHaveBeenCalledTimes(2)
     expect(mockApi.listApps).toHaveBeenLastCalledWith('dev1', false)
+  })
+
+  // ==================== 方案 58 E-17：操作失败透出后端错误 ====================
+
+  /** 后端统一异常形状 {error:{code,message}}（core/exceptions.py 四处理器口径）。 */
+  const backendErr = (message: string) => ({
+    response: { data: { error: { code: 'E_TEST', message } } },
+  })
+
+  /** 打开详情弹窗（runtime 查询失败走内联，不影响操作断言）。 */
+  async function openDetailFor(row: typeof userApp | typeof systemApp) {
+    mockApi.getAppRuntime.mockReset()
+    mockApi.getAppRuntime.mockRejectedValue(new Error('runtime n/a'))
+    const wrapper = mountView()
+    await flushPromises()
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('row-click', row)
+    await flushPromises()
+    return wrapper
+  }
+
+  function clickDialogButton(wrapper: ReturnType<typeof mountView>, label: string) {
+    const btn = wrapper
+      .findAll('.stub-dialog button')
+      .find((b) => b.text() === label)
+    expect(btn, `弹窗应存在按钮「${label}」`).toBeDefined()
+    return btn!.trigger('click')
+  }
+
+  it('E-17 启动失败透出后端错误信息（不再只报包名）', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [systemApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...systemApp })
+    mockApi.launchApp.mockRejectedValueOnce(backendErr('设备离线'))
+    const wrapper = await openDetailFor(systemApp)
+
+    await clickDialogButton(wrapper, '启动应用')
+    await flushPromises()
+    expect(h.ElMessage.error).toHaveBeenCalledWith('启动失败: 设备离线')
+  })
+
+  it('E-17 停止失败透出后端错误信息', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    mockApi.stopApp.mockRejectedValueOnce(backendErr('进程不存在'))
+    const wrapper = await openDetailFor(userApp)
+
+    await clickDialogButton(wrapper, '停止应用')
+    await flushPromises()
+    expect(h.ElMessage.error).toHaveBeenCalledWith('停止失败: 进程不存在')
+  })
+
+  it('E-17 清除数据失败透出后端错误信息（确认口径不变）', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    mockApi.clearAppData.mockRejectedValueOnce(backendErr('pm clear 超时'))
+    const wrapper = await openDetailFor(userApp)
+
+    await clickDialogButton(wrapper, '清除数据')
+    await flushPromises()
+    expect(h.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(h.ElMessage.error).toHaveBeenCalledWith('清除数据失败: pm clear 超时')
+  })
+
+  it('E-17 卸载失败透出后端错误信息', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    mockApi.uninstallApp.mockRejectedValueOnce(backendErr('系统签名应用不可卸载'))
+    const wrapper = await openDetailFor(userApp)
+
+    await clickDialogButton(wrapper, '卸载应用')
+    await flushPromises()
+    expect(h.ElMessage.error).toHaveBeenCalledWith('卸载失败: 系统签名应用不可卸载')
+  })
+
+  it('E-17 刷新信息失败轻提示（不再全静默）', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp] })
+    mockApi.getAppInfo.mockResolvedValue({ ...userApp })
+    const wrapper = await openDetailFor(userApp)
+
+    mockApi.getAppInfo.mockRejectedValueOnce(backendErr('详情服务暂不可用'))
+    await clickDialogButton(wrapper, '刷新信息')
+    await flushPromises()
+    expect(h.ElMessage.warning).toHaveBeenCalledWith('详情刷新失败: 详情服务暂不可用')
+    // 旧数据仍在弹窗，不弹 error 打断
+    expect(wrapper.find('.stub-dialog').text()).toContain('com.example.chat')
+    expect(h.ElMessage.error).not.toHaveBeenCalled()
+  })
+
+  it('E-17 详情迟到失败不改选后的弹窗：身份守卫下不轻提示', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp, systemApp] })
+    // 按请求包名返回（同 58E-15 测试口径），否则 B 的详情会带 A 包名污染选中项
+    mockApi.getAppInfo.mockImplementation((_id: string, pkg: string) =>
+      Promise.resolve(pkg === 'com.android.settings' ? { ...systemApp } : { ...userApp }),
+    )
+    const wrapper = await openDetailFor(userApp)
+
+    // A 的请求在飞时改选 B：A 的失败迟到不得对 B 弹窗轻提示
+    let rejectA: ((v: unknown) => void) | null = null
+    mockApi.getAppInfo.mockImplementationOnce(
+      () => new Promise((_r, rej) => { rejectA = rej }),
+    )
+    await clickDialogButton(wrapper, '刷新信息')
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('row-click', systemApp)
+    await flushPromises()
+
+    rejectA!(backendErr('late boom'))
+    await flushPromises()
+    expect(h.ElMessage.warning).not.toHaveBeenCalled()
   })
 })

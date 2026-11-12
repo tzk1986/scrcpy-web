@@ -50,6 +50,12 @@
       </div>
     </div>
 
+    <!-- 方案 58 E-14：拉取连续失败错误条（后端重启/断链可见，附立即重试） -->
+    <div v-if="fetchFailures > 0" class="fetch-error-bar">
+      <span>网络指标获取失败（连续 {{ fetchFailures }} 次），当前显示旧数据</span>
+      <el-button size="small" @click="fetchData">立即重试</el-button>
+    </div>
+
     <!-- 活动告警徽标条（方案 24） -->
     <div v-if="activeAlerts.length" class="alert-bar">
       <span v-for="a in activeAlerts" :key="a.id" class="alert-chip">
@@ -141,7 +147,8 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import { api } from '@/services/api'
 import { alertLabel, createAlertNotifier, extractAlerts, type AlertItem } from '@/services/alerts'
-import { runExport, errText, type ExportCommand } from '@/services/exportKit'
+import { runExport, type ExportCommand } from '@/services/exportKit'
+import { errText } from '@/services/apiError'
 import { createEpochGuard } from '@/utils/fetchGuard'
 
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent])
@@ -291,6 +298,9 @@ const fetchGuard = createEpochGuard()
 let pendingFetch: Promise<void> | null = null
 let pendingFetchDevice = ''
 
+// 方案 58 E-14：连续失败计数——断链时显出错误条+重试，指标定格不再静默失联
+const fetchFailures = ref(0)
+
 onMounted(() => {
   startPolling()
 })
@@ -345,7 +355,9 @@ async function fetchData() {
       const connData = await api.getNetworkConnections(device)
       if (!fetchGuard.isCurrent(gen)) return
       connections.value = connData.connections
+      fetchFailures.value = 0
     } catch (e) {
+      fetchFailures.value += 1
       console.error('[NetworkView] Failed to fetch data:', e)
     }
     void refreshRecordStatus()
@@ -532,6 +544,18 @@ function getStateTagType(state: string): '' | 'success' | 'warning' | 'info' | '
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.fetch-error-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #f56c6c;
+  background: #fef0f0;
+  border: 1px solid #fbc4c4;
 }
 
 .alert-chip {

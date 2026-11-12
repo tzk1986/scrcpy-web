@@ -767,6 +767,95 @@ describe('Settings.vue', () => {
 
     wrapper.unmount()
   })
+
+  // ==================== 方案 58 E-26 / E-33 ====================
+
+  it('写操作在飞时重置与清除覆盖按钮同步置 loading，与保存互斥（E-26）', async () => {
+    routeMock.current = { query: { device: 'd1' } }
+    let putResolve!: (v: unknown) => void
+    mockApi.putSettings.mockImplementation(
+      () =>
+        new Promise((r) => {
+          putResolve = r
+        })
+    )
+    const wrapper = await mountSettings()
+
+    await wrapper.find('[data-test="save-stream"]').trigger('click')
+    await flushPromises()
+
+    // 保存 PUT 在飞：三个非 loading 的写按钮必须同步置 loading（旧实现重置/清除无 :loading 可并发 PUT）
+    expect(wrapper.find('[data-test="reset-stream"]').attributes('data-loading')).toBe('true')
+    expect(wrapper.find('[data-test="reset-recording"]').attributes('data-loading')).toBe('true')
+    expect(wrapper.find('[data-test="clear-override"]').attributes('data-loading')).toBe('true')
+
+    putResolve({ saved: true })
+    await flushPromises()
+    expect(wrapper.find('[data-test="reset-stream"]').attributes('data-loading')).toBe('false')
+    expect(wrapper.find('[data-test="clear-override"]').attributes('data-loading')).toBe('false')
+
+    wrapper.unmount()
+  })
+
+  it('生效参数卡三态：加载占位 → 失败占位可重试 → 重试成功渲染（E-33）', async () => {
+    let settle!: { resolve: (v: unknown) => void; reject: (e: unknown) => void }
+    mockApi.getSettings.mockImplementation(
+      () =>
+        new Promise((r, j) => {
+          settle = { resolve: r, reject: j }
+        })
+    )
+    const wrapper = await mountSettings()
+    const card = wrapper.find('[data-test="effective-values"]')
+
+    // 首拉未回：加载占位
+    expect(card.find('[data-test="effective-loading"]').exists()).toBe(true)
+    expect(card.find('[data-test="effective-failed"]').exists()).toBe(false)
+
+    // 失败：失败占位 + 重试入口
+    settle.reject(axiosError('SETTINGS_STORE_ERROR', '读取用户设置失败'))
+    await flushPromises()
+    expect(card.find('[data-test="effective-loading"]').exists()).toBe(false)
+    expect(card.find('[data-test="effective-failed"]').exists()).toBe(true)
+
+    // 重试成功：渲染内容，占位撤除
+    mockApi.getSettings.mockResolvedValueOnce(DEFAULT_VIEW)
+    await card.find('[data-test="effective-retry"]').trigger('click')
+    await flushPromises()
+    expect(card.find('[data-test="effective-failed"]').exists()).toBe(false)
+    expect(card.text()).toContain('出厂默认')
+
+    wrapper.unmount()
+  })
+
+  it('运行环境卡三态：加载占位 → 失败占位可重试 → 重试成功渲染（E-33）', async () => {
+    let settle!: { resolve: (v: unknown) => void; reject: (e: unknown) => void }
+    mockApi.getRuntimeEnv.mockImplementation(
+      () =>
+        new Promise((r, j) => {
+          settle = { resolve: r, reject: j }
+        })
+    )
+    const wrapper = await mountSettings()
+    const card = wrapper.find('[data-test="runtime-env"]')
+
+    // 首拉未回：加载占位、检查更新按钮不渲染
+    expect(card.find('[data-test="runtime-loading"]').exists()).toBe(true)
+    expect(card.find('[data-test="check-update"]').exists()).toBe(false)
+
+    settle.reject(axiosError('RUNTIME_ENV_ERROR', '运行环境读取失败'))
+    await flushPromises()
+    expect(card.find('[data-test="runtime-loading"]').exists()).toBe(false)
+    expect(card.find('[data-test="runtime-failed"]').exists()).toBe(true)
+
+    mockApi.getRuntimeEnv.mockResolvedValueOnce(RUNTIME_ENV_VIEW)
+    await card.find('[data-test="runtime-retry"]').trigger('click')
+    await flushPromises()
+    expect(card.find('[data-test="runtime-failed"]').exists()).toBe(false)
+    expect(card.find('[data-test="check-update"]').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
 })
 
 describe('StreamFieldSet.vue（h265 gating，评审焦点 #4）', () => {

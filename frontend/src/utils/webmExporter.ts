@@ -109,12 +109,19 @@ export async function exportWebmClip(
       stopTimer = setTimeout(resolve, actualSeconds * 1000)
     })
     recorder.stop()
+    // 方案 58 D-15：立即停止 captureStream tracks——不停止则流保持 active，
+    // Chrome 持续向录制器抽帧且 video 元素被捕获流占用
+    stream.getTracks().forEach((track) => track.stop())
     video.pause()
+    // 方案 58 D-15：等 onstop 落定再 seek 复位。原实现先 seek：录制器
+    // 尚未读完队列时会把复位点之后的尾段帧混进产物（竞态）
+    const blob = await stopped
     video.currentTime = originTime
+    return blob
   } catch (err) {
     if (stopTimer !== null) clearTimeout(stopTimer)
     // 先给 stopped 挂观察者再 throw：中途出错时 recorder.stop()/onerror 可能
-    // 已让 stopped 以 reject 落定，而下方 throw 使 return stopped 永远不
+    // 已让 stopped 以 reject 落定，而下方 throw 使 return 永远不
     // 执行，reject 无人处理成 unhandled rejection（方案 51 F1-10）
     stopped.catch(() => {})
     try {
@@ -122,6 +129,9 @@ export async function exportWebmClip(
     } catch {
       // recorder 可能未启动或已自动停止
     }
+    // 方案 58 D-15：失败路径同样释放捕获流（不 await stopped：录制器可能
+    // 从未启动，onstop 永不到来，await 会把失败路径挂死）
+    stream.getTracks().forEach((track) => track.stop())
     try {
       video.pause()
       video.currentTime = originTime
@@ -130,5 +140,4 @@ export async function exportWebmClip(
     }
     throw err
   }
-  return stopped
 }

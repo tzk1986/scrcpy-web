@@ -208,11 +208,19 @@ describe('Recordings 页', () => {
     await flushPromises()
     expect(api.deleteRecordingFile).toHaveBeenCalledWith(ITEM_NEW.filename)
     expect(api.listRecordingFiles).toHaveBeenCalledTimes(2)
-    // 失败路径
+    // 失败路径（方案 58 E-25）：透出后端 error.message，不再是固定猜测文案
+    api.deleteRecordingFile.mockRejectedValue({
+      response: { data: { error: { code: 'RECORDING_DELETE_FAILED', message: '正被其他程序占用' } } },
+    })
+    await w.findAll('.file-row')[1].find('.btn-delete').trigger('click')
+    await flushPromises()
+    expect(h.ElMessage.error).toHaveBeenCalledWith('删除失败: 正被其他程序占用')
+
+    // 无后端错误体时兜底原猜测文案
     api.deleteRecordingFile.mockRejectedValue(new Error('busy'))
     await w.findAll('.file-row')[1].find('.btn-delete').trigger('click')
     await flushPromises()
-    expect(h.ElMessage.error).toHaveBeenCalledWith('删除失败，文件可能正被占用')
+    expect(h.ElMessage.error).toHaveBeenCalledWith('删除失败: 文件可能正被占用')
   })
 
   it('取消确认不调删除', async () => {

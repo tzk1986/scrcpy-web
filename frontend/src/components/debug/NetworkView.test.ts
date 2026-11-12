@@ -244,6 +244,30 @@ describe('NetworkView', () => {
     expect(mockApi.getNetworkStats).toHaveBeenCalledTimes(2)
   })
 
+  it('58E-14 拉取失败显错误条、连续失败计数累积、恢复隐去并清零', async () => {
+    vi.useFakeTimers()
+    mockApi.getNetworkStats.mockRejectedValue(new Error('backend down'))
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(2000) // 第二轮仍失败
+    await flushPromises()
+
+    // 原缺陷：失败仅 console.error，后端重启/断链后指标定格「静默失联」
+    const bar = wrapper.find('.fetch-error-bar')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('连续 2 次')
+
+    // 「立即重试」再拉：本轮成功 → 错误条消失、计数清零
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    await findButton(wrapper, '立即重试').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.fetch-error-bar').exists()).toBe(false)
+    expect(mockApi.getNetworkStats).toHaveBeenCalledTimes(3)
+
+    wrapper.unmount()
+  })
+
   it('58E-13 轮询在飞去重：慢响应期间 tick 不叠加拉取，完成后下轮恢复', async () => {
     vi.useFakeTimers()
     let resolveStats: ((v: unknown) => void) | null = null

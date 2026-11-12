@@ -99,11 +99,14 @@ function togglePosition() {
  *   - Ctrl+L : 聚焦 Logcat 标签
  *   - Ctrl+Shift+` : 聚焦 Shell 标签
  * Shell 标签活动时一律让位（不 preventDefault、不动作），Ctrl+L 等交还终端；
- * 反引号统一按物理键 e.code==='Backquote' 判定并以 shiftKey 区分两分支——
- * e.key 随布局漂移（Shift+` 多为 '~'）会漏触发或双触发两个分支。
+ * 反引号与 L 统一按物理键 e.code 判定（方案 58 E-28：e.key 随 CapsLock/布局
+ * 漂移为 'L' 时旧 e.key==='l' 判定失效）；弹层（el-dialog/ElMessageBox 的
+ * .el-overlay、命令面板自绘的 .cmd-overlay）打开时同样让位，防止快捷键
+ * 在模态背后抢切标签页或挪动面板。
  */
 function handleKeydown(e: KeyboardEvent) {
   if (!e.ctrlKey || activeTab.value === 'shell') return
+  if (document.querySelector('.el-overlay, .cmd-overlay')) return
   const backquote = e.code === 'Backquote'
   if (backquote && e.shiftKey) {
     e.preventDefault()
@@ -111,7 +114,7 @@ function handleKeydown(e: KeyboardEvent) {
   } else if (backquote) {
     e.preventDefault()
     togglePosition()
-  } else if (e.key === 'l') {
+  } else if (e.code === 'KeyL') {
     e.preventDefault()
     activeTab.value = 'logcat'
   }

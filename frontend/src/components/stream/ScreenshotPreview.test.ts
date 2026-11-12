@@ -21,6 +21,11 @@
  *     Shift 等比（角取较大轴）、原地按手柄/缩放中 Escape 不产步、悬停光标映射
  *   - 导出 PNG：canvas.toBlob(..., 'image/png') 产出 → annotated 文件名下载 + 产物 URL 回收
  *   - 直接保存：原始 blob URL 以原文件名下载，弹窗打开期不回收
+ *   - 关闭确认（方案 58 D-02）：有标注 before-close 走 ElMessageBox.confirm，确认才关、
+ *     取消保持打开；无标注直接关
+ *   - 编辑态空白退出（方案 58 D-17）：双击编辑中点空白退出编辑、不落重复文字、
+ *     后续确认不写回旧命令
+ *   - 悬停按需重绘（方案 58 D-22）：非 ghost 态悬停不触发全量重绘；文字 ghost 态悬停仍重绘
  *
  * 说明：happy-dom 的 canvas.getContext('2d') 返回 null、无真实绘制——按语义层断言：
  * 把 2d context mock 成记录调用（clearRect/drawImage/beginPath/moveTo/lineTo/stroke/
@@ -35,9 +40,11 @@ import ScreenshotPreview from './ScreenshotPreview.vue'
 
 const hEl = vi.hoisted(() => ({
   ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  ElMessageBox: { confirm: vi.fn() },
 }))
 vi.mock('element-plus', () => ({
   ElMessage: hEl.ElMessage,
+  ElMessageBox: hEl.ElMessageBox,
 }))
 
 /** 记录全部绘制调用的 fake 2d context。 */
@@ -128,10 +135,10 @@ const mountedWrappers: VueWrapper[] = []
 
 const ElDialogStub = {
   name: 'ElDialog',
-  props: ['modelValue', 'title'],
+  props: ['modelValue', 'title', 'beforeClose'],
   emits: ['update:modelValue'],
   template:
-    '<div v-if="modelValue" class="stub-dialog"><div class="stub-dialog-title">{{ title }}</div><slot /></div>',
+    '<div v-if="modelValue" class="stub-dialog"><div class="stub-dialog-title">{{ title }}</div><button class="stub-dialog-close" type="button" @click="beforeClose ? beforeClose(() => $emit(\'update:modelValue\', false)) : $emit(\'update:modelValue\', false)" /><slot /></div>',
 }
 
 const ElButtonStub = {
@@ -240,6 +247,10 @@ async function drawShape(wrapper: VueWrapper, toolClass: string, to = { x: 60, y
 
 beforeEach(() => {
   anchors = []
+  hEl.ElMessage.success.mockReset()
+  hEl.ElMessage.error.mockReset()
+  hEl.ElMessage.warning.mockReset()
+  hEl.ElMessageBox.confirm.mockReset().mockResolvedValue(undefined)
   fakeCtx.calls.length = 0
   fakeCtx.fillTextLog.length = 0
   fakeCtx.fontLog.length = 0
@@ -986,10 +997,10 @@ describe('ScreenshotPreview 新工具（T4）', () => {
     expect(commandCount(wrapper)).toBe(1)
     expect(commandList(wrapper)[0].kind).toBe('highlight')
 
-    // 清记录后触发一次回放重绘（无拖拽的 hover move），验证提交命令的渲染语义
+    // 清记录后触发一次回放重绘（pointerleave 必重绘；悬停 move 方案 58 D-22 后按需重绘不可依赖）
     fakeCtx.calls.length = 0
     fakeCtx.alphaLog.length = 0
-    await wrapper.find('canvas').trigger('pointermove', { clientX: 30, clientY: 30 })
+    await wrapper.find('canvas').trigger('pointerleave')
     await nextTick()
 
     expect(fakeCtx.calls).toContain('save')
@@ -1412,5 +1423,107 @@ describe('ScreenshotPreview 缩放手柄（方案 47 T3）', () => {
 
     await canvas.trigger('pointermove', { clientX: 200, clientY: 100 }) // 远离所有手柄
     expect(el.style.cursor).toBe('')
+  })
+})
+
+describe('ScreenshotPreview 关闭确认（方案 58 D-02）', () => {
+  it('有标注：关闭走 ElMessageBox.confirm，确认后才发 close', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    await drawShape(wrapper, '.tool-pen')
+
+    // 手动悬挂 confirm 落定时机：默认 mock 的微任务会在 trigger 内部被冲刷，测不出「确认前不关」
+    let resolveConfirm: () => void = () => {}
+    hEl.ElMessageBox.confirm.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveConfirm = resolve
+        }),
+    )
+
+    await wrapper.find('.stub-dialog-close').trigger('click')
+    expect(hEl.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('close')).toBeUndefined() // 确认落定前不关闭
+
+    resolveConfirm()
+    await flushPromises()
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('有标注：取消确认保持打开、不发 close', async () => {
+    hEl.ElMessageBox.confirm.mockRejectedValue(new Error('cancel'))
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    await drawShape(wrapper, '.tool-pen')
+
+    await wrapper.find('.stub-dialog-close').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.find('.stub-dialog').exists()).toBe(true)
+  })
+
+  it('无标注：直接关闭不弹确认', async () => {
+    const wrapper = await mountAndSettle()
+
+    await wrapper.find('.stub-dialog-close').trigger('click')
+    expect(hEl.ElMessageBox.confirm).not.toHaveBeenCalled()
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+})
+
+describe('ScreenshotPreview 编辑态空白退出（方案 58 D-17）', () => {
+  it('双击进入编辑后点空白：退出编辑、不落重复文字、后续确认不写回旧命令', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('告警')
+    await wrapper.find('.text-confirm').trigger('click')
+    const canvas = wrapper.find('canvas')
+    await canvas.trigger('pointerdown', { clientX: 50, clientY: 30 }) // 画布 (100,60) 落字
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1)
+
+    await canvas.trigger('dblclick', { clientX: 55, clientY: 32 }) // 进入编辑（confirmedText=原文案）
+    await nextTick()
+
+    // 点空白（画布 600,500）：原缺陷——editingIndex 滞留且 confirmedText 残留，
+    // 会把原文案复制成第二份命令
+    await canvas.trigger('pointerdown', { clientX: 300, clientY: 250 })
+    await canvas.trigger('pointerup', { clientX: 300, clientY: 250 })
+    await nextTick()
+    expect(commandCount(wrapper)).toBe(1)
+    expect(selectedIdx(wrapper)).toBeNull()
+
+    // 原缺陷残留：editingIndex 未清 → 改稿「确认」写回旧命令并产 edit-text 步
+    await wrapper.find('input.text-draft').setValue('误写文案')
+    await wrapper.find('.text-confirm').trigger('click')
+    await nextTick()
+    const cmds = commandList(wrapper) as unknown as Array<{ text: string }>
+    expect(cmds[0].text).toBe('告警')
+    expect(historyCount(wrapper)).toBe(1)
+  })
+})
+
+describe('ScreenshotPreview 悬停按需重绘（方案 58 D-22）', () => {
+  it('非 ghost 态悬停不触发全量重绘；文字 ghost 态悬停仍重绘', async () => {
+    const wrapper = await mountAndSettle()
+    mockCanvasRect(wrapper)
+    await drawShape(wrapper, '.tool-pen')
+    const canvas = wrapper.find('canvas')
+
+    fakeCtx.calls.length = 0
+    await canvas.trigger('pointermove', { clientX: 200, clientY: 150 }) // 空白悬停（画笔工具）
+    await nextTick()
+    expect(fakeCtx.calls).not.toContain('clearRect') // 原缺陷：每次 mousemove 全量重绘
+
+    // 文字 ghost 态：悬停预览依赖重绘，须保留
+    await wrapper.find('.tool-text').trigger('click')
+    await wrapper.find('input.text-draft').setValue('ghost')
+    await wrapper.find('.text-confirm').trigger('click')
+    fakeCtx.calls.length = 0
+    await canvas.trigger('pointermove', { clientX: 100, clientY: 80 })
+    await nextTick()
+    expect(fakeCtx.calls).toContain('clearRect')
   })
 })

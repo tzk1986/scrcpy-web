@@ -86,7 +86,9 @@ const deviceB = {
 
 const ElButtonStub = {
   name: 'ElButton',
-  template: '<button class="stub-btn" type="button"><slot /></button>',
+  props: { loading: Boolean },
+  template:
+    '<button class="stub-btn" type="button" :data-loading="String(!!loading)"><slot /></button>',
 }
 
 const ElDialogStub = {
@@ -972,6 +974,49 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
+  // ==================== 方案 58 E-23：并发行内断开 loading 互不顶掉 ====================
+
+  it('E-23：两台并发断开，先完成者不清掉后发起者的 loading', async () => {
+    const deviceC = {
+      id: '192.168.1.99:5555',
+      model: 'Magic 7',
+      os_version: '13',
+      resolution: [1080, 2340] as [number, number],
+      battery: 50,
+      status: 'online',
+    }
+    mockApi.listDevices.mockResolvedValue([deviceB, deviceC])
+    let resolveB: ((v: unknown) => void) | null = null
+    let resolveC: ((v: unknown) => void) | null = null
+    mockApi.disconnectDevice
+      .mockImplementationOnce(() => new Promise((r) => { resolveB = r }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveC = r }))
+    const wrapper = await mountDashboard()
+    await flushPromises()
+
+    const btns = () => wrapper.findAll('button').filter((b) => b.text() === '断开')
+    expect(btns()).toHaveLength(2)
+
+    await btns()[0].trigger('click') // B 在飞
+    await btns()[1].trigger('click') // C 在飞（旧单槽实现此刻已顶掉 B）
+    await flushPromises()
+    expect(btns()[0].attributes('data-loading')).toBe('true')
+    expect(btns()[1].attributes('data-loading')).toBe('true')
+
+    resolveB!({ success: true })
+    await flushPromises()
+    // B 完成仅撤 B；C 仍在飞（旧实现 finally 置 null 会误清 C）
+    expect(btns()[0].attributes('data-loading')).toBe('false')
+    expect(btns()[1].attributes('data-loading')).toBe('true')
+
+    resolveC!({ success: true })
+    await flushPromises()
+    expect(btns()[1].attributes('data-loading')).toBe('false')
+    expect(mockApi.disconnectDevice).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+  })
+
   // ==================== 方案 36 第三批：扫描记录独立卡片 + localStorage ====================
 
   it('扫描完成后写入 localStorage：label/端口/时间/未连接主机清单（第三批）', async () => {
@@ -1013,6 +1058,8 @@ describe('Dashboard', () => {
     expect(card.exists()).toBe(true)
     expect(card.find('.scan-record-meta').text()).toContain('10.0.0.0/24')
     expect(card.find('.scan-record-meta').text()).toContain('6666')
+    // 方案 58 E-32：label 与端口之间用全角冒号且无多余空格（中文页统一标点）
+    expect(card.find('.scan-record-meta').text()).toContain('10.0.0.0/24：6666')
     expect(card.find('.scan-record-row').text()).toContain('10.0.0.5')
 
     // 恢复出口：行内连接用记录里存的端口（非表单当前 5555）
@@ -1024,6 +1071,66 @@ describe('Dashboard', () => {
     await flushPromises()
     expect(mockApi.connectDevice).toHaveBeenCalledWith('10.0.0.5', 6666)
 
+    wrapper.unmount()
+  })
+
+  // 方案 58 E-31：恢复前全量形状校验，坏记录整键弃用（旧实现只查 hosts 是数组）
+  it('恢复扫描记录：形状不符（缺字段/类型错/端口越界/ip 空/failed 非串）一律弃键不呈现（E-31）', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    const badRecords: unknown[] = [
+      // 缺 hosts
+      { label: 'a/24', port: 5555, scannedAt: 1 },
+      // 缺 label
+      { port: 5555, scannedAt: 1, hosts: [] },
+      // 缺 scannedAt
+      { label: 'a/24', port: 5555, hosts: [] },
+      // port 非整数
+      { label: 'a/24', port: 55.5, scannedAt: 1, hosts: [] },
+      // port 越界（0）
+      { label: 'a/24', port: 0, scannedAt: 1, hosts: [] },
+      // port 越界（>65535）
+      { label: 'a/24', port: 65536, scannedAt: 1, hosts: [] },
+      // port 类型错（字符串）
+      { label: 'a/24', port: '5555', scannedAt: 1, hosts: [] },
+      // scannedAt 类型错
+      { label: 'a/24', port: 5555, scannedAt: 'x', hosts: [] },
+      // hosts 条目非对象
+      { label: 'a/24', port: 5555, scannedAt: 1, hosts: ['10.0.0.5'] },
+      // hosts 条目 ip 非串
+      { label: 'a/24', port: 5555, scannedAt: 1, hosts: [{ ip: 123 }] },
+      // hosts 条目 ip 空串
+      { label: 'a/24', port: 5555, scannedAt: 1, hosts: [{ ip: '' }] },
+      // hosts 条目 failed 非串（若存在须为字符串）
+      { label: 'a/24', port: 5555, scannedAt: 1, hosts: [{ ip: '10.0.0.5', failed: 123 }] },
+      // 顶层为数组
+      [{ label: 'a/24', port: 5555, scannedAt: 1, hosts: [] }],
+      // 顶层为字符串
+      '"just a string"',
+      // 顶层为数字
+      42,
+    ]
+    for (const bad of badRecords) {
+      localStorage.setItem('oscrpy-scan-record', JSON.stringify(bad))
+      const wrapper = await mountDashboard()
+      expect(wrapper.find('.scan-record-card').exists()).toBe(false)
+      // 坏键必须弃用，不留到下次页载
+      expect(localStorage.getItem('oscrpy-scan-record')).toBeNull()
+      wrapper.unmount()
+      localStorage.clear()
+    }
+
+    // 合法记录仍正常恢复（回归护栏：校验不得误杀好数据）
+    localStorage.setItem(
+      'oscrpy-scan-record',
+      JSON.stringify({
+        label: '10.0.0.0/24',
+        port: 5555,
+        scannedAt: 1700000000000,
+        hosts: [{ ip: '10.0.0.5' }, { ip: '10.0.0.6', failed: '握手超时' }],
+      })
+    )
+    const wrapper = await mountDashboard()
+    expect(wrapper.find('.scan-record-card').exists()).toBe(true)
     wrapper.unmount()
   })
 

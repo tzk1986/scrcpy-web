@@ -62,7 +62,10 @@ vi.mock('@/services/api', () => ({ api: mockApi }))
 const elMessage = vi.hoisted(() => ({
   success: vi.fn(), error: vi.fn(), warning: vi.fn(),
 }))
-vi.mock('element-plus', () => ({ ElMessage: elMessage }))
+const elMessageBox = vi.hoisted(() => ({
+  confirm: vi.fn(),
+}))
+vi.mock('element-plus', () => ({ ElMessage: elMessage, ElMessageBox: elMessageBox }))
 
 // ===== Element Plus 轻量 stub（happy-dom 下不引入真实组件库） =====
 
@@ -163,7 +166,7 @@ const DynamicScrollerStub = defineComponent({
     expose({ scrollToBottom: scrollerCalls.scrollToBottom })
     return () => {
       const items = props.items as Array<Record<string, unknown>>
-      // 关键：items 为空时渲染 #empty slot，否则既有 .empty-state 用例（:316 已暂停提示 / :323 ▶ 开始）失败
+      // 关键：items 为空时渲染 #empty slot，否则既有 .empty-state 用例（已暂停提示 / 等待日志…）失败
       return h(
         'div',
         { class: 'dynamic-scroller' },
@@ -238,6 +241,7 @@ beforeEach(() => {
   elMessage.success.mockClear()
   elMessage.error.mockClear()
   elMessage.warning.mockClear()
+  elMessageBox.confirm.mockReset().mockResolvedValue(undefined) // 默认确认清理
   clipboard.writeText.mockClear()
   scrollerCalls.scrollToBottom.mockClear()
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard })
@@ -364,10 +368,11 @@ describe('LogcatView', () => {
 
     await findButton(wrapper, '开始').trigger('click')
     await vi.waitFor(() => expect(store.wsConnected).toBe(true))
-    // 录制中：按钮切换为暂停、无暂停横幅、空列表提示「开始」、显示 LIVE
+    // 录制中：按钮切换为暂停、无暂停横幅、空列表提示「等待日志…」（方案 58 E-19：
+    // 原「▶ 开始」与按钮录制态矛盾）、显示 LIVE
     expect(findButton(wrapper, '暂停').exists()).toBe(true)
     expect(wrapper.find('.paused-banner').exists()).toBe(false)
-    expect(wrapper.find('.empty-state').text()).toContain('▶ 开始')
+    expect(wrapper.find('.empty-state').text()).toContain('等待日志…')
     expect(wrapper.find('.status-indicator.live').text()).toBe('LIVE')
 
     await findButton(wrapper, '暂停').trigger('click')
@@ -400,16 +405,18 @@ describe('LogcatView', () => {
     await nextTick()
     expect(store.logs.length).toBe(0)
 
-    // 清理：删除会话日志 + 刷新 DB 统计
+    // 清理（方案 58 E-07）：先确认弹层，确认后删除会话日志 + 刷新 DB 统计 + 成功 toast
     const cleanBtn = findButton(wrapper, '清理')
     expect(cleanBtn.attributes('data-loading')).toBe('false')
     await cleanBtn.trigger('click')
+    expect(elMessageBox.confirm).toHaveBeenCalledTimes(1)
     await flushPromises()
     expect(mockApi.cleanupSessionLogs).toHaveBeenCalledWith('sess-1')
     expect(mockApi.getDebugStats).toHaveBeenCalled()
     expect(store.logs.length).toBe(0)
     expect(findButton(wrapper, '清理').attributes('data-loading')).toBe('false')
     expect(wrapper.find('.db-stats').text()).toContain('DB: 12.5 MB')
+    expect(elMessage.success).toHaveBeenCalledWith('已清理当前会话日志')
 
     // DB 统计拉取失败：记录错误但不影响清理流程
     const statsErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -422,7 +429,7 @@ describe('LogcatView', () => {
     statsErrSpy.mockRestore()
   })
 
-  it('清理失败时记录错误并复位 loading', async () => {
+  it('清理失败时明示错误并复位 loading（方案 58 E-07）', async () => {
     const store = useDebugStore()
     store.sessionId = 'sess-1'
     mockApi.cleanupSessionLogs.mockRejectedValueOnce(new Error('db locked'))
@@ -435,8 +442,40 @@ describe('LogcatView', () => {
 
     expect(errSpy).toHaveBeenCalled()
     expect(errSpy.mock.calls.some(([msg]) => String(msg).includes('cleanup'))).toBe(true)
+    expect(elMessage.error).toHaveBeenCalledWith('清理失败: 未知错误')
+    expect(elMessage.success).not.toHaveBeenCalled()
     expect(findButton(wrapper, '清理').attributes('data-loading')).toBe('false')
     errSpy.mockRestore()
+  })
+
+  it('清理取消确认：不删服务器日志（方案 58 E-07）', async () => {
+    elMessageBox.confirm.mockRejectedValueOnce('cancel')
+    const store = useDebugStore()
+    store.sessionId = 'sess-1'
+    const wrapper = mountView()
+    await flushPromises()
+
+    await findButton(wrapper, '清理').trigger('click')
+    await flushPromises()
+
+    expect(elMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(mockApi.cleanupSessionLogs).not.toHaveBeenCalled()
+    expect(findButton(wrapper, '清理').attributes('data-loading')).toBe('false')
+  })
+
+  it('卸载清除搜索防抖定时器（方案 58 E-20）', async () => {
+    vi.useFakeTimers()
+    const store = useDebugStore()
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('input.el-input').setValue('late')
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(400)
+
+    // 原缺陷：残留回调在卸载后仍把过滤写进 store（切回页面无故带旧关键词）
+    expect(store.filter.tag).toBeNull()
+    vi.useRealTimers()
   })
 
   it('导出日志：JSON/CSV 触发下载，无会话时跳过', async () => {

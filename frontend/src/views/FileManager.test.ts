@@ -42,6 +42,10 @@ const mockApi = vi.hoisted(() => ({
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
 
+// 方案 58 E-30：返回设备兜底导航断言用
+const fmRouter = vi.hoisted(() => ({ push: vi.fn() }))
+vi.mock('vue-router', () => ({ useRouter: () => fmRouter }))
+
 // happy-dom 无 createObjectURL / revokeObjectURL 实现（下载保存链路需要）
 const urlStub = vi.hoisted(() => ({
   createObjectURL: vi.fn(),
@@ -221,6 +225,7 @@ beforeEach(() => {
   elMock.ElMessageBox.confirm.mockReset().mockResolvedValue('confirm')
   urlStub.createObjectURL.mockReset().mockReturnValue('blob:fm-dl')
   urlStub.revokeObjectURL.mockReset()
+  fmRouter.push.mockClear()
   Object.defineProperty(URL, 'createObjectURL', {
     configurable: true,
     value: urlStub.createObjectURL,
@@ -615,6 +620,26 @@ describe('FileManager', () => {
     expect(wrapper.find('.btn-upload').attributes('disabled')).toBeDefined()
     expect(wrapper.find('.btn-download').attributes('disabled')).toBeDefined()
     expect(wrapper.find('.btn-delete').attributes('disabled')).toBeDefined()
+
+    wrapper.unmount()
+  })
+
+  it('返回设备：上一条历史恰为设备详情页用 back；直达无历史回落 push（E-30）', async () => {
+    // A：栈内有同目标历史 → back 不垫栈
+    window.history.replaceState({ back: '/device/dev1' }, '')
+    const backSpy = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    let wrapper = await mountView()
+    await wrapper.find('.btn-back').trigger('click')
+    expect(backSpy).toHaveBeenCalledOnce()
+    expect(fmRouter.push).not.toHaveBeenCalled()
+    wrapper.unmount()
+    backSpy.mockRestore()
+
+    // B：直达/无历史 → push 设备详情（旧实现纯 history.back 静默失效）
+    window.history.replaceState(null, '')
+    wrapper = await mountView()
+    await wrapper.find('.btn-back').trigger('click')
+    expect(fmRouter.push).toHaveBeenCalledWith('/device/dev1')
 
     wrapper.unmount()
   })

@@ -13,6 +13,7 @@ function deps() {
     navigate: vi.fn(),
     disconnect: vi.fn(),
     setDebugTab: vi.fn(),
+    debugAvailable: true,
     toggleFullscreen: vi.fn(),
   }
 }
@@ -37,6 +38,12 @@ describe('buildCommands', () => {
   it('非设备页（currentDeviceId=null）不含断开命令', () => {
     const cmds = buildCommands({ ...deps(), currentDeviceId: null })
     expect(cmds.map(c => c.id)).not.toContain('device.disconnect')
+  })
+
+  it('调试面板不可用（debugAvailable=false）不注册切 Tab 命令（方案 58 E-29）', () => {
+    const cmds = buildCommands({ ...deps(), debugAvailable: false })
+    expect(cmds.map(c => c.id).filter(id => id.startsWith('debug.tab.'))).toEqual([])
+    expect(cmds.map(c => c.section)).not.toContain('调试')
   })
 
   it('命令 run 调用对应副作用', () => {

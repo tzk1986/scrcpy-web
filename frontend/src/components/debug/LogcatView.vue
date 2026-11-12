@@ -140,7 +140,7 @@
       <template #empty>
         <div class="empty-state">
           <span v-if="!debugStore.isRecording">已暂停录制，无新日志</span>
-          <span v-else>▶ 开始</span>
+          <span v-else>等待日志…</span>
         </div>
       </template>
     </DynamicScroller>
@@ -152,14 +152,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useDebugStore } from '@/stores/debug'
 import { api } from '@/services/api'
 import { highlightLogcatMessage } from '@/utils/logcatHighlight'
-import { triggerDownload, errText } from '@/services/exportKit'
+import { triggerDownload } from '@/services/exportKit'
+import { errText } from '@/services/apiError'
 
 /** 目标设备 ID（从父组件传入）。 */
 defineProps<{ deviceId: string }>()
@@ -245,6 +246,14 @@ const scrollerItems = computed(() =>
 // 开启录制时才连接 WS、拉历史并发起后端采集
 onMounted(() => {
   // 保留空挂载钩子：未来的 DOM 初始化逻辑放这里
+})
+
+// 方案 58 E-20：卸载清理搜索防抖定时器——否则残留回调在组件销毁后仍写 store/触发过滤
+onUnmounted(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
 })
 
 // 监听过滤条件变化，通过 store 的 setFilter 同步到服务端
@@ -341,8 +350,19 @@ async function loadDbStats() {
 /**
  * 执行日志清理。
  * 清除当前会话的所有日志（数据库 + 内存缓冲区），并刷新统计信息。
+ * 方案 58 E-07：不可恢复的服务器端删除——前置 ElMessageBox.confirm（FileManager
+ * 删除同款），成败均明示（防静默删除误以为已清/失败误以为已清）。
  */
 async function runCleanup() {
+  try {
+    await ElMessageBox.confirm(
+      '将删除当前会话在服务器上的全部日志（数据库 + 内存缓冲），不可恢复，确定清理？',
+      '清理确认',
+      { type: 'warning', confirmButtonText: '清理', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 用户取消
+  }
   cleaning.value = true
   try {
     if (debugStore.sessionId) {
@@ -352,7 +372,9 @@ async function runCleanup() {
     // 清除内存缓冲区，使界面立即更新
     debugStore.logs = []
     await loadDbStats()
+    ElMessage.success('已清理当前会话日志')
   } catch (e) {
+    ElMessage.error(`清理失败: ${errText(e, '未知错误')}`)
     console.error('Failed to run cleanup:', e)
   } finally {
     cleaning.value = false

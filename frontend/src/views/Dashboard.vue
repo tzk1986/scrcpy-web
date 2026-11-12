@@ -93,7 +93,7 @@
       <div class="scan-record-head">
         <span class="scan-record-title">扫描记录</span>
         <span v-if="scanRecord" class="scan-record-meta">
-          {{ scanRecord.label }} : {{ scanRecord.port }} · {{ recordTimeText }}
+          {{ scanRecord.label }}：{{ scanRecord.port }} · {{ recordTimeText }}
         </span>
         <el-button size="small" @click="clearScanRecord">清除记录</el-button>
       </div>
@@ -287,7 +287,7 @@
             type="danger"
             plain
             @click="handleDisconnect(row.id)"
-            :loading="disconnectingId === row.id"
+            :loading="disconnectingIds.has(row.id)"
           >
             断开
           </el-button>
@@ -452,7 +452,8 @@ const router = useRouter()
 // ===== 对话框状态 =====
 const dialogVisible = ref(false)
 const connecting = ref(false)
-const disconnectingId = ref<string | null>(null)
+// 方案 58 E-23：Set 承载并发断开各自的 loading，单槽会被后发起者顶掉/先完成者误清
+const disconnectingIds = ref<Set<string>>(new Set())
 const formRef = ref<FormInstance>()
 
 // ===== 网段扫描状态（方案 36） =====
@@ -814,13 +815,32 @@ function saveScanRecord() {
   localStorage.setItem(SCAN_RECORD_KEY, JSON.stringify(scanRecord.value))
 }
 
+/** 方案 58 E-31：全量形状校验——任一字段不符即整键弃用，防部分损坏记录渲染出 NaN 端口/空行等怪态 */
+function isScanRecordData(data: unknown): data is ScanRecordData {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return false
+  const d = data as Record<string, unknown>
+  if (typeof d.label !== 'string') return false
+  if (typeof d.port !== 'number' || !Number.isInteger(d.port) || d.port < 1 || d.port > 65535) return false
+  if (typeof d.scannedAt !== 'number' || !Number.isFinite(d.scannedAt)) return false
+  if (!Array.isArray(d.hosts)) return false
+  return d.hosts.every((h) => {
+    if (typeof h !== 'object' || h === null) return false
+    const e = h as Record<string, unknown>
+    if (typeof e.ip !== 'string' || !e.ip) return false
+    return e.failed === undefined || typeof e.failed === 'string'
+  })
+}
+
 /** 第三批：页载恢复记录（端口快照随记录恢复，损坏数据静默清理） */
 function restoreScanRecord() {
   try {
     const raw = localStorage.getItem(SCAN_RECORD_KEY)
     if (!raw) return
-    const data = JSON.parse(raw) as ScanRecordData
-    if (!Array.isArray(data.hosts)) return
+    const data: unknown = JSON.parse(raw)
+    if (!isScanRecordData(data)) {
+      localStorage.removeItem(SCAN_RECORD_KEY)
+      return
+    }
     scanRecord.value = data
     scanPort.value = data.port
   } catch {
@@ -954,14 +974,14 @@ async function handleDisconnect(deviceId: string) {
   } catch {
     return // 取消不断开
   }
-  disconnectingId.value = deviceId
+  disconnectingIds.value.add(deviceId)
   try {
     await store.disconnectDevice(deviceId)
     ElMessage.success(`已断开 ${deviceId}`)
   } catch (e) {
     ElMessage.error(`断开失败: ${extractApiError(e, '未知错误')}`)
   } finally {
-    disconnectingId.value = null
+    disconnectingIds.value.delete(deviceId)
   }
 }
 

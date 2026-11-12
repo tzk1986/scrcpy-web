@@ -49,6 +49,7 @@
     title="截图预览"
     width="760px"
     :close-on-click-modal="false"
+    :before-close="handleBeforeClose"
   >
     <div class="screenshot-preview">
       <div class="toolbar">
@@ -165,7 +166,7 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   FONT_RATIO_DEFAULT,
   FONT_RATIO_MAX,
@@ -295,6 +296,26 @@ const dialogVisible = computed({
     if (!value) emit('close')
   },
 })
+
+/**
+ * 方案 58 D-02：弹窗关闭前确认（X/Esc 均经 el-dialog before-close 统一拦截）——
+ * 已有标注未导出时防误关全丢；无标注直接关。
+ */
+function handleBeforeClose(done: () => void) {
+  if (commands.value.length === 0) {
+    done()
+    return
+  }
+  ElMessageBox.confirm('已有标注尚未导出，关闭将丢弃全部标注，仍要关闭吗？', '关闭确认', {
+    confirmButtonText: '仍要关闭',
+    cancelButtonText: '继续编辑',
+    type: 'warning',
+  })
+    .then(() => done())
+    .catch(() => {
+      // 用户取消：保持弹窗打开继续编辑
+    })
+}
 
 /** 回收组件自建的 object URL（外部传入的 URL 字符串不回收）。 */
 function releaseObjectUrl() {
@@ -552,6 +573,14 @@ function onPointerDown(e: PointerEvent) {
     return
   }
   selectedIndex.value = null
+  // 方案 58 D-17：编辑态点空白按取消处理——否则 editingIndex 滞留（输入框悬空跟随、
+  // 后续「确认」写回旧命令）且 confirmedText 残留（原文案被复制成新命令）
+  if (editingIndex.value !== null) {
+    editingIndex.value = null
+    confirmedText.value = ''
+    redraw()
+    return
+  }
   const active = tool.value
   if (active === 'text') {
     // 文字工具：未确认文案时不落字
@@ -644,7 +673,9 @@ function onPointerMove(e: PointerEvent) {
   const hovered = hitSelectedHandle(point)
   const canvas = canvasRef.value
   if (canvas) canvas.style.cursor = hovered ? HANDLE_CURSORS[hovered.handle] : ''
-  redraw()
+  // 方案 58 D-22：仅文字 ghost 预览需随悬停重绘；其余悬停只更新光标，
+  // 免大画布多标注下每次 mousemove 全量重绘掉帧
+  if (tool.value === 'text' && confirmedText.value) redraw()
 }
 
 function onPointerUp() {

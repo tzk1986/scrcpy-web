@@ -36,7 +36,10 @@
           <el-button type="primary" data-test="save-stream" :loading="saving" @click="saveStream">
             保存串流参数
           </el-button>
-          <el-button data-test="reset-stream" @click="resetStream">重置串流为出厂默认</el-button>
+          <!-- 方案 58 E-26：重置与保存共用 saving 互斥，防并发 PUT last-write-wins -->
+          <el-button data-test="reset-stream" :loading="saving" @click="resetStream">
+            重置串流为出厂默认
+          </el-button>
         </div>
       </div>
       <el-divider />
@@ -51,7 +54,7 @@
           >
             保存录屏参数
           </el-button>
-          <el-button data-test="reset-recording" @click="resetRecording">
+          <el-button data-test="reset-recording" :loading="saving" @click="resetRecording">
             重置录屏为出厂默认
           </el-button>
         </div>
@@ -88,6 +91,14 @@
           </el-descriptions-item>
         </el-descriptions>
       </template>
+      <!-- 方案 58 E-33：三态补全——加载中/失败可重试，不再只剩空卡片头 -->
+      <div v-else-if="settingsLoadFailed" class="load-placeholder" data-test="effective-failed">
+        <span>生效参数加载失败</span>
+        <el-button size="small" data-test="effective-retry" @click="retryLoadSettings">
+          重试
+        </el-button>
+      </div>
+      <div v-else class="load-placeholder" data-test="effective-loading">加载中…</div>
     </el-card>
 
     <el-card class="section-card" data-test="runtime-env">
@@ -137,6 +148,14 @@
           <template v-else>{{ updateResult.error }}</template>
         </div>
       </template>
+      <!-- 方案 58 E-33：运行环境卡三态补全 -->
+      <div v-else-if="runtimeEnvFailed" class="load-placeholder" data-test="runtime-failed">
+        <span>运行环境加载失败</span>
+        <el-button size="small" data-test="runtime-retry" @click="retryLoadRuntimeEnv">
+          重试
+        </el-button>
+      </div>
+      <div v-else class="load-placeholder" data-test="runtime-loading">加载中…</div>
     </el-card>
 
     <el-card class="section-card" data-test="device-overrides">
@@ -165,7 +184,9 @@
             >
               保存该设备覆盖
             </el-button>
-            <el-button data-test="clear-override" @click="clearOverride">清除该设备覆盖</el-button>
+            <el-button data-test="clear-override" :loading="saving" @click="clearOverride">
+              清除该设备覆盖
+            </el-button>
           </div>
         </template>
         <span v-else class="hint">选择设备后可为该设备单独调整串流参数（弱设备降规格）</span>
@@ -229,6 +250,9 @@ const h265Supported = ref(false)
 const saving = ref(false)
 const settingsView = ref<SettingsView | null>(null)
 const runtimeEnv = ref<RuntimeEnvView | null>(null)
+// 方案 58 E-33：两卡三态（null+未失败=加载中；失败=占位可重试）
+const settingsLoadFailed = ref(false)
+const runtimeEnvFailed = ref(false)
 const checkingUpdate = ref(false)
 const updateResult = ref<ScrcpyUpdateResult | null>(null)
 const streamForm = ref<StreamFormValue>({
@@ -260,6 +284,7 @@ function errorText(e: unknown, fallback: string): string {
 async function loadSettings() {
   const view = await api.getSettings()
   settingsView.value = view
+  settingsLoadFailed.value = false
   streamForm.value = {
     max_size: Number(view.stream.max_size.value),
     bit_rate: String(view.stream.bit_rate.value),
@@ -421,6 +446,29 @@ watch(overrideDeviceId, () => {
   syncOverrideForm()
 })
 
+/** 运行环境拉取（E-33）：成功清失败态；onMounted 与重试共用 */
+async function loadRuntimeEnv() {
+  runtimeEnv.value = await api.getRuntimeEnv()
+  runtimeEnvFailed.value = false
+}
+
+/** 失败占位「重试」：成功即渲染内容；再失败保持占位（首拉已弹过错误，不重复播报） */
+async function retryLoadSettings() {
+  try {
+    await loadSettings()
+  } catch {
+    settingsLoadFailed.value = true
+  }
+}
+
+async function retryLoadRuntimeEnv() {
+  try {
+    await loadRuntimeEnv()
+  } catch {
+    runtimeEnvFailed.value = true
+  }
+}
+
 /** 检查 scrcpy-server 上游版本（方案 45 §4.2）：仅手动触发提示，不自动下载。 */
 async function checkUpdate() {
   checkingUpdate.value = true
@@ -441,6 +489,7 @@ onMounted(() => {
     h265Supported.value = v
   })
   loadSettings().catch((e) => {
+    settingsLoadFailed.value = true
     ElMessage.error(errorText(e, '设置加载失败'))
   })
   // 设备级覆盖卡（T8）：拉取设备列表供选择；?device=<id> 查询串且在列表内 → 聚焦选中
@@ -458,14 +507,10 @@ onMounted(() => {
       ElMessage.warning('设备列表加载失败，设备级覆盖暂不可选')
     })
   // 运行环境信息（T6）：只读展示，与设置拉取并行
-  api
-    .getRuntimeEnv()
-    .then((v) => {
-      runtimeEnv.value = v
-    })
-    .catch((e) => {
-      ElMessage.error(errorText(e, '运行环境信息加载失败'))
-    })
+  loadRuntimeEnv().catch((e) => {
+    runtimeEnvFailed.value = true
+    ElMessage.error(errorText(e, '运行环境信息加载失败'))
+  })
 })
 </script>
 
@@ -518,5 +563,14 @@ onMounted(() => {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.load-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  color: #909399;
+  font-size: 13px;
 }
 </style>
