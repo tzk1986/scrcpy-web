@@ -929,6 +929,52 @@ async def test_events_queue_overflow_drops_oldest(fake: FakeDeviceService) -> No
     assert first["device"]["id"] == f"dev-{total - devices_module._SSE_QUEUE_MAXSIZE}"
 
 
+async def test_events_heartbeat_ping_on_idle(
+    fake: FakeDeviceService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """方案 58 C-01：空闲超拍发 `: ping` 注释帧（EventSource 忽略注释帧无语义
+    影响）；对半开/死 socket 的写必抛错走 finally 注销回调，僵尸连接不再静默
+    占满 _MAX_SSE_CLIENTS。"""
+    from app.core import launcher
+
+    launcher.register_shutdown_handler(None)  # 无停机信号
+    monkeypatch.setattr(devices_module, "_SSE_HEARTBEAT_INTERVAL", 0.05)
+    response = await devices_module.device_events(fake)  # type: ignore[arg-type]
+    stream = response.body_iterator
+    try:
+        line = await asyncio.wait_for(stream.__anext__(), timeout=2.0)
+        assert line == ": ping\n\n"
+    finally:
+        await stream.aclose()
+    assert fake._on_device_connected == []
+    assert fake._on_device_disconnected == []
+    assert fake._on_device_unreachable == []
+
+
+async def test_events_max_lifetime_terminates(
+    fake: FakeDeviceService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """方案 58 C-01：无事件无停机时连接超最大寿命仍优雅 return（客户端
+    EventSource 自动重连换新流），回调经 finally 注销——兜底半开连接外的
+    一切长尾占用。"""
+    from app.core import launcher
+
+    launcher.register_shutdown_handler(None)
+    monkeypatch.setattr(devices_module, "_SSE_HEARTBEAT_INTERVAL", 0.05)
+    monkeypatch.setattr(devices_module, "_SSE_MAX_LIFETIME", 0.3)
+    response = await devices_module.device_events(fake)  # type: ignore[arg-type]
+    stream = response.body_iterator
+
+    pings = 0
+    with pytest.raises(StopAsyncIteration):
+        while True:
+            line = await asyncio.wait_for(stream.__anext__(), timeout=2.0)
+            assert line == ": ping\n\n"
+            pings += 1
+    assert pings >= 2  # 生命周期内确有 ping 帧续命，非直接掐断
+    assert fake._on_device_connected == []
+
+
 def test_disconnect_invalid_port_400(fake: FakeDeviceService) -> None:
     """device_id 端口段非数字 → 400 INVALID_IDENTIFIER（非 500 兜底），不触达 service（A1 L3）。"""
     client = make_client()

@@ -81,6 +81,10 @@ async def batch_install(
 
 _MAX_SSE_CLIENTS = 16      # SSE 并发订阅上限（A1 L1：防页面开太多拖垮事件循环/内存）
 _SSE_QUEUE_MAXSIZE = 100   # 单连接事件缓冲上限，满则丢最旧（A1 L1：慢消费者不反压发布链）
+# 方案 58 C-01：空闲心跳与连接最大寿命（秒，测试 monkeypatch 收缩）——
+# ping 注释帧写死 socket 必抛错走 finally 注销，僵尸连接不再静默占满上限。
+_SSE_HEARTBEAT_INTERVAL = 15.0
+_SSE_MAX_LIFETIME = 3600.0
 
 
 @router.get("/events")
@@ -155,15 +159,31 @@ async def device_events(service: DeviceService = Depends(get_device_service)) ->
         停机优雅收尾（方案 23 T4 R2）：无限流会挂死 uvicorn 优雅停机
         （等待在途响应结束），故 get 空闲超时轮询停机标志，置位即正常
         return——响应完整收尾、连接随之关闭。
+
+        心跳与寿命（方案 58 C-01）：队列空时服务端从不写字节，半开死连接
+        （休眠/断链/代理/冻结标签）永不触发 finally 注销，僵尸可静默占满
+        16 上限致全员 503——空闲超 ``_SSE_HEARTBEAT_INTERVAL`` 发 ``: ping``
+        注释帧（EventSource 忽略注释帧，无语义影响；对死 socket 的写必抛错
+        走 finally），并加 ``_SSE_MAX_LIFETIME`` 到期优雅收尾兜底，前端
+        EventSource 断流自动重连换新流。
         """
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        last_write = start
         try:
             while True:
+                if loop.time() - start >= _SSE_MAX_LIFETIME:
+                    return
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=0.2)
                 except asyncio.TimeoutError:
                     if is_shutdown_requested():
                         return
+                    if loop.time() - last_write >= _SSE_HEARTBEAT_INTERVAL:
+                        last_write = loop.time()
+                        yield ": ping\n\n"
                     continue
+                last_write = loop.time()
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
             # 客户端断开或停机收尾：清理回调（公开 off_*，A1 L7 不触碰私有属性）

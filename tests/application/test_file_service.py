@@ -19,6 +19,8 @@ import pytest
 from app.application.file_service import FileService
 from app.core.exceptions import (
     AdbError,
+    DownloadTooLargeError,
+    DownloadTooManyFilesError,
     FileTooLargeError,
     InvalidPathError,
     JobNotFoundError,
@@ -292,6 +294,45 @@ async def test_download_multi_zip_dedup_arcnames(svc: FileService, adb: FakeAdb)
         assert zf.namelist() == ["a.txt", "a_1.txt", "a_2.txt"]
         assert zf.read("a_2.txt") == b"x" * 7
     assert job.total_size == 15
+    svc.finalize_download(job.id)
+
+
+async def test_download_rejects_too_many_files(
+    svc: FileService, adb: FakeAdb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """方案 58 C-06：多选 paths 条数超上限拒 400——先于互斥 fail-fast，
+    零 pull，设备锁不占用（防单请求塞整目录树串行占用 900s×N）。"""
+    monkeypatch.setattr(FileService, "MAX_DOWNLOAD_FILES", 3)
+    paths = []
+    for i in range(4):
+        p = f"/sdcard/{i}.txt"
+        adb.entries[p] = make_entry(f"{i}.txt", size=1)
+        adb.pull_contents[p] = b"x"
+        paths.append(p)
+    with pytest.raises(DownloadTooManyFilesError):
+        await svc.prepare_download("d", paths)
+    assert adb.pulled == []
+    # 被拒不占锁：随后正常下载成功
+    job, _, _ = await svc.prepare_download("d", paths[:2])
+    svc.finalize_download(job.id)
+
+
+async def test_download_zip_rejects_oversize_total(
+    svc: FileService, adb: FakeAdb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """方案 58 C-06：多选累计 size 超上限在 pull 前拒——stat 全量后判限，
+    一字节不拉，锁释放；单文件路径不受该限（录屏大文件下载保留）。"""
+    monkeypatch.setattr(FileService, "MAX_DOWNLOAD_TOTAL_BYTES", 10)
+    paths = []
+    for i in range(3):
+        p = f"/sdcard/big{i}.txt"
+        adb.entries[p] = make_entry(f"big{i}.txt", size=8)
+        adb.pull_contents[p] = b"x" * 8
+        paths.append(p)
+    with pytest.raises(DownloadTooLargeError):
+        await svc.prepare_download("d", paths)
+    assert adb.pulled == []
+    job, _, _ = await svc.prepare_download("d", paths[:1])  # 单文件不查总量
     svc.finalize_download(job.id)
 
 

@@ -177,14 +177,17 @@ class InteractiveShell:
                     break
                 text = chunk.decode("utf-8", errors="replace")
                 self._initial_output += text
-                logger.info("initial_output_chunk", text=repr(text), total_len=len(self._initial_output))
+                # 方案 58 F-16（8.5 日志隐私）：初始输出横幅/prompt 文本不入
+                # 日志（含设备主机名等环境信息），只记长度与累计量。
+                logger.debug("initial_output_chunk", chunk_len=len(text),
+                             total_len=len(self._initial_output))
                 # 转发给回调（用于显示初始 prompt）
                 if callback:
                     callback(text)
                 # 检测到 prompt（如 `rk3288:/ $ ` 或 `shell@rk3288:~ $ `
                 # 也支持 root 的 `# ` prompt）
                 if "$ " in text or "# " in text:
-                    logger.info("shell_prompt_detected", text=text.strip())
+                    logger.info("shell_prompt_detected", prompt_len=len(text.strip()))
                     break
         except asyncio.TimeoutError:
             logger.info("initial_output_timeout", total_len=len(self._initial_output))

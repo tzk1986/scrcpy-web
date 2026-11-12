@@ -174,6 +174,18 @@ def test_download_requires_paths(client):
     assert res.status_code == 422
 
 
+def test_download_paths_over_limit_422(client):
+    """方案 58 C-06：paths 条数超上限（200）接口层 422 拦截，不触达
+    service（不进互斥、不产生 pull）。"""
+    from app.application.file_service import FileService
+
+    c, fake = client
+    paths = [f"/sdcard/f{i}.txt" for i in range(FileService.MAX_DOWNLOAD_FILES + 1)]
+    res = c.get(f"{URL}/file/download", params={"paths": paths})
+    assert res.status_code == 422
+    assert fake.downloaded == []
+
+
 def test_upload_multipart(client):
     c, fake = client
     res = c.post(

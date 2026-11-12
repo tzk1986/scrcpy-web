@@ -88,12 +88,14 @@ async def list_files(
 @router.get("/{device_id}/file/download")
 async def download_files(
     device_id: str,
-    paths: list[str] = Query(..., min_length=1),
+    # 方案 58 C-06：条数上限（服务层同限纵深，覆盖直调路径）
+    paths: list[str] = Query(..., min_length=1, max_length=FileService.MAX_DOWNLOAD_FILES),
     service: FileService = Depends(get_file_service),
 ) -> FileResponse:
     """下载：单文件原样流、多选后端 zip。X-File-Job 头携带任务 ID。
 
-    互斥中 → 409 TRANSFER_BUSY；目录 → 400 NOT_A_FILE。
+    互斥中 → 409 TRANSFER_BUSY；目录 → 400 NOT_A_FILE；
+    条数越限 → 422 VALIDATION_ERROR。
     """
     job, artifact, filename = await service.prepare_download(device_id, paths)
     return FileResponse(

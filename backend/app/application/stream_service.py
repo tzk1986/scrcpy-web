@@ -32,7 +32,7 @@ from typing import AsyncIterator, Callable
 
 from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor
 from app.core.config import settings
-from app.core.exceptions import EncoderStalledError
+from app.core.exceptions import EncoderStalledError, StreamConfigConflictError
 from app.core.logging import get_logger
 from app.core.units import parse_bit_rate
 from app.domain.ports import EncoderOpts, VideoEncoder
@@ -152,10 +152,11 @@ class StreamService:
 
         # 设备级覆盖合并视图（方案 45 T8）：该设备无覆盖节时即全局 stream 对象本身
         s = device_stream_settings(device_id)
-        # 守卫（方案 45 T3）：raw 兜底链路（H264Parser 启发式解析）仅建模
-        # h264，h265 下语义不成立，禁入组合；video.py 主循环捕获后转脱敏 error
+        # 守卫（方案 45 T3；方案 58 B-03 转领域异常）：raw 兜底链路
+        # （H264Parser 启发式解析）仅建模 h264，h265 下语义不成立，禁入
+        # 组合；video.py 的 OpenScrcpyException 分支将 message 直达客户端
         if s.raw_stream_fallback and s.codec != "h264":
-            raise ValueError("raw_stream_fallback 仅支持 h264 编解码（冲突：codec=h265）")
+            raise StreamConfigConflictError(s.codec)
         base_bps = parse_bit_rate(s.bit_rate)
         current_bps = base_bps
         advisor: BitrateAdvisor | None = None
@@ -308,7 +309,7 @@ class StreamService:
         """当前流的重启轮次（每次自适应码率重启 +1），WS 层据此重置解析器。"""
         return self._epoch.get(device_id, 0)
 
-    def use_packet_protocol(self) -> bool:
+    def use_packet_protocol(self, device_id: str) -> bool:
         """
         当前推流是否走 12 字节包头协议（方案 17 实施项 1b）。
 
@@ -316,8 +317,12 @@ class StreamService:
         启发式解析）。WS 层据此决定帧聚合策略：协议模式下每次
         yield 恰为服务端一个完整包（= 一个 AU），包内 NALU 直接
         合并发送；兜底模式下沿用 AU 启发式聚合（实施项 1a 尾步骤）。
+
+        方案 58 B-03：读取口径统一为 device_stream_settings(device_id)
+        设备视图——与 start_stream 守卫、scrcpy 启动器三处同源，
+        杜绝「守卫放行但链路按全局口径」的漂移。
         """
-        return not settings().stream.raw_stream_fallback
+        return not device_stream_settings(device_id).raw_stream_fallback
 
     def idle_reset_seconds(self) -> float:
         """当前空闲保活间隔（秒），0=关闭；随 config 消息下发给前端联动回退阈值。"""

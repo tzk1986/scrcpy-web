@@ -43,6 +43,20 @@ from app.scrcpy.stream_protocol import (
 DEVICE_ID = "emulator-5554"
 
 
+class FakeAdbProc:
+    """兜底 adb 假进程：wait 可 await 且立即成功退出（方案 58 A-05 并发闸
+    会等待进程退出后才放行下一个输入）。"""
+
+    def __init__(self) -> None:
+        self.killed = False
+
+    async def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+
 # ---------------------------------------------------------------------------
 # 协议字节构造（与 tests/scrcpy/test_stream_protocol.py 同构，避免跨文件依赖）
 # ---------------------------------------------------------------------------
@@ -664,6 +678,29 @@ async def test_raw_fallback_mode(monkeypatch, wm_output, wm_error, expected_res)
         assert seen[0][1] is None  # 分辨率未知 → 不建发送器（走 adb 回退）
 
 
+async def test_raw_fallback_uses_device_view(monkeypatch):
+    """方案 58 B-03：launcher 的 raw 兜底判定消费 device_stream_settings 设备
+    视图（与守卫/WS 同口径），不再直读全局——设备覆盖不再是死键。"""
+    import types
+
+    monkeypatch.setattr(settings().stream, "raw_stream_fallback", False)
+    monkeypatch.setattr(
+        "app.infrastructure.stream.scrcpy.device_stream_settings",
+        lambda device_id: types.SimpleNamespace(raw_stream_fallback=True),
+    )
+    encoder = ScrcpyEncoder()
+    harness = SubprocessHarness(
+        server_stderr=FakeStderr([b"Device: test-device\n"], block=True),
+        wm_output=b"Physical size: 1080x1920\n",
+    )
+    await drive_start(
+        encoder, harness=harness, video_data=b"\x00\x00\x00\x01\x65" + b"\xdd" * 32
+    )
+    cmd = harness.server_cmd()
+    assert "raw_stream=true" in cmd
+    assert "send_frame_meta=false" in cmd
+
+
 # ---------------------------------------------------------------------------
 # session 事件处理
 # ---------------------------------------------------------------------------
@@ -825,7 +862,7 @@ async def test_send_input_unknown_action_falls_back_without_failure():
     """未知 action：记 warning，不抛错（也不发控制消息）。"""
     encoder, sender = make_control_encoder()
 
-    with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeAdbProc())) as exec_mock:
         await encoder.send_input({"action": "bogus"})
 
     sender.touch.assert_not_awaited()
@@ -862,7 +899,7 @@ async def test_fallback_adb_input_builds_expected_commands(data, expected):
     encoder._device_id = DEVICE_ID
     encoder._control_sender = None
 
-    with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeAdbProc())) as exec_mock:
         await encoder.send_input(data)
 
     args = [str(a) for a in exec_mock.call_args[0]]
@@ -882,7 +919,7 @@ async def test_adb_commands_follow_configured_path(monkeypatch):
     encoder._device_id = DEVICE_ID
     encoder._control_sender = None
 
-    with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeAdbProc())) as exec_mock:
         await encoder.send_input({"action": "touch", "x": 1, "y": 2})
 
     assert exec_mock.call_args[0][0] == "/fake/adb-custom"
@@ -893,7 +930,7 @@ async def test_send_input_falls_back_when_resolution_unknown():
     encoder, _ = make_control_encoder()
     encoder._resolution = (0, 0)
 
-    with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeAdbProc())) as exec_mock:
         await encoder.send_input({"action": "touch", "x": 1, "y": 2})
 
     args = [str(a) for a in exec_mock.call_args[0]]
@@ -905,7 +942,7 @@ async def test_send_input_falls_back_when_control_send_fails():
     encoder, sender = make_control_encoder()
     sender.touch = AsyncMock(side_effect=RuntimeError("broken pipe"))
 
-    with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeAdbProc())) as exec_mock:
         await encoder.send_input({"action": "touch", "x": 10, "y": 20})
 
     args = [str(a) for a in exec_mock.call_args[0]]
@@ -926,7 +963,7 @@ async def test_fallback_unknown_action_is_noop():
     encoder = ScrcpyEncoder()
     encoder._device_id = DEVICE_ID
 
-    with patch("asyncio.create_subprocess_exec", new=AsyncMock()) as exec_mock:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeAdbProc())) as exec_mock:
         await encoder.send_input({"action": "bogus", "x": 1, "y": 2})
 
     exec_mock.assert_not_awaited()

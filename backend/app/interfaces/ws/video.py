@@ -61,6 +61,7 @@ H.264 流处理：
 """
 
 import asyncio
+import math
 import struct
 from typing import Any
 
@@ -130,7 +131,7 @@ async def video_stream(
     seen_epoch = stream_service.get_stream_epoch(device_id)
     # 12B 包头协议（实施项 1b）：每次 yield 恰为服务端一个完整包（= 一个 AU），
     # 包边界即帧边界；False 为 raw_stream 兜底（实施项 1a 路径），走启发式聚帧
-    packet_mode = stream_service.use_packet_protocol()
+    packet_mode = stream_service.use_packet_protocol(device_id)
     # 是否 HEVC（方案 45 T3）：lazy——首 chunk 时向 encoder 取（None=未判定）
     is_hevc: bool | None = None
     # 跨 chunk 悬空前缀 NALU（SEI 等尚无 VCL 可挂靠），聚帧器交还后并入下一批
@@ -508,6 +509,7 @@ async def _handle_input(
 
     另外支持客户端 1Hz 帧率上报（用于自适应码率决策）：
         { "op": "stats", "fps": 25 }
+    fps 须为有限数值（方案 58 B-20：NaN/Inf/非数整帧忽略，越界钳制 0..120）。
 
     以及 resume 回切时的关键帧请求（方案 19 实施项 3）：
         { "op": "request_keyframe" }
@@ -521,7 +523,10 @@ async def _handle_input(
             fps = float(data.get("fps", 0))
         except (TypeError, ValueError):
             fps = 0.0
-        stream_service.report_client_fps(device_id, fps)
+        # 方案 58 B-20 纵深：protocol 已拒 NaN/Inf，此处非有限丢弃 + 量程钳制
+        # 0..120，防越界有限值（1e9/-50）污染决策窗（协议 docstring 见下）。
+        if math.isfinite(fps):
+            stream_service.report_client_fps(device_id, max(0.0, min(fps, 120.0)))
         return
 
     if data.get("action") == "clipboard_get":
@@ -555,8 +560,18 @@ async def _handle_input(
                      text_len=len(str(data.get("text", ""))),
                      paste=bool(data.get("paste")))
     else:
-        logger.debug("input_received", device=device_id,
-                     action=data.get("action"), data=data)
+        # 方案 58 B-21/F-15（8.5 日志隐私）：注入正文不入日志——text 只记
+        # 长度、key 记 keycode，其余（touch/swipe/scroll 等）仅记动作类型。
+        action = data.get("action")
+        if action == "text":
+            logger.debug("input_received", device=device_id, action="text",
+                         text_len=len(str(data.get("text", ""))),
+                         paste=bool(data.get("paste")))
+        elif action == "key":
+            logger.debug("input_received", device=device_id, action="key",
+                         keycode=data.get("keycode"))
+        else:
+            logger.debug("input_received", device=device_id, action=action)
 
     encoder = stream_service.get_encoder(device_id)
     if encoder is None:

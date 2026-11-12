@@ -46,6 +46,7 @@ from typing import Any, AsyncIterator, Callable
 
 from app.core.config import settings
 from app.core.exceptions import EncoderStalledError, ScrcpyOccupiedError
+from config.settings import device_stream_settings
 from app.core.logging import get_logger
 from app.core.platform import CREATE_NO_WINDOW
 from app.core.units import parse_bit_rate
@@ -92,6 +93,14 @@ def _local_port_for(device_id: str) -> int:
 _FINALIZING_PIDS: dict[str, dict[str, float]] = {}
 _FINALIZING_TTL_S = 10.0
 
+# 方案 58 A-05：adb input 兜底并发闸参数——同设备至多 1 个在飞兜底进程，
+# 且等其退出再放行下一个，杜绝输入风暴下进程堆积与乱序执行；排队等待者
+# 达上限即丢弃新输入（dropped 计数告警）；进程退出等待超时 kill，防挂死
+# 进程永久占闸；连续失败达阈发一次 degraded 告警。
+_FALLBACK_MAX_WAITERS = 32
+_FALLBACK_WAIT_TIMEOUT = 10.0
+_FALLBACK_DEGRADE_THRESHOLD = 5
+
 
 class ScrcpyEncoder:
     """
@@ -130,6 +139,12 @@ class ScrcpyEncoder:
         self._remote_pids: list[str] = []  # 本会话设备端进程 PID（方案 48 D2，stop 用）
         self._awaiting_keyframe = False  # 反压丢包后等待 IDR（断链 P 帧不入队）
         self._last_idr_request_at = 0.0  # 反压 IDR 请求节流（1s 冷却）
+        # 方案 58 A-05：adb input 兜底并发闸（1 在飞串行 + 溢出丢弃 +
+        # 连续失败计数降级）
+        self._fallback_lock = asyncio.Lock()
+        self._fallback_waiters = 0
+        self._fallback_dropped = 0
+        self._fallback_failures = 0
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -239,8 +254,9 @@ class ScrcpyEncoder:
         # send_frame_meta/send_device_meta/send_dummy_byte（全 true），
         # 由服务端按 size 字段切帧、config/keyframe 标志随包携带。
         # 兜底（stream.raw_stream_fallback=true）：raw_stream 裸流 +
-        # 上层启发式解析（实施项 1a 路径）。
-        raw_fallback = settings().stream.raw_stream_fallback
+        # 上层启发式解析（实施项 1a 路径）。方案 58 B-03：与守卫/WS
+        # 统一消费 device_stream_settings 视图，三处口径不再漂移。
+        raw_fallback = device_stream_settings(device_id).raw_stream_fallback
         cmd = [
             settings().adb.path, "-s", device_id, "shell",
             f"CLASSPATH={SCRCPY_SERVER_REMOTE_PATH}",
@@ -929,87 +945,84 @@ class ScrcpyEncoder:
         """
         回退到 adb shell input（控制 socket 不可用时）。
 
+        方案 58 A-05 并发闸：同设备至多 1 个在飞兜底 adb 进程，等其退出
+        再放行下一个（保序，杜绝输入风暴下进程堆积+乱序执行）。排队等待者
+        达上限直接丢弃新输入（dropped 计数告警）；退出等待超时 kill 防挂死
+        进程永久占闸；连续失败达阈发一次 degraded 告警，成功即复位。
+
         参数：
             data: JSON 格式的输入数据
         """
         action = data.get("action")
+        adb = settings().adb.path
+        if action == "touch":
+            cmd = [adb, "-s", self._device_id, "shell", "input", "tap",
+                   str(data["x"]), str(data["y"])]
+        elif action == "swipe":
+            duration = data.get("duration", 300)
+            cmd = [adb, "-s", self._device_id, "shell", "input", "swipe",
+                   str(data["x1"]), str(data["y1"]),
+                   str(data["x2"]), str(data["y2"]), str(duration)]
+        elif action == "long_press":
+            duration = data.get("duration", 1000)
+            # 同点长时 swipe 是 adb 模拟长按的标准方式
+            cmd = [adb, "-s", self._device_id, "shell", "input", "swipe",
+                   str(data["x"]), str(data["y"]),
+                   str(data["x"]), str(data["y"]), str(duration)]
+        elif action == "key":
+            # 兜底态 keyevent 无按下/抬起语义=点击等效：仅在 down=True 或
+            # 旧格式（无 down）时敲一次，down=False 跳过防双触发（方案 54 3.1；
+            # 长按 repeat 与修饰键在兜底态丢弃——如实写入手册不承诺等效）
+            if data.get("down") is False:
+                return
+            cmd = [adb, "-s", self._device_id, "shell", "input", "keyevent",
+                   str(data["keycode"])]
+        elif action in ("text", "clipboard_set"):
+            # clipboard_set 兜底：不写剪贴板，直接 input text（ASCII 部分
+            # 尽力，中文/换行受限——方案 54 §3.3，前端文案提示降级态）
+            cmd = [adb, "-s", self._device_id, "shell", "input", "text",
+                   data["text"]]
+        else:
+            logger.warning("unknown_input_action_fallback", action=action)
+            return
 
+        if self._fallback_waiters >= _FALLBACK_MAX_WAITERS:
+            self._fallback_dropped += 1
+            logger.warning("fallback_adb_input_dropped",
+                           device=self._device_id, dropped=self._fallback_dropped)
+            return
+
+        self._fallback_waiters += 1
         try:
-            if action == "touch":
-                x, y = data["x"], data["y"]
-                await asyncio.create_subprocess_exec(
-                    settings().adb.path, "-s", self._device_id,
-                    "shell", "input", "tap", str(x), str(y),
+            async with self._fallback_lock:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
                     # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
-
-            elif action == "swipe":
-                x1, y1 = data["x1"], data["y1"]
-                x2, y2 = data["x2"], data["y2"]
-                duration = data.get("duration", 300)
-                await asyncio.create_subprocess_exec(
-                    settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
-                    str(x1), str(y1), str(x2), str(y2), str(duration),
-                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-
-            elif action == "long_press":
-                x, y = data["x"], data["y"]
-                duration = data.get("duration", 1000)
-                # 同点长时 swipe 是 adb 模拟长按的标准方式
-                await asyncio.create_subprocess_exec(
-                    settings().adb.path, "-s", self._device_id, "shell", "input", "swipe",
-                    str(x), str(y), str(x), str(y), str(duration),
-                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-
-            elif action == "key":
-                # 兜底态 keyevent 无按下/抬起语义=点击等效：仅在 down=True 或
-                # 旧格式（无 down）时敲一次，down=False 跳过防双触发（方案 54 3.1；
-                # 长按 repeat 与修饰键在兜底态丢弃——如实写入手册不承诺等效）
-                if data.get("down") is False:
-                    return
-                keycode = data["keycode"]
-                await asyncio.create_subprocess_exec(
-                    settings().adb.path, "-s", self._device_id,
-                    "shell", "input", "keyevent", str(keycode),
-                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-
-            elif action in ("text", "clipboard_set"):
-                # clipboard_set 兜底：不写剪贴板，直接 input text（ASCII 部分
-                # 尽力，中文/换行受限——方案 54 §3.3，前端文案提示降级态）
-                text = data["text"]
-                await asyncio.create_subprocess_exec(
-                    settings().adb.path, "-s", self._device_id, "shell", "input", "text", text,
-                    # 方案 53：绕开 std 继承分支（投毒后 stdout 也悬垂）
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-
-            else:
-                logger.warning("unknown_input_action_fallback", action=action)
-
+                try:
+                    await asyncio.wait_for(
+                        proc.wait(), timeout=_FALLBACK_WAIT_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("fallback_adb_input_timeout",
+                                   device=self._device_id)
+                    proc.kill()
+                self._fallback_failures = 0
         except Exception as e:
-            logger.error("fallback_adb_input_failed", device=self._device_id, error=str(e))
+            # 兜底输入失败不影响会话（原语义吞掉）；连续失败计数用于降级提示
+            self._fallback_failures += 1
+            logger.error("fallback_adb_input_failed", device=self._device_id,
+                         error=str(e), failures=self._fallback_failures)
+            if self._fallback_failures == _FALLBACK_DEGRADE_THRESHOLD:
+                logger.warning("fallback_adb_input_degraded",
+                               device=self._device_id,
+                               failures=self._fallback_failures)
+        finally:
+            self._fallback_waiters -= 1
 
     # 设备侧残留检测命令：[.] 防 grep/sh 自身命令行字面自匹配，
     # [0-9]* 排除 /proc/self 等伪目录（方案 48 实证，旧 toybox ps 不可用）

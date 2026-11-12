@@ -18,6 +18,7 @@ import asyncio
 
 import pytest
 from ipaddress import ip_network
+from structlog.testing import capture_logs
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.infrastructure.adb.cli import AdbCliDriver
@@ -51,6 +52,42 @@ class TestAdbRun:
             driver = AdbCliDriver()
             with pytest.raises(AdbError, match="ADB command failed"):
                 await driver._run("invalid_command")
+
+    @pytest.mark.asyncio
+    async def test_run_failure_non_utf8_stderr_decodes_with_replace(self):
+        """方案58 A-06：stderr 含非 UTF-8 字节（GBK 主机 adb/二进制串）不得抛
+        UnicodeDecodeError 顶替真 AdbError——decode errors=replace 后照常包装。"""
+
+        async def bad_stderr_mock(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b"", b"\xff\xfe bad bytes \x80 tail"))
+            proc.returncode = 1
+            proc.kill = MagicMock()
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=bad_stderr_mock):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError) as exc:
+                await driver._run("devices")
+            assert "tail" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_screenshot_non_utf8_stderr_decodes_with_replace(self):
+        """截图路径同款：rc!=0 且 stderr 非 UTF-8 → AdbError 非 UnicodeDecodeError。"""
+
+        async def bad_stderr_mock(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b"", b"\xff\xfe boom"))
+            proc.returncode = 1
+            proc.kill = MagicMock()
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=bad_stderr_mock):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError):
+                await driver.screenshot("192.168.8.25:5555")
+            with pytest.raises(AdbError):
+                await driver.screenshot_raw_gzip("192.168.8.25:5555")
 
     @pytest.mark.asyncio
     async def test_run_adb_not_found(self):
@@ -406,6 +443,90 @@ class TestPairTcp:
                 await driver.pair_tcp("192.168.1.5", 37123, "123456")
         assert exc.value.code == "PAIR_FAILED"
         assert "弹窗" in exc.value.message
+
+
+class TestPairCodeRedaction:
+    """方案 58 A-21（8.5 日志隐私）：adb pair 配对码是短时效凭据，
+    _run 的 debug/timeout/failure 日志与超时异常文本均不得含明文码，
+    以 <code len=N> 占位脱敏；target/子命令保留便于排障。"""
+
+    @pytest.mark.asyncio
+    async def test_pair_code_redacted_in_debug_log(self):
+        async def ok_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b"Successfully paired", b""))
+            proc.returncode = 0
+            return proc
+
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=ok_proc),
+            capture_logs() as logs,
+        ):
+            driver = AdbCliDriver()
+            await driver._run("pair", "192.168.1.5:37123", "123456")
+        cmd_events = [e for e in logs if e.get("event") == "adb_command"]
+        assert cmd_events
+        rendered = str(cmd_events[0]["cmd"])
+        assert "123456" not in rendered
+        assert "<code len=6>" in rendered
+        assert "192.168.1.5:37123" in rendered
+
+    @pytest.mark.asyncio
+    async def test_non_pair_command_logged_unredacted(self):
+        """非 pair 命令不经脱敏：cmd 原样入日志（排障可用性不变）。"""
+        async def ok_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b"List of devices attached", b""))
+            proc.returncode = 0
+            return proc
+
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=ok_proc),
+            capture_logs() as logs,
+        ):
+            driver = AdbCliDriver()
+            await driver._run("devices")
+        cmd_events = [e for e in logs if e.get("event") == "adb_command"]
+        assert cmd_events
+        assert "devices" in str(cmd_events[0]["cmd"])
+
+    @pytest.mark.asyncio
+    async def test_pair_code_redacted_in_timeout_log_and_error(self):
+        async def timeout_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+            proc.kill = MagicMock()
+            return proc
+
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=timeout_proc),
+            capture_logs() as logs,
+        ):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError) as exc:
+                await driver._run("pair", "192.168.1.5:37123", "654321")
+        assert "654321" not in str(exc.value)
+        assert "<code len=6>" in str(exc.value)
+        err_events = [e for e in logs if e.get("event") == "adb_command_timeout"]
+        assert err_events and "654321" not in str(err_events[0])
+
+    @pytest.mark.asyncio
+    async def test_pair_code_redacted_in_failure_log(self):
+        async def fail_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b"", b"Pairing failed"))
+            proc.returncode = 1
+            return proc
+
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=fail_proc),
+            capture_logs() as logs,
+        ):
+            driver = AdbCliDriver()
+            with pytest.raises(AdbError):
+                await driver._run("pair", "192.168.1.5:37123", "111222")
+        fail_events = [e for e in logs if e.get("event") == "adb_command_failed"]
+        assert fail_events and "111222" not in str(fail_events[0])
 
 
 class TestScanHosts:

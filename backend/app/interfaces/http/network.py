@@ -31,7 +31,7 @@ from fastapi.responses import StreamingResponse
 
 from app.application.network_service import NetworkService
 from app.deps import get_network_service
-from app.interfaces.http.export_safety import sanitize_export_filename
+from app.interfaces.http.export_safety import csv_safe, sanitize_export_filename
 
 router = APIRouter(prefix="/api/network", tags=["network"])
 
@@ -181,7 +181,8 @@ async def export_stats(
                 row.get("tx_rate_kbps", ""),
                 row.get("active_connections", ""),
                 row.get("wifi_connected", ""),
-                row.get("wifi_ssid", ""),
+                # 方案 58 C-02：SSID 设备可控（恶意 AP 名），公式前导中和
+                csv_safe(row.get("wifi_ssid", "")),
             ])
         content = output.getvalue()
         media_type = "text/csv"

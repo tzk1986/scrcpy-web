@@ -11,6 +11,7 @@
       （调用侧忽略该帧，输入面不断）。
 """
 import json
+import math
 from typing import Any
 
 
@@ -53,5 +54,17 @@ def parse_video_input(raw: str | bytes) -> dict[str, Any] | None:
             if not copy_key.lstrip("+-").isdigit():
                 return None
         elif not isinstance(copy_key, int):
+            return None
+    # 方案 58 B-20（8.1 入站校验层）：stats 帧 fps 拒 NaN/Inf/bool/非数——
+    # NaN 挤满决策窗致升降档永久冻结，Infinity 恒计 good 误升档（静默 DoS）。
+    # 越界有限值不在此拒（handler 0..120 钳制纵深）；缺失/null 走既有 0.0 语义。
+    if data.get("op") == "stats" and data.get("fps") is not None:
+        fps = data["fps"]
+        if isinstance(fps, bool) or not isinstance(fps, int | float | str):
+            return None
+        try:
+            if not math.isfinite(float(fps)):
+                return None
+        except ValueError:
             return None
     return data

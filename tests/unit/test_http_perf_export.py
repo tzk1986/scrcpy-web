@@ -328,6 +328,38 @@ def test_perf_export_source_cache_forwards_range() -> None:
     assert fake.metrics_calls == []
 
 
+def test_perf_export_csv_escapes_formula_cells() -> None:
+    """方案 58 C-02：current_activity/top_package 为设备可控串，公式前导
+    （= + - @）加 ' 中和；数值列与 ts_iso 不受影响。"""
+    evil = {**PERF_ROWS[0], "current_activity": "=cmd|'/c calc'!A1",
+            "top_package": "+payload"}
+    fake = FakePerformanceService([evil, PERF_ROWS[1]])
+    with override(get_performance_service, fake):
+        res = make_client().get(f"/api/perf/{DEV}/export", params={"format": "csv"})
+
+    reader = csv.reader(io.StringIO(res.text))
+    header, row1, row2 = list(reader)
+    assert header[:9] == _OLD_CSV_COLS
+    assert row1[7] == "'=cmd|'/c calc'!A1"
+    assert row1[8] == "'+payload"
+    assert row1[2] == "23.5" and row1[6] == "0"
+    assert row2[7] == "com.example/.MainActivity"  # 良性值原样
+
+
+def test_network_export_csv_escapes_ssid_formula() -> None:
+    """方案 58 C-02：wifi_ssid 设备可控（恶意 AP 名），公式前导加 ' 中和。"""
+    evil_rows = [{**NET_ROWS[0], "wifi_ssid": '=HYPERLINK("http://evil")'}]
+    fake = FakeNetworkService(evil_rows)
+    with override(get_network_service, fake):
+        res = make_client().get(f"/api/network/{DEV}/export", params={"format": "csv"})
+
+    reader = csv.reader(io.StringIO(res.text))
+    header, row1 = list(reader)
+    assert header[8] == "wifi_ssid"
+    assert row1[8] == '\'=HYPERLINK("http://evil")'
+    assert row1[7] == "True"
+
+
 # ---------------------------------------------------------------------------
 # Perf export：参数校验与空数据
 # ---------------------------------------------------------------------------

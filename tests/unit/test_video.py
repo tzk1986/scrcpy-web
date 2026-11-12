@@ -179,7 +179,7 @@ class FakeStreamService:
     def get_stream_epoch(self, device_id: str) -> int:
         return self.epoch
 
-    def use_packet_protocol(self) -> bool:
+    def use_packet_protocol(self, device_id: str) -> bool:
         return self.packet_mode
 
     def idle_reset_seconds(self) -> float:
@@ -804,7 +804,8 @@ def test_request_keyframe_op_dispatched(video_client):
 
 
 def test_input_ignored_without_encoder_and_stats_normalized(video_client):
-    """无编码器时 touch 静默忽略（流不中断）；fps 非法/缺失归一为 0.0；
+    """无编码器时 touch 静默忽略（流不中断）；fps 缺失归一为 0.0，
+    非法值（方案 58 B-20）协议层丢弃不入决策窗；
     同一待生效码率不重复通知，新值才再次通知。"""
     gate = threading.Event()
     svc = FakeStreamService(
@@ -819,17 +820,40 @@ def test_input_ignored_without_encoder_and_stats_normalized(video_client):
         assert config["height"] == 0
         assert recv_binary(session) == frame(0, IDR_0)   # config 包内 VCL 同包直发
         session.send_json({"action": "touch", "x": 9, "y": 9})   # 应被忽略
-        session.send_json({"op": "stats", "fps": "abc"})         # 非法 → 0.0
+        session.send_json({"op": "stats", "fps": "abc"})         # B-20：非法丢弃
         session.send_json({"op": "stats"})                       # 缺失 → 0.0
         session.send_json({"op": "stats", "fps": 25})            # 同步点
         assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
-        assert svc.reported_fps == [(DEV, 0.0), (DEV, 0.0), (DEV, 25.0)]
+        assert svc.reported_fps == [(DEV, 0.0), (DEV, 25.0)]
 
         session.send_json({"op": "stats", "fps": 25})            # 同值，不重复通知
         session.send_json({"op": "stats", "fps": 5})             # 新值 → 再通知
         assert recv_json(session) == {"type": "restarting", "bit_rate": 500_000}
-        assert svc.reported_fps == [(DEV, 0.0), (DEV, 0.0), (DEV, 25.0), (DEV, 25.0),
-                                    (DEV, 5.0)]
+        assert svc.reported_fps == [(DEV, 0.0), (DEV, 25.0), (DEV, 25.0), (DEV, 5.0)]
+        gate.set()
+    assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
+
+
+def test_stats_fps_nan_inf_dropped_out_of_range_clamped(video_client):
+    """方案 58 B-20：NaN/Inf 帧协议层丢弃（旧实现 NaN 挤满 8 槽窗→升降档
+    永久冻结；Infinity 恒 good→误升档）；越界有限值 handler 钳制 0..120。"""
+    gate = threading.Event()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=None,
+        fps_to_bitrate={25.0: 2_000_000},
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        recv_binary(session)
+        session.send_json({"op": "stats", "fps": float("nan")})   # 丢弃
+        session.send_json({"op": "stats", "fps": float("inf")})   # 丢弃
+        session.send_json({"op": "stats", "fps": -50})            # 钳 0.0
+        session.send_json({"op": "stats", "fps": 1e9})            # 钳 120.0
+        session.send_json({"op": "stats", "fps": 25})             # 同步点
+        assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
+        assert svc.reported_fps == [(DEV, 0.0), (DEV, 120.0), (DEV, 25.0)]
         gate.set()
     assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
 
@@ -901,6 +925,40 @@ def test_input_chain_downgraded_to_debug(video_client):
     for event in ("input_received", "sending_input_via_encoder", "input_sent"):
         levels = [e["log_level"] for e in logs if e.get("event") == event]
         assert levels == ["debug"], f"{event}: {levels}"
+
+
+def test_text_input_body_not_logged(video_client):
+    """方案 58 B-21/F-15（8.5 日志隐私）：注入正文不入日志——text 帧只记
+    text_len/paste、key 帧记 keycode、其余仅记动作类型；正文仅进转发数据。"""
+    gate = threading.Event()
+    encoder = FakeEncoder()
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        fps_to_bitrate={25.0: 2_000_000},
+        hold_until=gate.is_set,
+    )
+    secret = "P@ssw0rd-SECRET"
+    with capture_logs() as logs:
+        with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+            assert recv_json(session)["type"] == "config"
+            assert recv_binary(session) == frame(0, IDR_0)
+            session.send_json({"action": "text", "text": secret, "paste": False})
+            session.send_json({"action": "key", "keycode": 66})
+            session.send_json({"op": "stats", "fps": 25})
+            assert recv_json(session) == {"type": "restarting", "bit_rate": 2_000_000}
+            assert encoder.inputs == [
+                {"action": "text", "text": secret, "paste": False},
+                {"action": "key", "keycode": 66},
+            ]
+            gate.set()
+    assert secret not in str(logs)
+    received = [e for e in logs if e.get("event") == "input_received"]
+    text_ev = [e for e in received if e.get("action") == "text"]
+    assert text_ev and text_ev[0]["text_len"] == len(secret)
+    assert "paste" in text_ev[0]
+    key_ev = [e for e in received if e.get("action") == "key"]
+    assert key_ev and key_ev[0]["keycode"] == 66
 
 
 def test_frame_before_config_logged_once(video_client):

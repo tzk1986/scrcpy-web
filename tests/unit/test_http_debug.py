@@ -238,6 +238,28 @@ def test_export_logs_csv(fake: FakeDebugService) -> None:
     assert fake.calls == [("get_logs", SESSION, "I", None, 10)]
 
 
+def test_export_logs_csv_escapes_formula_cells(fake: FakeDebugService) -> None:
+    """方案 58 C-03：logcat tag/message 设备侧可控，公式前导（= + - @）
+    加 ' 中和，防电子表格打开导出 CSV 时被公式/DDE 执行。"""
+    import csv as csv_mod
+    import io
+
+    fake.logs = [{
+        "ts": 1726000000.5, "level": "I", "pid": 1, "tid": 1,
+        "tag": "@SUM(A1)", "message": "=cmd|'/c calc'!A0",
+    }]
+    client = make_client()
+    with override(get_debug_service, fake):
+        response = client.get(
+            f"/api/debug/sessions/{SESSION}/logs/export", params={"format": "csv"},
+        )
+
+    rows = list(csv_mod.reader(io.StringIO(response.text)))
+    assert rows[1][4] == "'@SUM(A1)"
+    assert rows[1][5] == "'=cmd|'/c calc'!A0"
+    assert rows[1][1] == "I"  # 受控列原样
+
+
 def test_export_logs_no_data_404(fake: FakeDebugService) -> None:
     """空日志导出（未开始采集或过滤后为空）→ 404 NO_DATA，不产出空文件。"""
     fake.logs = []

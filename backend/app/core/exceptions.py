@@ -261,6 +261,20 @@ class ConfigReloadError(OpenScrcpyException):
         super().__init__(f"Config reload failed: {reason}", code="CONFIG_RELOAD_FAILED")
 
 
+class StreamConfigConflictError(OpenScrcpyException):
+    """流配置冲突：raw_stream_fallback 兜底链路（H264Parser 启发式解析）仅
+    建模 h264，h265 组合禁入（方案 45 T3 守卫；方案 58 B-03 由裸 ValueError
+    转领域异常——video.py 的 OpenScrcpyException 分支会把 message 发给客户端，
+    不再坍缩成 internal error 黑屏无提示）。"""
+
+    def __init__(self, codec: str) -> None:
+        super().__init__(
+            f"视频流配置冲突：raw_stream_fallback 兜底链路仅支持 h264，当前 codec={codec}；"
+            "请改用 h264 编码或关闭 raw 兜底后重试",
+            code="STREAM_CONFIG_CONFLICT",
+        )
+
+
 class SettingsStoreError(OpenScrcpyException):
     """用户设置存储（config/user.yaml）读写失败（损坏/不可写）。"""
 
@@ -398,6 +412,30 @@ class NotAFileError(OpenScrcpyException):
 
     def __init__(self, path: str) -> None:
         super().__init__(f"Not a file (download unsupported): {_clip(path)}", code="NOT_A_FILE")
+
+
+class DownloadTooManyFilesError(OpenScrcpyException):
+    """下载多选 paths 条数超上限（方案 58 C-06）：单请求塞整目录树会把
+    设备互斥串行占用到 900s×N，接口/服务双层拦截。"""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(
+            f"单次下载文件数超过上限（{limit}），请分批下载",
+            code="DOWNLOAD_TOO_MANY_FILES",
+        )
+
+
+class DownloadTooLargeError(OpenScrcpyException):
+    """下载累计大小超上限（方案 58 C-06）：stat 全量后 pull 前拒，
+    一字节不拉、互斥不占。"""
+
+    status_code = 413
+
+    def __init__(self, limit_bytes: int) -> None:
+        super().__init__(
+            f"下载累计大小超过上限（{limit_bytes} 字节），请分批下载",
+            code="DOWNLOAD_TOO_LARGE",
+        )
 
 
 class SseClientLimitError(OpenScrcpyException):

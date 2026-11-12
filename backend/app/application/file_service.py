@@ -33,6 +33,8 @@ from pathlib import Path
 
 from app.core.exceptions import (
     AdbError,
+    DownloadTooLargeError,
+    DownloadTooManyFilesError,
     FileTooLargeError,
     InvalidPathError,
     JobNotFoundError,
@@ -56,6 +58,11 @@ class FileService:
     # 视图本体与链接路径同权限（adbd 经 /sdcard 见到的即是它），等价别名化。
     VIEW_ROOT_ALIASES = {"/storage/emulated/0": "/sdcard", "/storage/self/primary": "/sdcard"}
     MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+    # 方案 58 C-06：多选下载上限——条数防单请求塞整目录树串行占用设备
+    # 互斥（900s×N），累计大小防暂存无上限增长；单文件不设大小限
+    # （录屏大文件下载需保留）。
+    MAX_DOWNLOAD_FILES = 200
+    MAX_DOWNLOAD_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
     TRANSFER_TIMEOUT = 900
     JOB_TTL_SECONDS = 60
     STALE_TMPDIR_MINUTES = 15
@@ -207,6 +214,9 @@ class FileService:
         if not paths:
             raise InvalidPathError("empty path list")
         normed = [self.normalize_path(p) for p in paths]
+        # 方案 58 C-06：条数上限先于互斥 fail-fast（接口层 max_length 纵深）
+        if len(normed) > self.MAX_DOWNLOAD_FILES:
+            raise DownloadTooManyFilesError(self.MAX_DOWNLOAD_FILES)
         self._acquire(device_id)
         job = self._new_job(device_id, "download", normed)
         tmp = Path(tempfile.mkdtemp(prefix="scrcpy-filejob-"))
@@ -228,14 +238,20 @@ class FileService:
             else:
                 job.substage = "zipping"
                 artifact = tmp / "transfer.zip"
-                total = 0
+                # 方案 58 C-06：先 stat 全量合计大小判上限再开拉——
+                # 拒时一字节不拉，暂存不涨、设备互斥不长占
+                entries: list[tuple[str, FileEntry]] = []
+                for p in normed:
+                    entry = await self._stat_or_raise(device_id, p)
+                    if entry.is_dir:
+                        raise NotAFileError(p)
+                    entries.append((p, entry))
+                total = sum(e.size for _, e in entries)
+                if total > self.MAX_DOWNLOAD_TOTAL_BYTES:
+                    raise DownloadTooLargeError(self.MAX_DOWNLOAD_TOTAL_BYTES)
                 used_arcs: set[str] = set()
                 with zipfile.ZipFile(artifact, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for p in normed:
-                        entry = await self._stat_or_raise(device_id, p)
-                        if entry.is_dir:
-                            raise NotAFileError(p)
-                        total += entry.size
+                    for p, _entry in entries:
                         raw = tmp / f"raw_{uuid.uuid4().hex}"
                         await self._adb.pull(
                             device_id, p, str(raw), timeout=self.TRANSFER_TIMEOUT

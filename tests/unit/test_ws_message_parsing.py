@@ -77,3 +77,29 @@ def test_video_clipboard_get_int_like_copy_key_passes():
     assert parse_video_input('{"action": "clipboard_get", "copy_key": null}') == {
         "action": "clipboard_get", "copy_key": None,
     }
+
+
+def test_video_stats_bad_fps_returns_none():
+    """方案 58 B-20（8.1 入站校验层）：fps 为 NaN/Inf/bool/dict/list/非数串
+    归一 None 忽略——NaN 挤满决策窗令自适应升降档永久冻结（静默 DoS），
+    Infinity 恒计 good 误升档。"""
+    assert parse_video_input('{"op": "stats", "fps": NaN}') is None
+    assert parse_video_input('{"op": "stats", "fps": Infinity}') is None
+    assert parse_video_input('{"op": "stats", "fps": -Infinity}') is None
+    assert parse_video_input('{"op": "stats", "fps": "NaN"}') is None
+    assert parse_video_input('{"op": "stats", "fps": "Infinity"}') is None
+    assert parse_video_input('{"op": "stats", "fps": "abc"}') is None
+    assert parse_video_input('{"op": "stats", "fps": true}') is None
+    assert parse_video_input('{"op": "stats", "fps": {}}') is None
+    assert parse_video_input('{"op": "stats", "fps": [1]}') is None
+
+
+def test_video_stats_good_fps_passes():
+    """有限数值/数字串/缺省与 null（既有 0.0 语义）放行；越界有限值由 handler
+    0..120 钳制纵深承接，不在协议层拒。"""
+    assert parse_video_input('{"op": "stats", "fps": 25}') is not None
+    assert parse_video_input('{"op": "stats", "fps": "25.5"}') is not None
+    assert parse_video_input('{"op": "stats", "fps": 1e9}') is not None
+    assert parse_video_input('{"op": "stats", "fps": -50}') is not None
+    assert parse_video_input('{"op": "stats"}') is not None
+    assert parse_video_input('{"op": "stats", "fps": null}') is not None

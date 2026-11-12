@@ -30,7 +30,7 @@ from app.application.performance_service import PerformanceService
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.deps import get_performance_service
-from app.interfaces.http.export_safety import sanitize_export_filename
+from app.interfaces.http.export_safety import csv_safe, sanitize_export_filename
 
 logger = get_logger(__name__)
 
@@ -216,8 +216,9 @@ async def export_metrics(
                 row.get("used_memory_mb", ""),
                 row.get("fps", ""),
                 row.get("jank_count", ""),
-                row.get("current_activity", ""),
-                row.get("top_package", ""),
+                # 方案 58 C-02：activity/包名应用侧可控，公式前导中和
+                csv_safe(row.get("current_activity", "")),
+                csv_safe(row.get("top_package", "")),
                 # 方案 37 D4 新 4 列置尾；旧缓存行缺列/None → 空串
                 _procs_cell(row),
                 _cell(row, "battery_temp"),

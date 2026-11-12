@@ -186,6 +186,30 @@ class TestReadUntilPrompt:
         assert shell._initial_output == ""
 
 
+class TestReadUntilPromptPrivacy:
+    """方案 58 F-16（8.5 日志隐私）：初始输出横幅与 prompt 文本不入日志——
+    chunk 降 debug 只记长度，prompt 命中 info 只记判定结果长度。"""
+
+    async def test_initial_output_banner_absent_from_logs(self):
+        from structlog.testing import capture_logs
+
+        shell = InteractiveShell()
+        banner = "welcome to rk3288 SECRET BANNER"
+        shell._proc = _make_proc(
+            stdout_chunks=[f"{banner}\r\nroot@device:/ # ".encode()]
+        )
+        shell._initial_output = ""
+        with capture_logs() as logs:
+            await shell._read_until_prompt()
+        assert banner not in str(logs)
+        chunk_events = [e for e in logs if e.get("event") == "initial_output_chunk"]
+        assert chunk_events and chunk_events[0]["log_level"] == "debug"
+        assert "chunk_len" in chunk_events[0]
+        detected = [e for e in logs if e.get("event") == "shell_prompt_detected"]
+        assert detected and "root@device" not in str(detected[0])
+        assert detected[0]["log_level"] == "info"
+
+
 # ---------------------------------------------------------------------------
 # _background_reader：输出路由
 # ---------------------------------------------------------------------------

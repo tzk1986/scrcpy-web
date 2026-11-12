@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse
 from app.application.debug_service import DebugService
 from app.core.exceptions import SessionNotFoundError
 from app.deps import get_debug_service
-from app.interfaces.http.export_safety import sanitize_export_filename
+from app.interfaces.http.export_safety import csv_safe, sanitize_export_filename
 
 router = APIRouter(prefix="/api/debug", tags=["debug"])
 
@@ -148,8 +148,9 @@ async def export_logs(
                 log.get("level", ""),
                 log.get("pid", ""),
                 log.get("tid", ""),
-                log.get("tag", ""),
-                log.get("message", ""),
+                # 方案 58 C-03：logcat tag/message 设备侧可控，公式前导中和
+                csv_safe(log.get("tag", "")),
+                csv_safe(log.get("message", "")),
             ])
         content = output.getvalue()
         media_type = "text/csv"

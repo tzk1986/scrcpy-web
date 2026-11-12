@@ -62,6 +62,22 @@ GZIP_MAGIC = b"\x1f\x8b"
 # _run 失败错误文本的统一前缀（start_recording 组合双摘要时按此前缀去重）
 _ADB_FAILED_PREFIX = "ADB command failed: "
 
+
+def _redact_pair_code(cmd: list[str]) -> list[str]:
+    """方案 58 A-21（8.5 日志隐私）：adb pair 的 6 位配对码是短时效凭据，
+    入日志/异常文本以 <code len=N> 占位（argv 形态 [adb, pair, target, code]）；
+    非 pair 命令原样返回，排障可用性不变。"""
+    try:
+        idx = cmd.index("pair")
+    except ValueError:
+        return cmd
+    code_pos = idx + 2
+    if code_pos >= len(cmd):
+        return cmd
+    redacted = list(cmd)
+    redacted[code_pos] = f"<code len={len(cmd[code_pos])}>"
+    return redacted
+
 # screenrecord 启动宽限窗（方案 37 B-Fix-2 提为模块常量，测试可 monkeypatch
 # 收缩窗口以在单测时限内复现「晚失败超窗」竞态）：默认 20 轮 × 0.1s = 2s。
 _START_GRACE_ITERATIONS = 20
@@ -414,7 +430,9 @@ class AdbCliDriver:
         """
         timeout = timeout or settings().adb.timeout
         cmd = [self.adb_path, *args]
-        logger.debug("adb_command", cmd=cmd)
+        # 方案 58 A-21：pair 配对码不入日志/异常文本（脱敏副本仅用于展示）
+        display_cmd = _redact_pair_code(cmd)
+        logger.debug("adb_command", cmd=display_cmd)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -435,12 +453,12 @@ class AdbCliDriver:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
-            logger.error("adb_command_timeout", cmd=cmd, timeout=timeout)
-            raise AdbError(f"ADB command timed out after {timeout}s: {' '.join(cmd)}")
+            logger.error("adb_command_timeout", cmd=display_cmd, timeout=timeout)
+            raise AdbError(f"ADB command timed out after {timeout}s: {' '.join(display_cmd)}")
 
         if proc.returncode != 0:
-            error_msg = stderr.decode().strip()
-            logger.error("adb_command_failed", cmd=cmd, returncode=proc.returncode, error=error_msg)
+            error_msg = stderr.decode(errors="replace").strip()
+            logger.error("adb_command_failed", cmd=display_cmd, returncode=proc.returncode, error=error_msg)
             raise AdbError(f"{_ADB_FAILED_PREFIX}{error_msg}")
 
         return stdout.decode(errors=decode_errors).strip()
@@ -990,7 +1008,7 @@ class AdbCliDriver:
             raise AdbError(f"Screenshot timed out after {settings().adb.timeout}s")
 
         if proc.returncode != 0:
-            error_msg = stderr.decode().strip()
+            error_msg = stderr.decode(errors="replace").strip()
             raise AdbError(f"Screenshot failed: {error_msg}")
 
         if not stdout:
@@ -1037,7 +1055,7 @@ class AdbCliDriver:
             raise AdbError(f"Raw screenshot timed out after {settings().adb.timeout}s")
 
         if proc.returncode != 0:
-            error_msg = stderr.decode().strip()
+            error_msg = stderr.decode(errors="replace").strip()
             raise AdbError(f"Raw screenshot failed: {error_msg}")
 
         if not stdout:
