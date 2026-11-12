@@ -330,14 +330,14 @@ function syncFrameSize() {
 
 // state 的一切流转都汇于此处（h264 与截图两条链路的 onStateChange 均赋值 state），
 // 首次进入 streaming 即置位 hasStreamedOnce；重复置位幂等。
-// 方案 40 消费点 2：h264 首帧已绘制进渲染 canvas，此刻抓帧方向天然正，
-// 上抛给列表页写入缩略图缓存；抓帧失败静默（不影响观看会话）。
+// 方案 40 消费点 2：h264 首帧已绘制进渲染 canvas，上抛给列表页写入缩略图缓存；
+// 方案 58 D-04：按当前旋转角烘焙，缓存与所见一致；抓帧失败静默（不影响观看会话）。
 watch(state, (s) => {
   if (s !== 'streaming' || hasStreamedOnce.value) return
   hasStreamedOnce.value = true
   if (mode.value === 'h264' && h264Stream) {
     h264Stream
-      .captureFrame()
+      .captureFrame(rotation.value)
       .then((blob) => emit('first-frame', blob))
       .catch(() => {})
   }
@@ -614,9 +614,11 @@ onMounted(async () => {
     measure()
   }
 
-  // 方案54 G3：包装消息通道，截流剪贴板应答（clipboard/clipboard_error）。
+  // 方案54 G3：包装消息通道，截流剪贴板应答（clipboard/clipboard_error）
+  // 与输入降级提示帧（input_degraded，方案58 B-23 裁决 a）。
   // WebSocketService.setMessageHandler 为单回调覆盖式，h264/截图链路各自注册，
-  // 此处接管注册入口：剪贴板 JSON 帧转 InputController，其余原样转发给后注册者。
+  // 此处接管注册入口：剪贴板 JSON 帧转 InputController，降级帧转提示条，
+  // 其余原样转发给后注册者。
   const rawSetMessageHandler = ws.setMessageHandler.bind(ws)
   let downstreamHandler: ((data: unknown) => void) | null = null
   ws.setMessageHandler = (handler: (data: unknown) => void) => {
@@ -624,13 +626,22 @@ onMounted(async () => {
     rawSetMessageHandler((data) => {
       if (typeof data === 'string') {
         try {
-          const msg = JSON.parse(data) as { type?: string; text?: string; enabled?: boolean }
+          const msg = JSON.parse(data) as {
+            type?: string
+            text?: string
+            enabled?: boolean
+            action?: string
+          }
           if (msg && (msg.type === 'clipboard_push' || msg.type === 'clipboard_mirror')) {
             handleMirrorFrame(msg)
             return
           }
           if (msg && (msg.type === 'clipboard' || msg.type === 'clipboard_error')) {
             inputController?.handleClipboardMessage({ type: msg.type, text: msg.text })
+            return
+          }
+          if (msg && msg.type === 'input_degraded') {
+            noteInputDegraded(msg.action)
             return
           }
         } catch {
@@ -751,14 +762,16 @@ function sendKey(keycode: number) {
 
 /**
  * 浏览器致命组合放行清单（不 preventDefault、不注入，交回浏览器）：
- * meta 组合一律放行；Ctrl+R/W/T/N/L/J、Ctrl+Shift+I/J（开发者工具）、F5/F12。
+ * meta 组合一律放行；Ctrl+R/W/T/N/L/J/F/P/S/O、Ctrl+Shift+I/J（开发者工具）、F5/F12。
+ * F/P/S/O 为方案 58 D-09 扩充（查找/打印/保存/打开均浏览器高频动作）。
+ * Ctrl+A 有意不列入：设备内全选更常用，保留注入设备。
  */
 function isBrowserReserved(e: KeyboardEvent): boolean {
   if (e.metaKey) return true
   if (e.code === 'F5' || e.code === 'F12') return true
   if (e.ctrlKey) {
     if (e.shiftKey) return e.code === 'KeyI' || e.code === 'KeyJ'
-    return ['KeyR', 'KeyW', 'KeyT', 'KeyN', 'KeyL', 'KeyJ'].includes(e.code)
+    return ['KeyR', 'KeyW', 'KeyT', 'KeyN', 'KeyL', 'KeyJ', 'KeyF', 'KeyP', 'KeyS', 'KeyO'].includes(e.code)
   }
   return false
 }
@@ -885,6 +898,20 @@ function queueMirrorWork(task: () => Promise<void>): void {
   mirrorWriteChain = mirrorWriteChain.then(task).catch(() => {})
 }
 
+// 方案58 B-23 裁决 a：input_degraded 提示帧 5 秒节流（同 58E-16 防刷屏口径）。
+// 兜底态（控制通道瞬断）下服务端丢弃不支持的动作时逐帧推送，风暴期须合条。
+let lastDegradedNoticeAt = 0
+function noteInputDegraded(action?: string) {
+  const now = Date.now()
+  if (now - lastDegradedNoticeAt < 5000) return
+  lastDegradedNoticeAt = now
+  ElMessage.warning(
+    action === 'scroll'
+      ? '滚轮注入暂未生效（兜底输入态），可改用拖拽滑动'
+      : '该输入暂未生效（兜底输入态）',
+  )
+}
+
 /** WS 截流入口：clipboard_push 焦点写/缓存；clipboard_mirror 后端自停复位开关 */
 function handleMirrorFrame(msg: { type?: string; text?: string; enabled?: boolean }) {
   if (msg.type === 'clipboard_mirror') {
@@ -989,14 +1016,15 @@ async function reconnect() {
 
 /**
  * 截图快照（方案 40 A，供 DeviceDetail 截图按钮经模板 ref 调用）。
- * h264 流观看中：抓渲染帧（方向与视频流一致，天然正）；
+ * h264 流观看中：抓渲染帧，方案 58 D-04 按当前旋转角烘焙所见即所得；
  * 其余状态（configuring/截图模式/已停止）：回退设备端截图
- * （后端判据重建后方向已修正，见方案 40 B）。
+ * （后端判据重建后方向已修正，见方案 40 B；手动旋转是本地下游显示概念，
+ * 设备端回退图不烘焙）。
  */
 defineExpose({
   async captureSnapshot(): Promise<{ blob: Blob; source: 'stream' | 'fallback' }> {
     if (mode.value === 'h264' && h264Stream && h264Stream.state === 'streaming') {
-      const blob = await h264Stream.captureFrame()
+      const blob = await h264Stream.captureFrame(rotation.value)
       return { blob, source: 'stream' }
     }
     const blob = await api.screenshot(props.deviceId)

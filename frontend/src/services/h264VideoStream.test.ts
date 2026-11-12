@@ -1094,6 +1094,107 @@ describe('captureFrame（方案 40 A）', () => {
 
     await expect(stream.captureFrame()).rejects.toThrow('canvas.toBlob 返回空数据')
   })
+
+  // 方案58 D-04 裁决 a：旋转态导出前反旋烘焙，所见即所得
+  it('90°：离屏宽高交换 + translate(480,0)+rotate(π/2)+drawImage，导出走烘焙画布', async () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    canvas.width = 640
+    canvas.height = 480
+    const stream = makeStream(ws, canvas)
+    const pngBlob = new Blob(['png'], { type: 'image/png' })
+    const translate = vi.fn()
+    const rotate = vi.fn()
+    const drawImage = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue({ translate, rotate, drawImage } as unknown as CanvasRenderingContext2D)
+    const toBlobSpy = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback) => cb(pngBlob))
+    const createSpy = vi.spyOn(document, 'createElement')
+
+    await expect(stream.captureFrame(90)).resolves.toBe(pngBlob)
+    const out = createSpy.mock.results
+      .map((r) => r.value)
+      .filter((v) => v instanceof HTMLCanvasElement)
+      .at(-1) as HTMLCanvasElement
+    expect(out.width).toBe(480)
+    expect(out.height).toBe(640)
+    expect(translate).toHaveBeenCalledWith(480, 0)
+    expect(rotate).toHaveBeenCalledWith(Math.PI / 2)
+    expect(drawImage).toHaveBeenCalledWith(canvas, 0, 0)
+    expect(toBlobSpy).toHaveBeenCalledTimes(1)
+    expect(toBlobSpy.mock.instances[0]).toBe(out)
+  })
+
+  it('180°：不交换宽高，translate(640,480)+rotate(π)', async () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    canvas.width = 640
+    canvas.height = 480
+    const stream = makeStream(ws, canvas)
+    const pngBlob = new Blob(['png'], { type: 'image/png' })
+    const translate = vi.fn()
+    const rotate = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue({ translate, rotate, drawImage: vi.fn() } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback) => cb(pngBlob))
+
+    await expect(stream.captureFrame(180)).resolves.toBe(pngBlob)
+    expect(translate).toHaveBeenCalledWith(640, 480)
+    expect(rotate).toHaveBeenCalledWith(Math.PI)
+  })
+
+  it('270°：交换宽高，translate(0,640)+rotate(-π/2)', async () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    canvas.width = 640
+    canvas.height = 480
+    const stream = makeStream(ws, canvas)
+    const pngBlob = new Blob(['png'], { type: 'image/png' })
+    const translate = vi.fn()
+    const rotate = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue({ translate, rotate, drawImage: vi.fn() } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback) => cb(pngBlob))
+
+    await expect(stream.captureFrame(270)).resolves.toBe(pngBlob)
+    expect(translate).toHaveBeenCalledWith(0, 640)
+    expect(rotate).toHaveBeenCalledWith(-Math.PI / 2)
+  })
+
+  it('θ=0 原样直出：不创建离屏、不取 2d 上下文', async () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    const stream = makeStream(ws, canvas)
+    const pngBlob = new Blob(['png'], { type: 'image/png' })
+    const toBlobSpy = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback) => cb(pngBlob))
+    const createSpy = vi.spyOn(document, 'createElement')
+
+    await expect(stream.captureFrame(0)).resolves.toBe(pngBlob)
+    expect(toBlobSpy).toHaveBeenCalledTimes(1)
+    expect(toBlobSpy.mock.instances[0]).toBe(canvas)
+    expect(createSpy).not.toHaveBeenCalled()
+  })
+
+  it('烘焙不可用（2d 上下文为 null）→ 回退原始帧直出，不阻断导出', async () => {
+    const ws = new FakeWs()
+    const canvas = makeCanvas()
+    canvas.width = 640
+    canvas.height = 480
+    const stream = makeStream(ws, canvas)
+    const pngBlob = new Blob(['png'], { type: 'image/png' })
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(null as unknown as CanvasRenderingContext2D)
+    const toBlobSpy = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation((cb: BlobCallback) => cb(pngBlob))
+
+    await expect(stream.captureFrame(90)).resolves.toBe(pngBlob)
+    expect(toBlobSpy).toHaveBeenCalledTimes(1)
+    expect(toBlobSpy.mock.instances[0]).toBe(canvas)
+  })
 })
 
 describe('WS 重连接线（方案 19 终审）', () => {

@@ -17,8 +17,13 @@
         - 视频帧：二进制消息 = [8B PTS 大端无符号][H.264 Annex B Access Unit]
           （方案 32：PTS 为设备单调时钟 µs 原值透传；raw 兜底模式恒为 0）
         - 错误：JSON {"type": "error", "message": "..."}
+        - 输入降级：JSON {"type": "input_degraded", "action": "scroll"}
+          （方案 58 B-23：动作在当前输入通道不支持被丢弃时推送一条，
+          前端节流提示；正文不入日志）
         - 码率切换预告：JSON {"type": "restarting", "bit_rate": 2000000}
-          （编码器即将重启，客户端应暂停回退 watchdog 宽限若干秒）
+          （编码器即将重启，客户端应暂停回退 watchdog 宽限若干秒；
+          方案 58 B-13：由帧循环消费待生效码率处直推，与重启决策
+          同时序，不再依赖输入帧捎带）
         - 流结束：JSON {"type": "stream_ended"}
     客户端 → 服务端：JSON 消息
         { "action": "touch", "x": 100, "y": 200 }
@@ -142,15 +147,26 @@ async def video_stream(
     # 由 clipboard_mirror 动作开停，finally 统一收口（不跨会话存活）
     mirror = ClipboardMirror(device_id, stream_service)
 
+    async def _notify_restart_pending(bit_rate: int) -> None:
+        """码率重启预告（方案 58 B-13 裁决 a）：由帧循环消费 pending 处
+        直接调用，与重启决策同点同时序——旧实现在输入帧后捎带 peek，
+        静止画面/无输入时预告断发，客户端 watchdog 只能靠 15s 宽限兜底。
+        发送失败吞掉（连接已断则流本身即将收口）。"""
+        try:
+            await websocket.send_json({"type": "restarting", "bit_rate": bit_rate})
+            logger.info("notified_client_restarting", device=device_id, bit_rate=bit_rate)
+        except Exception:
+            pass
+
     async def handle_input() -> None:
-        """并发处理客户端输入事件；stats 上报喂自适应决策器，
-        检测到待生效码率切换时通知客户端进入重启宽限期。
+        """并发处理客户端输入事件；stats 上报喂自适应决策器
+        （restarting 预告已改由帧循环消费点直推，方案 58 B-13，
+        不再依赖输入帧捎带）。
 
         单帧异常只记日志后继续（方案 58 B-01）：一条畸形帧（如 copy_key
         非 int 的 clipboard_get、二进制帧令 receive_text 抛错）不得终结
         整条输入通道——旧实现异常落入外层 catch-all 直接结束任务，
-        touch/key/text/clipboard 全会话静默失效且 restarting 预告断发。"""
-        last_notified = None
+        touch/key/text/clipboard 全会话静默失效。"""
         while True:
             try:
                 data = parse_video_input(await websocket.receive_text())
@@ -158,15 +174,6 @@ async def video_stream(
                     continue  # 非法输入帧忽略，输入面不断
                 await _handle_input(device_id, data, stream_service, websocket,
                                     mirror)
-                pend = stream_service.peek_pending_bitrate(device_id)
-                if pend is not None and pend != last_notified:
-                    last_notified = pend
-                    try:
-                        await websocket.send_json({"type": "restarting", "bit_rate": pend})
-                        logger.info("notified_client_restarting",
-                                    device=device_id, bit_rate=pend)
-                    except Exception:
-                        pass
             except WebSocketDisconnect:
                 return
             except Exception as e:
@@ -235,7 +242,9 @@ async def video_stream(
         # 发送视频流
         frame_count = 0
         chunk_count = 0
-        async for pts, chunk in stream_service.start_stream(device_id, token):
+        async for pts, chunk in stream_service.start_stream(
+            device_id, token, on_restart_pending=_notify_restart_pending
+        ):
             chunk_count += 1
 
             # 自适应码率重启：轮次变化时重置解析器，丢弃跨重启的半截 NALU，
@@ -582,7 +591,17 @@ async def _handle_input(
     # 方案 51 B13：撤 encoder._control_sender 私有直读，仅留公开字段。
     logger.debug("sending_input_via_encoder", device=device_id,
                 resolution=encoder.resolution)
-    await encoder.send_input(data)
+    sent = await encoder.send_input(data)
+    if not sent:
+        # 方案 58 B-23 裁决 a：兜底不支持的动作（如 scroll）被丢弃时推
+        # 提示帧，前端可感（节流显示在前端做）；正文不入日志，仅记 action。
+        degraded_action = str(data.get("action"))
+        try:
+            await websocket.send_json({"type": "input_degraded", "action": degraded_action})
+            logger.info("input_degraded_notified", device=device_id,
+                        action=degraded_action)
+        except Exception:
+            pass
     if data.get("action") == "clipboard_set" and mirror is not None:
         # 方案 55 防环回：登记本次写入，镜像轮询读到同文一次不弹回
         mirror.note_set(str(data.get("text", "")))

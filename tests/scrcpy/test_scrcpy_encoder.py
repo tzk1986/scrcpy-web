@@ -200,9 +200,11 @@ class SubprocessHarness:
         cleanup_error: bool = False,
         wm_output: bytes = b"Physical size: 1080x1920\n",
         wm_error: bool = False,
+        forward_fail_ports: set[int] | None = None,
     ) -> None:
         self.calls: list[tuple] = []
         self.forward_ok = forward_ok
+        self.forward_fail_ports = forward_fail_ports
         self.cleanup_error = cleanup_error
         self.wm_output = wm_output
         self.wm_error = wm_error
@@ -218,8 +220,19 @@ class SubprocessHarness:
             if "--remove" in cmd and self.cleanup_error and not self.cleanup_failed:
                 self.cleanup_failed = True
                 raise OSError("no such port forwarding")  # 起始清理失败（实现应忽略）
-            if "--remove" not in cmd and not self.forward_ok:
-                return make_adb_proc(stderr=b"cannot bind listener tcp:27183", returncode=1)
+            if "--remove" not in cmd:
+                port = next((t for t in cmd if t.startswith("tcp:")), "tcp:?")
+                try:
+                    port_num = int(port.split(":", 1)[1])
+                except ValueError:
+                    port_num = -1
+                fail = not self.forward_ok or (
+                    self.forward_fail_ports is not None and port_num in self.forward_fail_ports
+                )
+                if fail:
+                    return make_adb_proc(
+                        stderr=f"cannot bind listener {port}".encode(), returncode=1
+                    )
             return make_adb_proc()
 
         if SCRCPY_SERVER_CLASS in cmd:
@@ -407,6 +420,65 @@ async def test_forward_cleanup_failure_is_ignored():
     assert harness.commands_with("forward", "localabstract:scrcpy")  # 转发仍建立成功
     # 起点清理（抛错）+ stop 清理各一次
     assert len(harness.commands_with("forward", "--remove")) == 2
+
+
+# ---------------------------------------------------------------------------
+# start()：端口碰撞线性探测（方案 58 A-12 裁决 b）
+# ---------------------------------------------------------------------------
+
+async def test_port_forward_first_attempt_success_no_retry():
+    """base 端口成功 → 单次建立，不探测邻端口，端口不变。"""
+    from app.infrastructure.stream.scrcpy import _local_port_for
+
+    encoder = ScrcpyEncoder()
+    base = _local_port_for(DEVICE_ID)
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr)
+
+    await drive_start(encoder, harness=harness)
+
+    assert encoder._local_port == base
+    assert harness.commands_with("forward", f"tcp:{base}", "localabstract:scrcpy")
+    assert not harness.commands_with("forward", f"tcp:{base + 1}", "localabstract:scrcpy")
+
+
+async def test_port_forward_collision_retries_adjacent_port():
+    """base 端口 forward 失败（碰撞）→ 线性探测 base+1 重试一次成功，
+    连接与 stop 清理都跟随偏移后的端口。"""
+    from app.infrastructure.stream.scrcpy import _local_port_for
+
+    encoder = ScrcpyEncoder()
+    base = _local_port_for(DEVICE_ID)
+    stderr = FakeStderr([b"Device: test-device\n"], block=True)
+    harness = SubprocessHarness(server_stderr=stderr, forward_fail_ports={base})
+    conn = ConnectionHarness(make_reader())
+
+    await drive_start(encoder, harness=harness, conn=conn)
+
+    assert encoder._local_port == base + 1
+    # base 尝试一次即失败，随后 base+1 重试成功（各一次建立命令）
+    assert len(harness.commands_with("forward", f"tcp:{base}", "localabstract:scrcpy")) == 1
+    assert len(harness.commands_with("forward", f"tcp:{base + 1}", "localabstract:scrcpy")) == 1
+    assert conn.calls[0] == ("127.0.0.1", base + 1)
+    # 每次尝试自带同端口预清理；stop 清理跟随偏移后的实际端口
+    assert len(harness.commands_with("forward", "--remove", f"tcp:{base}")) == 1
+    assert len(harness.commands_with("forward", "--remove", f"tcp:{base + 1}")) == 2
+
+
+async def test_port_forward_retry_also_fails_raises():
+    """base 与 base+1 均失败 → 仅重试一次后抛 RuntimeError（末次 stderr）。"""
+    from app.infrastructure.stream.scrcpy import _local_port_for
+
+    encoder = ScrcpyEncoder()
+    base = _local_port_for(DEVICE_ID)
+    harness = SubprocessHarness(forward_fail_ports={base, base + 1})
+
+    with pytest.raises(RuntimeError, match="adb forward failed: cannot bind listener"):
+        await drive_start(encoder, harness=harness)
+
+    assert harness.commands_with("forward", f"tcp:{base}", "localabstract:scrcpy")
+    assert harness.commands_with("forward", f"tcp:{base + 1}", "localabstract:scrcpy")
+    assert not harness.commands_with("forward", f"tcp:{base + 2}", "localabstract:scrcpy")
 
 
 async def test_control_connection_failure_is_non_fatal():

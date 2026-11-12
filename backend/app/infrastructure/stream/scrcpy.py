@@ -156,6 +156,71 @@ class ScrcpyEncoder:
         """当前会话编解码器（"h264"/"h265"），供 WS config 下发路由。"""
         return self._codec
 
+    async def _try_port_forward(self, device_id: str, port: int) -> str:
+        """在指定端口建立 forward：先同端口预清理（失败忽略），再建立。
+
+        返回 ""=成功；非空=失败原因（stderr 文本，58A-12 线性探测判据）。
+        """
+        try:
+            cleanup = await asyncio.create_subprocess_exec(
+                settings().adb.path, "-s", device_id, "forward", "--remove",
+                f"tcp:{port}",
+                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            await asyncio.wait_for(cleanup.communicate(), timeout=5)
+        except Exception:
+            pass  # 忽略清理错误（可能本来就不存在）
+
+        logger.info(
+            "setting_up_port_forward",
+            device=device_id,
+            port=port,
+            socket_name=self._socket_name,
+        )
+        forward_proc = await asyncio.create_subprocess_exec(
+            settings().adb.path, "-s", device_id, "forward",
+            f"tcp:{port}",
+            f"localabstract:{self._socket_name}",
+            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        _, fwd_err = await asyncio.wait_for(
+            forward_proc.communicate(),
+            timeout=ADB_TIMEOUT_SECONDS,
+        )
+        if forward_proc.returncode != 0:
+            return fwd_err.decode().strip()
+        return ""
+
+    async def _ensure_port_forward(self, device_id: str) -> None:
+        """建立端口转发（方案 58 A-12 裁决 b）：base 端口碰撞失败时线性
+        探测邻端口（+1）重试一次；仍失败则抛 RuntimeError。
+
+        端口偏移写回 self._local_port，后续 socket 连接与 stop 清理自动跟随。
+        """
+        error = await self._try_port_forward(device_id, self._local_port)
+        if not error:
+            return
+        retry_port = self._local_port + 1
+        logger.warning(
+            "port_forward_collision_retry_adjacent",
+            device=device_id,
+            port=self._local_port,
+            retry_port=retry_port,
+            error=error,
+        )
+        self._local_port = retry_port
+        error = await self._try_port_forward(device_id, retry_port)
+        if not error:
+            return
+        logger.error("port_forward_failed", device=device_id, error=error)
+        raise RuntimeError(f"adb forward failed: {error}")
+
     async def start(
         self, device_id: str, opts: EncoderOpts
     ) -> AsyncIterator[tuple[int, bytes]]:
@@ -207,49 +272,13 @@ class ScrcpyEncoder:
         if not await self._server_manager.push_server(device_id):
             raise RuntimeError("Failed to push scrcpy-server.jar to device")
 
-        # 2. 清除旧的端口转发（避免冲突）
-        try:
-            cleanup = await asyncio.create_subprocess_exec(
-                settings().adb.path, "-s", device_id, "forward", "--remove",
-                f"tcp:{self._local_port}",
-                stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                creationflags=CREATE_NO_WINDOW,
-            )
-            await asyncio.wait_for(cleanup.communicate(), timeout=5)
-        except Exception:
-            pass  # 忽略清理错误（可能本来就不存在）
+        # 2. 设置端口转发（必须在 server 启动前完成；碰撞时线性探测邻端口）
+        await self._ensure_port_forward(device_id)
 
         # 3. 转换 bit_rate 格式（方案 51 B12：复用 core.units 单点解析）
         bit_rate_value: int = parse_bit_rate(opts.bit_rate)
 
-        # 4. 设置端口转发（必须在 server 启动前完成）
-        logger.info(
-            "setting_up_port_forward",
-            device=device_id,
-            port=self._local_port,
-            socket_name=self._socket_name,
-        )
-        forward_proc = await asyncio.create_subprocess_exec(
-            settings().adb.path, "-s", device_id, "forward",
-            f"tcp:{self._local_port}",
-            f"localabstract:{self._socket_name}",
-            stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            creationflags=CREATE_NO_WINDOW,
-        )
-        _, fwd_err = await asyncio.wait_for(
-            forward_proc.communicate(),
-            timeout=ADB_TIMEOUT_SECONDS,
-        )
-        if forward_proc.returncode != 0:
-            error_msg = fwd_err.decode().strip()
-            logger.error("port_forward_failed", device=device_id, error=error_msg)
-            raise RuntimeError(f"adb forward failed: {error_msg}")
-
-        # 5. 构建 scrcpy-server 启动命令
+        # 4. 构建 scrcpy-server 启动命令
         # 12 字节头协议（方案 17 实施项 1b）：恢复默认 send_stream_meta/
         # send_frame_meta/send_device_meta/send_dummy_byte（全 true），
         # 由服务端按 size 字段切帧、config/keyframe 标志随包携带。
@@ -284,7 +313,7 @@ class ScrcpyEncoder:
 
         logger.info("starting_scrcpy_server", device=device_id)
 
-        # 6. 启动 scrcpy-server 子进程
+        # 5. 启动 scrcpy-server 子进程
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.DEVNULL,  # 方案 53：绕开 std 继承分支
@@ -298,7 +327,7 @@ class ScrcpyEncoder:
         assert self.process.stderr is not None
         server_stderr = self.process.stderr
 
-        # 7. 读取 server 启动日志（stderr），等待 "Device:" 确认启动成功
+        # 6. 读取 server 启动日志（stderr），等待 "Device:" 确认启动成功
         server_ready = False
         try:
             for _ in range(30):  # 最多等待 3 秒
@@ -379,7 +408,7 @@ class ScrcpyEncoder:
                         stderr=error_msg)
             raise RuntimeError(f"scrcpy-server exited early: {error_msg}")
 
-        # 8. 连接到 scrcpy-server 的 socket（视频 socket）
+        # 7. 连接到 scrcpy-server 的 socket（视频 socket）
         logger.info("connecting_to_scrcpy_server", device=device_id)
         try:
             self._reader, self._writer = await asyncio.wait_for(
@@ -396,7 +425,7 @@ class ScrcpyEncoder:
         # 此处命中均属本会话），供 stop() 设备侧终止、从源头防新增残留
         self._remote_pids = await self._enumerate_remote_pids(device_id)
 
-        # 9. 获取设备分辨率
+        # 8. 获取设备分辨率
         # 12B 头协议：分辨率由流内 session 包提供（read_socket 中解析），
         # 此步骤跳过，不再依赖 adb shell wm size 子进程。
         # raw_stream 兜底模式保留 adb wm size 路径。
@@ -429,7 +458,7 @@ class ScrcpyEncoder:
             except Exception as e:
                 logger.warning("resolution_adb_error", device=device_id, error=str(e))
 
-        # 10. 建立控制 socket
+        # 9. 建立控制 socket
         # ControlSender 需要分辨率：12B 协议下分辨率来自流内 session 包，
         # 由 read_socket 在收到首个 session 时创建；raw 兜底模式分辨率
         # 已在上一步由 adb 获取，直接创建。
@@ -462,7 +491,7 @@ class ScrcpyEncoder:
             logger.warning("control_connection_failed", device=device_id, error=str(e))
             # 控制连接失败不是致命的，会回退到 adb shell input
 
-        # 11. 后台任务：从 socket 读取数据到队列
+        # 10. 后台任务：从 socket 读取数据到队列
         # 12B 头协议：按包切分（stream_protocol.read_packets），一包一
         # yield；config/session 包永不丢，媒体包队列满时丢整包保时延
         # （包边界对齐，丢包不产生半帧损坏）。
@@ -552,7 +581,7 @@ class ScrcpyEncoder:
 
         read_task = asyncio.create_task(read_socket())
 
-        # 12. 从队列 yield 数据
+        # 11. 从队列 yield 数据
         idle_reset = float(settings().stream.idle_reset_seconds)
         tick = min(2.0, idle_reset / 2) if idle_reset > 0 else 2.0
         # 判死窗与空闲阈值解耦（方案 34 D1）：低帧率设备上 RESET 应答延迟
@@ -774,7 +803,7 @@ class ScrcpyEncoder:
     # 控制输入方法
     # =========================================================================
 
-    async def send_input(self, data: dict[str, Any]) -> None:
+    async def send_input(self, data: dict[str, Any]) -> bool:
         """
         通过控制 socket 发送输入事件。
 
@@ -793,6 +822,11 @@ class ScrcpyEncoder:
               （clipboard_get 不走此处：需应答回传，由 video.py 直调 get_device_clipboard）
 
         如果控制 socket 不可用，自动回退到 adb shell input。
+
+        返回（方案 58 B-23 裁决 a）：
+            True  = 已派发、有意跳过或按旧语义静默丢弃（超时/溢出）；
+            False = 动作在当前通道不支持而被丢弃（如兜底态 scroll），
+                    WS 层据此推 input_degraded 提示帧让用户可感。
         """
         # 方案 33：输入热路径（拖动可秒级数十条）降 debug 防刷屏
         logger.debug("send_input_called", device=self._device_id,
@@ -805,8 +839,7 @@ class ScrcpyEncoder:
                           device=self._device_id,
                           has_control_sender=self._control_sender is not None,
                           resolution=self._resolution)
-            await self._fallback_adb_input(data)
-            return
+            return await self._fallback_adb_input(data)
 
         action = data.get("action")
 
@@ -861,12 +894,13 @@ class ScrcpyEncoder:
 
             else:
                 logger.warning("unknown_input_action", action=action)
-                await self._fallback_adb_input(data)
+                return await self._fallback_adb_input(data)
 
         except Exception as e:
             logger.error("control_send_failed", device=self._device_id, error=str(e))
             # 回退到 adb shell input
-            await self._fallback_adb_input(data)
+            return await self._fallback_adb_input(data)
+        return True
 
     async def request_keyframe(self) -> None:
         """立即催出新 IDR（前端回切场景，方案 19 实施项 3）；无控制通道时 no-op。"""
@@ -941,7 +975,7 @@ class ScrcpyEncoder:
 
         await self._control_sender.touch(x2, y2, ACTION_UP)
 
-    async def _fallback_adb_input(self, data: dict[str, Any]) -> None:
+    async def _fallback_adb_input(self, data: dict[str, Any]) -> bool:
         """
         回退到 adb shell input（控制 socket 不可用时）。
 
@@ -952,6 +986,11 @@ class ScrcpyEncoder:
 
         参数：
             data: JSON 格式的输入数据
+
+        返回（方案 58 B-23）：
+            False=动作在兜底通道不支持而被丢弃（如 scroll）；
+            True=已派发、有意跳过（key 抬起）或按旧语义静默丢弃
+            （超时/溢出维持原「不提示」口径，不扩大裁决面）。
         """
         action = data.get("action")
         adb = settings().adb.path
@@ -974,7 +1013,7 @@ class ScrcpyEncoder:
             # 旧格式（无 down）时敲一次，down=False 跳过防双触发（方案 54 3.1；
             # 长按 repeat 与修饰键在兜底态丢弃——如实写入手册不承诺等效）
             if data.get("down") is False:
-                return
+                return True  # 有意跳过，非降级（58B-23）
             cmd = [adb, "-s", self._device_id, "shell", "input", "keyevent",
                    str(data["keycode"])]
         elif action in ("text", "clipboard_set"):
@@ -984,13 +1023,13 @@ class ScrcpyEncoder:
                    data["text"]]
         else:
             logger.warning("unknown_input_action_fallback", action=action)
-            return
+            return False  # 兜底不支持的动作被丢弃（58B-23：上层可感提示）
 
         if self._fallback_waiters >= _FALLBACK_MAX_WAITERS:
             self._fallback_dropped += 1
             logger.warning("fallback_adb_input_dropped",
                            device=self._device_id, dropped=self._fallback_dropped)
-            return
+            return True  # 溢出丢弃维持旧「静默」口径（不扩大裁决面）
 
         self._fallback_waiters += 1
         try:
@@ -1023,6 +1062,7 @@ class ScrcpyEncoder:
                                failures=self._fallback_failures)
         finally:
             self._fallback_waiters -= 1
+        return True
 
     # 设备侧残留检测命令：[.] 防 grep/sh 自身命令行字面自匹配，
     # [0-9]* 排除 /proc/self 等伪目录（方案 48 实证，旧 toybox ps 不可用）

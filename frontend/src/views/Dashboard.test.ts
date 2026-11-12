@@ -944,6 +944,34 @@ describe('Dashboard', () => {
     wrapper.unmount()
   })
 
+  // ==================== 方案 58 E-24：行内断开与批量同确认口径 ====================
+
+  it('E-24：行内断开先二次确认；取消不断开，确认才执行并成功提示', async () => {
+    mockApi.listDevices.mockResolvedValue([deviceB])
+    mockApi.disconnectDevice.mockResolvedValue({ success: true })
+    const wrapper = await mountDashboard()
+    await flushPromises()
+
+    const btn = wrapper.findAll('button').find((b) => b.text() === '断开')
+    expect(btn).toBeDefined()
+
+    // 取消确认 → 不调用断开
+    h.ElMessageBox.confirm.mockRejectedValueOnce('cancel')
+    await btn!.trigger('click')
+    await flushPromises()
+    expect(h.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(mockApi.disconnectDevice).not.toHaveBeenCalled()
+    expect(h.ElMessage.success).not.toHaveBeenCalled()
+
+    // 确认 → 执行断开并提示（confirm 默认 resolve，见全局 beforeEach）
+    await btn!.trigger('click')
+    await flushPromises()
+    expect(mockApi.disconnectDevice).toHaveBeenCalledWith(deviceB.id)
+    expect(h.ElMessage.success).toHaveBeenCalledWith(`已断开 ${deviceB.id}`)
+
+    wrapper.unmount()
+  })
+
   // ==================== 方案 36 第三批：扫描记录独立卡片 + localStorage ====================
 
   it('扫描完成后写入 localStorage：label/端口/时间/未连接主机清单（第三批）', async () => {

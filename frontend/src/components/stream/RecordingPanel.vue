@@ -15,7 +15,7 @@
       返回 done + local_path 时直接进入已完成提示（「重新录制」仍在，
       直接再 start，终态可被新会话覆盖、互斥语义不变）
     - 409 互斥：后端单设备会话互斥，冲突时 ElMessage.error 提示
-    - 卸载时若仍在录制：仅提示服务端 60 秒上限兜底收尾，不调 stop API
+    - 卸载时若仍在录制：仅提示服务端按已配置上限兜底收尾，不调 stop API
       （设备端 screenrecord 自带 --time-limit，服务端自愈巡检也会收尾）
 -->
 <template>
@@ -156,7 +156,7 @@ onUnmounted(() => {
   stopTimer()
   // 不主动 stop：设备端 --time-limit 与服务端自愈巡检兜底收尾
   if (state.value === 'recording') {
-    ElMessage.info('录制仍在继续，服务端将按 60 秒上限自动收尾')
+    ElMessage.info('录制仍在继续，服务端将按已配置上限自动收尾')
   }
 })
 </script>

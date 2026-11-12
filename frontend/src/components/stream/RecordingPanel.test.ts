@@ -9,7 +9,7 @@
  *   - 停止：done + local_path → 一行提示（已保存 + 查看录屏链接跳 /recordings）
  *     + 重新录制（方案 46：预览/下载/webm 导出移入独立录屏页）
  *   - 互斥：start 409 → ElMessage.error 提示且保持空闲（录屏入口仍在）
- *   - 卸载：录制中仅提示服务端 60 秒上限兜底，不调 stop API
+ *   - 卸载：录制中仅提示服务端按已配置上限兜底，不调 stop API
  *
  * 说明：仿 AppsView.test.ts 模式——vi.hoisted + vi.mock('element-plus') +
  * vi.mock('@/services/api')；el-button / router-link 用轻量 stub 替代
@@ -209,7 +209,7 @@ describe('RecordingPanel', () => {
     expect(wrapper.find('.record-info').text()).toContain('已保存')
   })
 
-  it('录制中卸载：提示服务端 60 秒上限兜底且不调 stop API', async () => {
+  it('录制中卸载：提示服务端按已配置上限兜底且不调 stop API', async () => {
     mockApi.startRecording.mockResolvedValue({ session: sessionWith() })
     const wrapper = mountPanel()
     await flushPromises()
@@ -218,7 +218,7 @@ describe('RecordingPanel', () => {
 
     wrapper.unmount()
 
-    expect(h.ElMessage.info).toHaveBeenCalledWith('录制仍在继续，服务端将按 60 秒上限自动收尾')
+    expect(h.ElMessage.info).toHaveBeenCalledWith('录制仍在继续，服务端将按已配置上限自动收尾')
     expect(mockApi.stopRecording).not.toHaveBeenCalled()
   })
 

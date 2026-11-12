@@ -28,7 +28,7 @@
 import asyncio
 import time
 from collections import deque
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Awaitable, Callable
 
 from app.application.bitrate_advisor import AdvisorConfig, BitrateAdvisor
 from app.core.config import settings
@@ -125,7 +125,10 @@ class StreamService:
         return token
 
     async def start_stream(
-        self, device_id: str, token: _ActiveStreamToken
+        self,
+        device_id: str,
+        token: _ActiveStreamToken,
+        on_restart_pending: Callable[[int], Awaitable[None]] | None = None,
     ) -> AsyncIterator[tuple[int, bytes]]:
         """
         为给定设备启动视频流（须先经 acquire_stream 取得会话令牌）。
@@ -143,6 +146,11 @@ class StreamService:
         参数：
             device_id: 要流式传输的设备的 ADB 序列号。
             token: acquire_stream 颁发的会话令牌。
+            on_restart_pending: 可选异步回调——码率切换决策生效、编码器
+                即将重启时以新码率（bps）调用一次，供 WS 层直推
+                restarting 预告（方案 58 B-13：不依赖输入帧捎带，静止
+                画面下预告同样准达）。回调异常被吞掉并记 warning，
+                不得反噬流循环。
 
         产出：
             (PTS, H.264 帧字节)：PTS 为设备单调时钟 µs（方案 32 透传，
@@ -231,6 +239,18 @@ class StreamService:
                                 # 器、触发其 finally 全量 teardown 杀流。
                                 continue
                             restart_bitrate = pend
+                            # 方案 58 B-13 裁决 a：消费点直推预告，时序天然
+                            # 同步（旧实现靠输入帧捎带 peek，无输入则断发）
+                            if on_restart_pending is not None:
+                                try:
+                                    await on_restart_pending(pend)
+                                except Exception as e:
+                                    logger.warning(
+                                        "restart_pending_notify_failed",
+                                        device=device_id,
+                                        bit_rate=pend,
+                                        error=str(e),
+                                    )
                             break
                 except EncoderStalledError as e:
                     stalled = True
@@ -327,10 +347,6 @@ class StreamService:
     def idle_reset_seconds(self) -> float:
         """当前空闲保活间隔（秒），0=关闭；随 config 消息下发给前端联动回退阈值。"""
         return float(settings().stream.idle_reset_seconds)
-
-    def peek_pending_bitrate(self, device_id: str) -> int | None:
-        """查看待生效的码率切换（帧循环消费前可被 WS 层读到以通知客户端）。"""
-        return self._pending_bitrate.get(device_id)
 
     def report_client_fps(self, device_id: str, fps: float, now: float | None = None) -> None:
         """

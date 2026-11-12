@@ -943,8 +943,17 @@ async function handlePairConnect() {
   }
 }
 
-/** 处理断开设备 */
+/** 处理断开设备（方案 58 E-24 裁决 a：与批量断开/命令面板统一二次确认口径） */
 async function handleDisconnect(deviceId: string) {
+  try {
+    await ElMessageBox.confirm(
+      `确定断开 ${deviceId} 吗？`,
+      '断开设备',
+      { type: 'warning', confirmButtonText: '断开', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 取消不断开
+  }
   disconnectingId.value = deviceId
   try {
     await store.disconnectDevice(deviceId)

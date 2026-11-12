@@ -243,12 +243,46 @@ export class H264VideoStream {
 
   /**
    * 导出渲染 canvas 当前帧为 PNG Blob（方案 40 A）。
-   * 渲染帧方向与视频流一致（天然正），无需 rotation 判据。
-   * 截图零额外画布、零新依赖；toBlob 回调为空时 reject。
+   * 方案 58 D-04 裁决 a：旋转态（90/180/270）先按与 CSS 展示一致的反旋烘焙到
+   * 离屏 canvas 再导出——所见即所得；θ=0 维持原 toBlob 直出（零额外画布）。
+   * 烘焙不可用（无 2d 上下文）时回退导出原始帧。toBlob 回调为空时 reject。
    */
-  captureFrame(): Promise<Blob> {
+  captureFrame(rotation = 0): Promise<Blob> {
+    if (rotation === 90 || rotation === 180 || rotation === 270) {
+      const baked = this.bakeRotation(rotation)
+      if (baked) return this.toPngBlob(baked)
+    }
+    return this.toPngBlob(this.canvas)
+  }
+
+  /**
+   * D-04：把渲染 canvas 按顺时针角度烘焙到离屏画布，与 canvasStyle 的
+   * CSS rotate(θdeg) 变换一致（90/270 交换宽高）。返回 null 表示 2d 上下文不可用。
+   */
+  private bakeRotation(rotation: 90 | 180 | 270): HTMLCanvasElement | null {
+    const src = this.canvas
+    const out = document.createElement('canvas')
+    out.width = rotation === 180 ? src.width : src.height
+    out.height = rotation === 180 ? src.height : src.width
+    const ctx = out.getContext('2d')
+    if (!ctx) return null
+    if (rotation === 90) {
+      ctx.translate(out.width, 0)
+      ctx.rotate(Math.PI / 2)
+    } else if (rotation === 180) {
+      ctx.translate(out.width, out.height)
+      ctx.rotate(Math.PI)
+    } else {
+      ctx.translate(0, out.height)
+      ctx.rotate(-Math.PI / 2)
+    }
+    ctx.drawImage(src, 0, 0)
+    return out
+  }
+
+  private toPngBlob(c: HTMLCanvasElement): Promise<Blob> {
     return new Promise((resolve, reject) => {
-      this.canvas.toBlob((blob) => {
+      c.toBlob((blob) => {
         if (blob) {
           resolve(blob)
         } else {

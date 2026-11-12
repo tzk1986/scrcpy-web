@@ -229,3 +229,47 @@ describe('方案56 deviceId 切换重载', () => {
     wrapper.unmount()
   })
 })
+
+describe('方案58 D-04 导出按旋转角烘焙', () => {
+  type SnapshotApi = {
+    captureSnapshot: () => Promise<{ blob: Blob; source: 'stream' | 'fallback' }>
+  }
+
+  it('captureSnapshot：streaming 态把当前旋转角传给 captureFrame', async () => {
+    localStorage.setItem('osc.videoRotation.dev1', '90')
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+
+    const result = await (wrapper.vm as unknown as SnapshotApi).captureSnapshot()
+
+    expect(result.source).toBe('stream')
+    expect(h264.captureFrame).toHaveBeenCalledWith(90)
+    wrapper.unmount()
+  })
+
+  it('首帧上抛缩略图同样按旋转角抓帧（缓存与所见一致）', async () => {
+    localStorage.setItem('osc.videoRotation.dev1', '270')
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    const onState = h264.setStateChangeHandler.mock.calls[0][0] as (s: string) => void
+    onState('streaming')
+    await nextTick()
+    expect(h264.captureFrame).toHaveBeenCalledWith(270)
+    expect(wrapper.emitted('first-frame')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('设备端截图回退路径不烘焙（仅流内抓帧传角）', async () => {
+    localStorage.setItem('osc.videoRotation.dev1', '90')
+    const wrapper = await mountPlayer()
+    const h264 = h.MockH264Stream.instances[0]
+    h264.state = 'configuring'
+    h.MockApi.screenshot.mockResolvedValue(new Blob(['a']))
+
+    const result = await (wrapper.vm as unknown as SnapshotApi).captureSnapshot()
+
+    expect(result.source).toBe('fallback')
+    expect(h264.captureFrame).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})

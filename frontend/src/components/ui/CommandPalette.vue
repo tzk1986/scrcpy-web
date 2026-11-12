@@ -51,8 +51,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useDeviceStore } from '@/stores/device'
 import { buildCommands, filterCommands, type Command } from '@/services/commandRegistry'
+
+/** E-24/E-12：面板断开的成败提示用，取后端 detail，缺省「未知错误」 */
+function disconnectErrorText(e: unknown): string {
+  const detail = (e as { response?: { data?: { detail?: string } } } | null)?.response?.data?.detail
+  return detail || '未知错误'
+}
 
 const router = useRouter()
 const route = useRoute()
@@ -94,7 +101,25 @@ function refreshCommands() {
     devices: deviceStore.devices,
     currentDeviceId,
     navigate: (path) => router.push(path),
-    disconnect: (id) => deviceStore.disconnectDevice(id),
+    // 方案 58 E-24 裁决 a：面板「断开当前设备」与列表行内/批量同一确认口径；
+    // E-12：await 完成并播报成败（旧实现即发即忘、失败静默）。
+    disconnect: async (id) => {
+      try {
+        await ElMessageBox.confirm(
+          `确定断开 ${id} 吗？`,
+          '断开设备',
+          { type: 'warning', confirmButtonText: '断开', cancelButtonText: '取消' }
+        )
+      } catch {
+        return // 取消不断开
+      }
+      try {
+        await deviceStore.disconnectDevice(id)
+        ElMessage.success(`已断开 ${id}`)
+      } catch (e) {
+        ElMessage.error(`断开失败: ${disconnectErrorText(e)}`)
+      }
+    },
     setDebugTab: (tab) =>
       window.dispatchEvent(new CustomEvent('openscrcpy:set-debug-tab', { detail: tab })),
     toggleFullscreen: () => {

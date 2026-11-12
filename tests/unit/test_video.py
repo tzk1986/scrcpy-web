@@ -103,6 +103,7 @@ class FakeEncoder:
         resolution: tuple[int, int] = (1080, 1920),
         codec: str = "h264",
         clipboard_result: str | None = "clip",
+        degraded_actions: tuple[str, ...] = (),
     ) -> None:
         self._resolution = resolution
         self._codec = codec
@@ -111,6 +112,8 @@ class FakeEncoder:
         # 方案 54 G3-B：get_device_clipboard 替身返回值与调用记录
         self.clipboard_result = clipboard_result
         self.clipboard_calls: list[int] = []
+        # 方案 58 B-23：这些 action 的 send_input 返回 False（模拟兜底不支持丢弃）
+        self.degraded_actions = set(degraded_actions)
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -120,8 +123,10 @@ class FakeEncoder:
     def codec(self) -> str:
         return self._codec
 
-    async def send_input(self, data: dict[str, Any]) -> None:
+    async def send_input(self, data: dict[str, Any]) -> bool:
         self.inputs.append(data)
+        action = data.get("action")
+        return action not in self.degraded_actions
 
     async def get_device_clipboard(self, copy_key: int = 0,
                                    timeout: float = 3.0) -> str | None:
@@ -138,7 +143,8 @@ class FakeStreamService:
         packet_mode: use_packet_protocol() 返回值。
         encoder: get_encoder() 返回值（None 模拟无编码器）。
         fps_to_bitrate: report_client_fps 收到该 fps 时写入的待生效码率，
-            供 peek_pending_bitrate 读取以触发 restarting 通知。
+            由 start_stream 在取帧/挂起节拍处消费并回调 on_restart_pending
+            直推 restarting（方案 58 B-13），同值不重复通知。
         epoch_after: {第 N 个 chunk: 新 epoch}，产出第 N 个 chunk 前切换，
             模拟自适应码率重启（端点读到新 epoch 后重置解析器）。
         hold_until: chunks 耗尽后轮询等待（asyncio.sleep 让出事件循环），
@@ -168,6 +174,7 @@ class FakeStreamService:
         self.error = error or RuntimeError("stream failed")
         self.epoch = 0
         self.pending: dict[str, int | None] = {}
+        self.last_notified_bps: int | None = None
         self.reported_fps: list[tuple[str, float]] = []
         self.keyframe_requests: list[str] = []
         self.stop_calls: list[str] = []
@@ -193,9 +200,6 @@ class FakeStreamService:
         if fps in self.fps_to_bitrate:
             self.pending[device_id] = self.fps_to_bitrate[fps]
 
-    def peek_pending_bitrate(self, device_id: str) -> int | None:
-        return self.pending.get(device_id)
-
     async def request_keyframe(self, device_id: str, now: float | None = None) -> bool:
         self.keyframe_requests.append(device_id)
         return True
@@ -210,9 +214,24 @@ class FakeStreamService:
         self.release_calls.append((device_id, token))
 
     async def start_stream(
-        self, device_id: str, token: Any
+        self,
+        device_id: str,
+        token: Any,
+        on_restart_pending: Callable[[int], Any] | None = None,
     ) -> AsyncIterator[tuple[int, bytes]]:
+        # 消费待生效码率并回调预告（建模真实帧循环消费点，方案 58 B-13）：
+        # 同值（与上次预告一致）视为伪唤醒，消费但不通知。
+        def _consume_pending() -> int | None:
+            pend = self.pending.pop(device_id, None)
+            if pend is None or pend == self.last_notified_bps:
+                return None
+            self.last_notified_bps = pend
+            return pend
+
         for index, chunk in enumerate(self.chunks):
+            notify = _consume_pending()
+            if notify is not None and on_restart_pending is not None:
+                await on_restart_pending(notify)
             if (index + 1) in self.epoch_after:
                 self.epoch = self.epoch_after[index + 1]
             if self.error_after is not None and index == self.error_after:
@@ -222,6 +241,9 @@ class FakeStreamService:
             raise self.error
         if self.hold_until is not None:
             while not self.hold_until():
+                notify = _consume_pending()
+                if notify is not None and on_restart_pending is not None:
+                    await on_restart_pending(notify)
                 await asyncio.sleep(0.002)
 
 
@@ -700,6 +722,57 @@ def test_malformed_clipboard_get_and_binary_do_not_kill_input(video_client):
         assert encoder.clipboard_calls == []  # 畸形 copy_key 被忽略，未触达编码器
         gate.set()
     assert wait_for(lambda: svc.release_calls == [(DEV, ACQUIRED_TOKEN)])
+
+
+def test_input_degraded_notified_when_send_input_returns_false(video_client):
+    """方案 58 B-23 裁决 a：send_input 返回 False（兜底不支持的动作被丢弃，
+    如 scroll）→ 推 {"type":"input_degraded","action":...} 提示帧；
+    支持动作（touch 返回 True）不推。"""
+    gate = threading.Event()
+    encoder = FakeEncoder(degraded_actions=("scroll",))
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        hold_until=gate.is_set,
+    )
+    with video_client(svc).websocket_connect(f"/ws/video/{DEV}") as session:
+        assert recv_json(session)["type"] == "config"
+        recv_binary(session)
+        session.send_json({"action": "touch", "x": 1, "y": 2})     # 支持：无提示
+        session.send_json({"action": "scroll", "x": 1, "y": 2, "v_scroll": -1})
+        assert recv_json(session) == {"type": "input_degraded", "action": "scroll"}
+        assert encoder.inputs == [
+            {"action": "touch", "x": 1, "y": 2},
+            {"action": "scroll", "x": 1, "y": 2, "v_scroll": -1},
+        ]
+        gate.set()
+
+
+async def test_input_degraded_send_failure_does_not_kill_input():
+    """提示帧发送失败被吞（连接已断）：输入链继续存活，stats 仍达决策器，
+    流正常收口（模式同 restarting 吞错用例，直接调 video_stream 注入失败）。"""
+    ws = FakeWS(
+        incoming=[
+            {"action": "scroll", "x": 1, "y": 2, "v_scroll": -1},
+            {"op": "stats", "fps": 25},
+        ],
+        fail_send_json_types=("input_degraded",),
+    )
+    encoder = FakeEncoder(degraded_actions=("scroll",))
+    svc = FakeStreamService(
+        [SPS_AVC + PPS_MAIN + IDR_0],
+        encoder=encoder,
+        fps_to_bitrate={25.0: 2_000_000},
+        hold_until=lambda: any(m.get("type") == "restarting" for m in ws.json_attempts),
+    )
+    await video_stream(ws, DEV, svc)
+
+    assert {"type": "input_degraded", "action": "scroll"} in ws.json_attempts
+    assert "input_degraded" not in [m["type"] for m in ws.sent_json]
+    # stats 仍被处理（输入任务未因提示失败而终结）→ restarting 送达
+    assert svc.reported_fps == [(DEV, 25.0)]
+    assert ws.json_attempts[-2] == {"type": "restarting", "bit_rate": 2_000_000}
+    assert svc.release_calls == [(DEV, ACQUIRED_TOKEN)]
 
 
 def test_clipboard_get_returns_text_over_ws(video_client):

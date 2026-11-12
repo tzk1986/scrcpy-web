@@ -699,8 +699,11 @@ class VideoEncoder(Protocol):
         """停止编码并释放资源（子进程等）。"""
         ...
 
-    async def send_input(self, data: dict[str, Any]) -> None:
-        """经控制通道发送输入事件；通道不可用时回退 adb shell input。"""
+    async def send_input(self, data: dict[str, Any]) -> bool:
+        """经控制通道发送输入事件；通道不可用时回退 adb shell input。
+
+        返回（方案 58 B-23）：True=已派发/有意跳过/按旧语义静默丢弃；
+        False=动作在当前通道不支持被丢弃，WS 层据此推 input_degraded。"""
         ...
 
     async def request_keyframe(self) -> None:

@@ -54,6 +54,41 @@ class OkProc:
         pass
 
 
+async def test_fallback_unsupported_action_returns_degraded_signal():
+    """方案 58 B-23 裁决 a：scroll 等兜底不支持的动作被丢弃时，
+    send_input 返回 False 供 WS 层推 input_degraded 提示帧；不 spawn 进程。"""
+    encoder = make_encoder()
+
+    with patch("asyncio.create_subprocess_exec") as exec_mock:
+        result = await encoder.send_input(
+            {"action": "scroll", "x": 1, "y": 2, "v_scroll": -1}
+        )
+
+    assert result is False
+    exec_mock.assert_not_called()
+
+
+async def test_fallback_supported_action_returns_true():
+    """兜底支持的动作（touch）派发成功 → send_input 返回 True（无提示帧）。"""
+    encoder = make_encoder()
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=OkProc())):
+        result = await encoder.send_input({"action": "touch", "x": 1, "y": 1})
+
+    assert result is True
+
+
+async def test_fallback_key_up_skip_returns_true():
+    """down=False 抬起在兜底态有意跳过（非降级丢弃）→ 返回 True 不提示。"""
+    encoder = make_encoder()
+
+    with patch("asyncio.create_subprocess_exec") as exec_mock:
+        result = await encoder.send_input({"action": "key", "keycode": 4, "down": False})
+
+    assert result is True
+    exec_mock.assert_not_called()
+
+
 async def test_fallback_gate_serializes_spawns():
     """第一条兜底输入进程未退出前，第二条不得 spawn（1 在飞 + 保序）。"""
     encoder = make_encoder()

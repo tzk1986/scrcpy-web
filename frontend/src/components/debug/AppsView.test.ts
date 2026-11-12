@@ -210,7 +210,7 @@ describe('AppsView', () => {
   it('58E-15 运行态迟到响应守卫：改选后 A 运行时不得写入 B 弹窗', async () => {
     mockApi.listApps.mockResolvedValue({ apps: [userApp, systemApp] })
     // 详情按请求包名真实返回（否则 B 的详情会合成污染选中项，干扰运行态守卫断言）
-    mockApi.getAppInfo.mockImplementation((id: string, pkg: string) =>
+    mockApi.getAppInfo.mockImplementation((_id: string, pkg: string) =>
       Promise.resolve(pkg === 'com.android.settings' ? { ...systemApp } : { ...userApp }),
     )
     let resolveRuntime: ((v: unknown) => void) | null = null

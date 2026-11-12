@@ -650,13 +650,14 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 |------|------|------|
 | `config`（JSON 文本） | `{"type": "config", "codec": "avc1.42E01E", "width": 1080, "height": 1920, "description": "<hex>", "idle_reset_seconds": 5.0}` | `codec` 由 SPS 的 profile/constraint/level 动态提取；`description` 为 SPS+PPS 的 Annex B 字节（hex 编码，客户端转 AVCC 后创建 `VideoDecoder`）；`idle_reset_seconds` 为后端空闲保活（RESET_VIDEO）间隔秒，0=关闭（客户端按此联动回退阈值，见下）；自适应码率重启后会再次下发，客户端应重建解码器 |
 | 视频帧（二进制） | H.264 Annex B Access Unit 字节串（含起始码） | 一条二进制消息 = 一个 AU（详见附录 A.4） |
-| `restarting`（JSON 文本） | `{"type": "restarting", "bit_rate": 2000000}` | 编码器即将按新码率重启的预告（1–3s 黑屏属预期）；客户端应暂停回退 watchdog 并停止上报 stats。仅当客户端发送输入消息时检查并附带下发 |
+| `restarting`（JSON 文本） | `{"type": "restarting", "bit_rate": 2000000}` | 编码器即将按新码率重启的预告（1–3s 黑屏属预期）；客户端应暂停回退 watchdog 并停止上报 stats。由帧循环在消费待生效码率处直接下发（方案 58 B-13：无输入也发，时序与重启天然同步） |
 | `stream_ended`（JSON 文本） | `{"type": "stream_ended"}` | 流正常结束通知（方案 19 实施项 5）：客户端应立即走回退，不再等待 watchdog 超时 |
 | `error`（JSON 文本） | `{"type": "error", "message": "..."}` | 流处理异常时尽力发送，随后连接结束 |
 | `clipboard`（JSON 文本） | `{"type": "clipboard", "text": "..."}` | `clipboard_get` 请求的应答（方案 54 G3-B 拉取式） |
 | `clipboard_error`（JSON 文本） | `{"type": "clipboard_error", "error": "..."}` | `clipboard_get` 失败（无控制通道/发送异常/3s 超时） |
 | `clipboard_push`（JSON 文本） | `{"type": "clipboard_push", "text": "..."}` | 单向镜像自动推送（方案 55）：镜像开启后设备剪贴板变化（含开启后首轮）时推送；正文不入日志 |
 | `clipboard_mirror`（JSON 文本） | `{"type": "clipboard_mirror", "enabled": false, "reason": "poll_failed"}` | 后端自停通知（方案 55）：连续 10 次拉取失败收口轮询 task，前端开关应复位 |
+| `input_degraded`（JSON 文本） | `{"type": "input_degraded", "action": "scroll"}` | 输入降级提示（方案 58 B-23）：adb 回退态下不支持的动作（如 `scroll`）被丢弃时下发，前端弹节流提示条；仅记 action 名，正文不入日志 |
 
 #### 客户端 → 服务端
 
@@ -669,7 +670,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `long_press` | `x`, `y`（整数，设备坐标）、`duration`（毫秒，默认 1000） | 长按：DOWN → 保持 `duration` → UP；adb 回退路径用同点 `input swipe x y x y duration` |
 | `key` | `keycode`（Android keycode 整数）、`down`（可选布尔，方案 54 G1）、`repeat`（可选整数，长按重复计数）、`meta`（可选整数，Android `META_*` 位掩码：SHIFT=1/ALT=2/SYM=4/CTRL=16/META=0x10000） | 按键：`down` 缺省时维持 DOWN+UP 成对（旧行为，4 虚拟键零改动）；`down=true/false` 单发按下/抬起（物理键盘镜像用，repeat 仅按下帧有意义） |
 | `text` | `text`（字符串，UTF-8） | 文本注入（服务端单条上限 300 字符，超长由前端分段） |
-| `scroll` | `x`, `y`（设备坐标）、`h_scroll`, `v_scroll`（±1 档位整数） | 滚轮注入（方案 54，adb 回退路径无等效命令、忽略） |
+| `scroll` | `x`, `y`（设备坐标）、`h_scroll`, `v_scroll`（±1 档位整数） | 滚轮注入（方案 54，adb 回退路径无等效命令、忽略并回 `input_degraded` 提示帧，方案 58 B-23） |
 | `clipboard_set` | `text`（字符串）、`paste`（可选布尔，默认 false） | 写设备剪贴板（方案 54 G3-A）；`paste=true` 服务端写后注入粘贴键直接落入焦点输入框（中文主路径，Android≥7）。控制不可用时降级 `input text`（ASCII 尽力） |
 | `clipboard_get` | `copy_key`（可选整数，0=直接读、1=先注入复制键捕获选中文本） | 拉取设备剪贴板（方案 54 G3-B）；应答经同 WS 回 `clipboard` / `clipboard_error`，超时 3s |
 | `clipboard_mirror` | `enabled`（布尔） | 单向镜像开关（方案 55，设备→PC）：会话级 1s 轮询 `GET_CLIPBOARD(0)` 纯读，变化推 `clipboard_push`；幂等开停、默认关、断会话自动收口；本会话 `clipboard_set` 写入文本一次性防环回不弹推 |
@@ -680,7 +681,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 { "op": "stats", "fps": 25 }
 ```
 
-- `op == "stats"` 时读取 `fps`（float，非法值按 0 处理），喂给码率决策器；决策器触发档位切换时，服务端在后续输入消息处理后下发 `restarting`
+- `op == "stats"` 时读取 `fps`（float，非法值按 0 处理），喂给码率决策器；决策器触发档位切换时，服务端在帧循环消费待生效码率处直接下发 `restarting`（方案 58 B-13）
 - 未被识别的 `action` 走 `adb shell input` 回退路径
 
 关键帧请求（resume 回切前发送，方案 19 实施项 3）：
@@ -706,7 +707,7 @@ WS 端点全部在 `backend/app/main.py` 内联注册（`interfaces/ws/` 中的�
 | `filter` | `level`（可选）、`tag`（可选）、`paused`（布尔，默认 `false`） | 设置本订阅者的服务端过滤条件；`level` 精确匹配日志级别，`tag` 子串匹配；`paused=true` 暂停推送（暂停状态可让后端停止 logcat 采集） |
 | `exec` | `command`（字符串） | 流式执行 shell 命令：逐行回 `shell_stream`（含 `done: false`），完成后回 `shell_output` |
 | `input` | `data`（base64 字符串） | PTY 模式透传原始按键到设备 shell（如 `\r`→`\n` 由前端转换）；输出由后台转发器以 `shell_stream` 回推 |
-| `unsubscribe` | — | 取消订阅并停止 shell 输出转发 |
+| `unsubscribe` | — | 取消订阅并停止 shell 输出转发（58F-06 裁决：协议保留面——当前前端未使用，断开时后端自动退订；保留供第三方客户端显式退订） |
 
 日志导出不走本 WS（原 `export` 操作恒回未实现错误，2026-09-21 已移除）；用 HTTP 端 `GET /api/debug/sessions/{id}/logs/export`（json/csv 文件下载）。
 

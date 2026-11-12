@@ -144,7 +144,7 @@ export interface SettingsPatch {
 /** 运行环境信息（方案 45 T6，对应后端 GET /api/system/runtime-env 只读透明化）。 */
 export interface RuntimeEnvView {
   scrcpy_server_version: string // 方案 44 单源常量原值（如 "5.0.1"，展示层补 v 前缀）
-  jar_path: string
+  jar_path: string // 方案 58 C-17：遮蔽后 basename（不含宿主目录）
   adb_path: string
   adb_version: string // adb --version 探测；失败为「未知」
   frozen: boolean // PyInstaller 冻结运行标记

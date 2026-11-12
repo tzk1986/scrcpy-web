@@ -35,3 +35,21 @@ def test_runtime_env_adb_probe_failure_returns_unknown(monkeypatch):
     res = make_client().get("/api/system/runtime-env")
 
     assert res.json()["adb_version"] == "未知"
+
+
+def test_runtime_env_masks_host_paths_to_basename(monkeypatch):
+    """58C-17 裁决 a：宿主绝对路径遮蔽为 basename——局域网暴露时
+    不再泄露盘符/用户目录结构；透明化目的（哪个 jar/adb）不损。"""
+    monkeypatch.setattr(
+        "app.interfaces.http.system._probe_adb_version",
+        lambda path: "Android Debug Bridge version 1.0.41",
+    )
+    res = make_client().get("/api/system/runtime-env")
+
+    body = res.json()
+    assert body["jar_path"] == "scrcpy-server.jar"
+    assert body["adb_path"] in {"adb.exe", "adb"}
+    for value in (body["jar_path"], body["adb_path"]):
+        assert "/" not in value
+        assert "\\" not in value
+        assert ":" not in value  # Windows 盘符冒号也不得残留

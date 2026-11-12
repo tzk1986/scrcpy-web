@@ -273,6 +273,11 @@ describe('方案54 keydown 镜像与浏览器保留键', () => {
   it.each([
     ['Ctrl+R', { code: 'KeyR', ctrlKey: true }],
     ['Ctrl+W', { code: 'KeyW', ctrlKey: true }],
+    // 方案58 D-09 扩充：查找/打印/保存/打开
+    ['Ctrl+F', { code: 'KeyF', ctrlKey: true }],
+    ['Ctrl+P', { code: 'KeyP', ctrlKey: true }],
+    ['Ctrl+S', { code: 'KeyS', ctrlKey: true }],
+    ['Ctrl+O', { code: 'KeyO', ctrlKey: true }],
     ['Ctrl+Shift+I', { code: 'KeyI', ctrlKey: true, shiftKey: true }],
     ['F5', { code: 'F5' }],
     ['F12', { code: 'F12' }],
@@ -283,6 +288,16 @@ describe('方案54 keydown 镜像与浏览器保留键', () => {
     const e = fireKey(captureEl(wrapper), 'keydown', init)
     expect(e.defaultPrevented).toBe(false)
     expect(ic.handleKeyDown).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('方案58 D-09：Ctrl+A 不在放行清单，保留注入设备（设备内全选）', async () => {
+    const wrapper = await mountPlayer()
+    const ic = h.MockInputController.instances[0]
+    const e = fireKey(captureEl(wrapper), 'keydown', { code: 'KeyA', key: 'a', ctrlKey: true })
+    expect(e.defaultPrevented).toBe(true)
+    expect(ic.handleKeyDown).toHaveBeenCalledTimes(1)
+    expect(ic.handleKeyDown.mock.calls[0][0].code).toBe('KeyA')
     wrapper.unmount()
   })
 })

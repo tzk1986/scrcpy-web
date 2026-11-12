@@ -367,3 +367,50 @@ describe('方案55 后端自停复位', () => {
     wrapper.unmount()
   })
 })
+
+describe('方案58 B-23 input_degraded 降级提示帧', () => {
+  beforeEach(() => {
+    h.ElMessage.warning.mockReset()
+  })
+
+  function feedCaptured(msg: Record<string, unknown>) {
+    const downstream = vi.fn()
+    const wsInst = h.MockWebSocketService.instances[0]
+    wsInst.setMessageHandler(downstream)
+    wsInst.messageHandler!(JSON.stringify(msg))
+    return downstream
+  }
+
+  it('scroll 降级帧 → 弹拖拽建议提示条，不下传给解码链路', async () => {
+    const wrapper = await mountPlayer()
+    const downstream = feedCaptured({ type: 'input_degraded', action: 'scroll' })
+    expect(h.ElMessage.warning).toHaveBeenCalledTimes(1)
+    expect(h.ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('拖拽'))
+    expect(downstream).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('非 scroll 动作 → 泛化提示文案', async () => {
+    const wrapper = await mountPlayer()
+    feedCaptured({ type: 'input_degraded', action: 'key' })
+    expect(h.ElMessage.warning).toHaveBeenCalledTimes(1)
+    expect(h.ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('该输入暂未生效'))
+    wrapper.unmount()
+  })
+
+  it('5 秒节流窗内合条防刷屏，超窗可再弹（同 58E-16 口径）', async () => {
+    const wrapper = await mountPlayer()
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    feedCaptured({ type: 'input_degraded', action: 'scroll' })
+    expect(h.ElMessage.warning).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(103_000)
+    feedCaptured({ type: 'input_degraded', action: 'scroll' })
+    expect(h.ElMessage.warning).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(106_000)
+    feedCaptured({ type: 'input_degraded', action: 'scroll' })
+    expect(h.ElMessage.warning).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
+    wrapper.unmount()
+  })
+})

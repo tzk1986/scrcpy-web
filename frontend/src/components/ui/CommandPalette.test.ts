@@ -7,6 +7,7 @@
  *   - 输入过滤：命中单条 / 无匹配空态 / Esc 关闭
  *   - Enter 执行选中命令（路由跳转）并关闭面板
  *   - 点击「切换到 logcat 面板」派发 openscrcpy:set-debug-tab CustomEvent
+ *   - 方案58 E-24/E-12：面板断开走确认+await+成败播报
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
@@ -16,8 +17,20 @@ import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 const mockApi = vi.hoisted(() => ({
   listDevices: vi.fn().mockResolvedValue([]),
   disconnectDevice: vi.fn().mockResolvedValue({ success: true }),
+  screenshot: vi.fn().mockResolvedValue(new Blob(['png'])),
+}))
+
+const urlStub = vi.hoisted(() => ({
+  createObjectURL: vi.fn(),
+  revokeObjectURL: vi.fn(),
 }))
 vi.mock('@/services/api', () => ({ api: mockApi }))
+
+const h = vi.hoisted(() => ({
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  ElMessageBox: { confirm: vi.fn() },
+}))
+vi.mock('element-plus', () => ({ ElMessage: h.ElMessage, ElMessageBox: h.ElMessageBox }))
 
 import CommandPalette from './CommandPalette.vue'
 import { useDeviceStore } from '@/stores/device'
@@ -61,8 +74,25 @@ function listItemTexts(w: VueWrapper): string[] {
 }
 
 beforeEach(() => {
-  mockApi.listDevices.mockClear()
-  mockApi.disconnectDevice.mockClear()
+  // afterEach 的 vi.restoreAllMocks 会把 hoisted 时绑定的 mockResolvedValue
+  // 实现一并冲掉（store 取 result.success 抛错→面板报「未知错误」），
+  // 故这里 mockReset 后必须重设实现（同 Dashboard.test.ts 口径）。
+  mockApi.listDevices.mockReset().mockResolvedValue([])
+  mockApi.disconnectDevice.mockReset().mockResolvedValue({ success: true })
+  mockApi.screenshot.mockReset().mockResolvedValue(new Blob(['png']))
+  urlStub.createObjectURL.mockReset().mockImplementation(() => 'blob:cp-thumb')
+  urlStub.revokeObjectURL.mockReset()
+  Object.defineProperty(URL, 'createObjectURL', {
+    configurable: true,
+    value: urlStub.createObjectURL,
+  })
+  Object.defineProperty(URL, 'revokeObjectURL', {
+    configurable: true,
+    value: urlStub.revokeObjectURL,
+  })
+  h.ElMessageBox.confirm.mockReset().mockResolvedValue('confirm')
+  h.ElMessage.success.mockClear()
+  h.ElMessage.error.mockClear()
 })
 
 afterEach(() => {
@@ -155,5 +185,41 @@ describe('CommandPalette', () => {
     expect(w.find('.cmd-overlay').exists()).toBe(false)
 
     window.removeEventListener('openscrcpy:set-debug-tab', onTab)
+  })
+
+  // 方案58 E-24 裁决 a + E-12：面板断开统一确认、await 完成并播报成败
+  async function runDisconnect() {
+    const w = await mountPalette('/device/dev-a')
+    pressCtrlK()
+    await flushPromises()
+    await w.find('.cmd-input').setValue('断开当前设备')
+    await w.find('.cmd-item').trigger('click')
+    await flushPromises()
+    return w
+  }
+
+  it('E-24：面板断开先确认，确认后才调用断开并成功播报', async () => {
+    const w = await runDisconnect()
+    expect(h.ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(mockApi.disconnectDevice).toHaveBeenCalledWith('dev-a')
+    expect(h.ElMessage.success).toHaveBeenCalledWith('已断开 dev-a')
+    expect(w.find('.cmd-overlay').exists()).toBe(false)
+  })
+
+  it('E-24：确认取消 → 不调用断开、无播报', async () => {
+    h.ElMessageBox.confirm.mockRejectedValueOnce('cancel')
+    await runDisconnect()
+    expect(mockApi.disconnectDevice).not.toHaveBeenCalled()
+    expect(h.ElMessage.success).not.toHaveBeenCalled()
+    expect(h.ElMessage.error).not.toHaveBeenCalled()
+  })
+
+  it('E-12：断开失败不再静默，error 播报后端 detail', async () => {
+    mockApi.disconnectDevice.mockRejectedValueOnce({
+      response: { data: { detail: 'device busy' } },
+    })
+    await runDisconnect()
+    expect(h.ElMessage.error).toHaveBeenCalledWith('断开失败: device busy')
+    expect(h.ElMessage.success).not.toHaveBeenCalled()
   })
 })

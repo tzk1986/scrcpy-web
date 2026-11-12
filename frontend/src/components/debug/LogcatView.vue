@@ -11,7 +11,7 @@
     - 实时日志推送（通过 WebSocket）
     - 虚拟滚动（DynamicScroller 动态行高，缓冲上限 5 万条）
     - 消息语法高亮（string/url/exception/timestamp/number/kw，自研 tokenizer）
-    - 自动滚动：新日志时自动滚动到底部
+    - 自动滚动：新日志时自动滚动到底部；上翻距底超 150px 挂起强拉、回底恢复（方案 58 E-21）
     - 点击日志复制到剪贴板
     - 导出、清理、清空
 
@@ -116,6 +116,7 @@
       :items="scrollerItems"
       :min-item-size="22"
       key-field="uid"
+      @scroll="onLogScroll"
     >
       <template #default="{ item, index, active }">
         <DynamicScrollerItem
@@ -174,6 +175,28 @@ const filterSearch = ref<string | null>(null)
 const scrollerRef = ref<{ scrollToBottom: () => void } | null>(null)
 /** 是否自动滚动到底部。 */
 const autoScroll = ref(true)
+/** 方案 58 E-21 裁决 a：上翻挂起自动滚动的距底阈值（px）。 */
+const NEAR_BOTTOM_PX = 150
+/** 视口是否贴近底部（初值 true＝跟底态；上翻超过阈值转 false 挂起）。 */
+const nearBottom = ref(true)
+
+/**
+ * 滚动通道回调：按滚动容器实时几何更新 nearBottom。
+ * 不读事件参数（组件 emit 与透传 DOM 监听两种来源参数形状不一），直接取实例根元素。
+ */
+function onLogScroll() {
+  const el = (scrollerRef.value as unknown as { $el?: unknown } | null)?.$el
+  if (!(el instanceof HTMLElement)) return
+  nearBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX
+}
+
+// E-21：重新打开自动滚动开关即回到跟底态（挂起后主动开开关=明确要跟随）
+watch(autoScroll, (on) => {
+  if (on) {
+    nearBottom.value = true
+    scrollerRef.value?.scrollToBottom()
+  }
+})
 /** 数据库统计信息。 */
 const dbStats = ref<{ db_size_mb: number } | null>(null)
 /** 是否正在执行清理。 */
@@ -240,8 +263,9 @@ watch(searchInput, (val) => {
 
 // 监听日志变化，自动滚动到底部
 // nextTick 确保 DOM 更新后再触发 scrollToBottom
+// 方案 58 E-21：上翻距底超阈值时挂起强拉，回底（nearBottom 由滚动回调恢复）即继续跟随
 watch(() => debugStore.logs.length, async () => {
-  if (autoScroll.value) {
+  if (autoScroll.value && nearBottom.value) {
     await nextTick()
     scrollerRef.value?.scrollToBottom()
   }
@@ -254,6 +278,8 @@ watch(() => debugStore.isRecording, async (recording) => {
     await debugStore.connectWebSocket()
     await debugStore.fetchLogs()
     if (autoScroll.value) {
+      // 开始录制回到跟底态（E-21：滚到底=贴底；桩环境无滚动事件亦须复位）
+      nearBottom.value = true
       await nextTick()
       scrollerRef.value?.scrollToBottom()
     }

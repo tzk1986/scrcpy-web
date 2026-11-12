@@ -546,6 +546,62 @@ describe('LogcatView', () => {
     expect(scrollerCalls.scrollToBottom).not.toHaveBeenCalled()
   })
 
+  // 方案58 E-21 裁决 a：上翻距底超 150px 挂起强拉回底，回底恢复跟随（无新增控件）
+  it('E-21：上翻超阈值挂起强拉，回底后新日志恢复跟随', async () => {
+    const store = useDebugStore()
+    store.logs = makeLogs()
+    const wrapper = mountView()
+    await flushPromises()
+    const scroller = wrapper.findComponent(DynamicScrollerStub)
+    const el = scroller.element as HTMLElement
+    const setDistanceToBottom = (px: number) => {
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 1000 })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 400 })
+      Object.defineProperty(el, 'scrollTop', { configurable: true, value: 1000 - 400 - px })
+    }
+
+    // 上翻到距底 400px（>150 阈值）→ 挂起
+    setDistanceToBottom(400)
+    await scroller.trigger('scroll')
+    scrollerCalls.scrollToBottom.mockClear()
+    store.logs.push(makeLogs()[0])
+    await flushPromises()
+    expect(scrollerCalls.scrollToBottom).not.toHaveBeenCalled()
+
+    // 回底到距底 50px → 恢复跟随
+    setDistanceToBottom(50)
+    await scroller.trigger('scroll')
+    store.logs.push(makeLogs()[0])
+    await flushPromises()
+    expect(scrollerCalls.scrollToBottom).toHaveBeenCalledTimes(1)
+  })
+
+  it('E-21：挂起中重新打开自动滚动开关 → 立即回底并恢复跟随', async () => {
+    const store = useDebugStore()
+    store.logs = makeLogs()
+    const wrapper = mountView()
+    await flushPromises()
+    const scroller = wrapper.findComponent(DynamicScrollerStub)
+    const el = scroller.element as HTMLElement
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 1000 })
+    Object.defineProperty(el, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(el, 'scrollTop', { configurable: true, value: 200 })
+    await scroller.trigger('scroll') // 距底 400px → 挂起
+
+    // 关再开开关：开=明确要跟随，复位挂起态并回底
+    const sw = wrapper.findComponent(ElSwitch)
+    sw.vm.$emit('update:modelValue', false)
+    await nextTick()
+    scrollerCalls.scrollToBottom.mockClear()
+    sw.vm.$emit('update:modelValue', true)
+    await nextTick()
+    expect(scrollerCalls.scrollToBottom).toHaveBeenCalledTimes(1)
+
+    store.logs.push(makeLogs()[0])
+    await flushPromises()
+    expect(scrollerCalls.scrollToBottom).toHaveBeenCalledTimes(2)
+  })
+
   it('scrollerItems：有 seq 用 seq，无 seq 回退 ts-index', async () => {
     const store = useDebugStore()
     store.logs = [

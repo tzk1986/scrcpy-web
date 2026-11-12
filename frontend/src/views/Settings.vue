@@ -100,16 +100,16 @@
           <el-descriptions-item label="adb 版本">
             {{ runtimeEnv.adb_version }}
           </el-descriptions-item>
-          <el-descriptions-item label="jar 路径">
+          <el-descriptions-item label="jar 文件">
             <el-collapse>
-              <el-collapse-item title="展开查看完整路径">
+              <el-collapse-item title="展开查看文件名（宿主路径已遮蔽，58C-17）">
                 <pre class="path-value">{{ runtimeEnv.jar_path }}</pre>
               </el-collapse-item>
             </el-collapse>
           </el-descriptions-item>
-          <el-descriptions-item label="adb 路径">
+          <el-descriptions-item label="adb 文件">
             <el-collapse>
-              <el-collapse-item title="展开查看完整路径">
+              <el-collapse-item title="展开查看文件名（宿主路径已遮蔽，58C-17）">
                 <pre class="path-value">{{ runtimeEnv.adb_path }}</pre>
               </el-collapse-item>
             </el-collapse>

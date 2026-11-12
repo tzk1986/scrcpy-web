@@ -70,6 +70,9 @@ async def shutdown_endpoint() -> dict[str, Any]:
 
     docker 直跑 uvicorn（无注册回调）时返回 accepted=false 不假成功。
 
+    方案 58 C-17 口径：无鉴权属 loopback 姿态的既定接受面；暴露局域网前
+    须自行反代加鉴权（用户手册安全段）。
+
     返回：
         {"accepted": true, "message": "服务正在退出"}  已接入在线退出
         {"accepted": false, "message": "..."}          未接入，需手动停止
@@ -100,16 +103,27 @@ def _probe_adb_version(adb_path: str) -> str:
     return "未知"
 
 
+def _mask_path(path: str) -> str:
+    """58C-17（T3#6 裁决 a）：路径遮蔽为 basename——runtime-env 无鉴权，
+    loopback 姿态下可接受，但局域网暴露时绝对路径泄露盘符/用户目录。
+    保留文件名即可满足透明化目的（实际用了哪个 jar/adb）。"""
+    return path.replace("\\", "/").rstrip("/").split("/")[-1] or path
+
+
 @router.get("/runtime-env")
 async def runtime_env_endpoint() -> dict[str, Any]:
-    """运行环境信息（方案 45 §4.1-③）：只读透明化，不改动二进制获取方式。"""
+    """运行环境信息（方案 45 §4.1-③）：只读透明化，不改动二进制获取方式。
+
+    路径字段为遮蔽后 basename（方案 58 C-17）；shutdown 端点维持
+    loopback 无鉴权姿态，暴露局域网前须自行反代加鉴权（见用户手册）。
+    """
     # 与全仓一致走 .path 自动检测（源码 tools/adb.exe、frozen _internal/tools/、回退 "adb"）
     adb_path = settings().adb.path
     adb_version = await asyncio.to_thread(_probe_adb_version, adb_path)
     return {
         "scrcpy_server_version": SCRCPY_SERVER_VERSION,
-        "jar_path": str(ServerManager().get_local_jar_path()),
-        "adb_path": adb_path,
+        "jar_path": _mask_path(str(ServerManager().get_local_jar_path())),
+        "adb_path": _mask_path(adb_path),
         "adb_version": adb_version,
         "frozen": bool(getattr(sys, "frozen", False)),
     }

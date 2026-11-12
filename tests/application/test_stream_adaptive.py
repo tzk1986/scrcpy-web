@@ -96,6 +96,113 @@ async def test_low_fps_restarts_encoder_at_lower_tier(stream_settings):
 
 
 @pytest.mark.asyncio
+async def test_restart_pending_notifies_callback_directly(stream_settings):
+    """方案 58 B-13 裁决 a：重启决策在消费 pending 处直接回调预告客户端，
+    不依赖输入帧捎带——静止画面/无输入时 restarting 预告同样准达。"""
+    FakeEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeEncoder)
+    notified: list[int] = []
+
+    async def on_restart_pending(bit_rate: int) -> None:
+        notified.append(bit_rate)
+
+    token = await svc.acquire_stream("dev1")
+    assert token is not None
+
+    async def consume():
+        async for _ in svc.start_stream("dev1", token, on_restart_pending=on_restart_pending):
+            pass
+
+    task = asyncio.create_task(consume())
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 1)
+
+    for i in range(8):
+        svc.report_client_fps("dev1", 10, now=float(i))
+
+    # 回调在编码器重建（第 2 台创建）之前已收到预告
+    assert await _wait_for(lambda: notified == [2_000_000])
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 2)
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: FakeEncoder.created[1].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_restart_pending_without_callback_still_restarts(stream_settings):
+    """不传回调时行为零回归：重启照常、不抛错（旧调用方兼容面）。"""
+    FakeEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeEncoder)
+
+    token = await svc.acquire_stream("dev1")
+    assert token is not None
+
+    async def consume():
+        async for _ in svc.start_stream("dev1", token):
+            pass
+
+    task = asyncio.create_task(consume())
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 1)
+
+    for i in range(8):
+        svc.report_client_fps("dev1", 10, now=float(i))
+
+    assert await _wait_for(
+        lambda: len(FakeEncoder.created) == 2 and FakeEncoder.created[1].opts is not None
+    )
+    assert parse_bit_rate(FakeEncoder.created[1].opts.bit_rate) == 2_000_000
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: FakeEncoder.created[1].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_restart_pending_callback_failure_does_not_kill_stream(stream_settings):
+    """回调抛错（如 WS 已断）被吞掉：重启流程继续，流不被预告故障终结。"""
+    FakeEncoder.created.clear()
+    svc = StreamService(encoder_factory=FakeEncoder)
+
+    async def exploding_callback(bit_rate: int) -> None:
+        raise RuntimeError("websocket send failed")
+
+    token = await svc.acquire_stream("dev1")
+    assert token is not None
+
+    frames: list[tuple[int, bytes]] = []
+
+    async def consume():
+        async for f in svc.start_stream("dev1", token, on_restart_pending=exploding_callback):
+            frames.append(f)
+
+    task = asyncio.create_task(consume())
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 1)
+
+    for i in range(8):
+        svc.report_client_fps("dev1", 10, now=float(i))
+
+    # 预告失败被吞，重启仍发生（第 2 台编码器），帧流继续
+    assert await _wait_for(lambda: len(FakeEncoder.created) == 2)
+    assert await _wait_for(lambda: len(frames) > 0)
+
+    await svc.stop_stream("dev1")
+    await _wait_for(lambda: FakeEncoder.created[1].stop_called)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
 async def test_disabled_adaptive_ignores_stats(stream_settings, monkeypatch):
     monkeypatch.setattr(stream_settings.stream, "adaptive_bitrate", False)
     FakeEncoder.created.clear()
