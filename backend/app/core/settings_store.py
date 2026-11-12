@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +16,10 @@ import yaml
 
 from app.core.exceptions import SettingsStoreError
 from config.settings import config_base_dir
+
+# 方案 58 C-09：user.yaml「读→改→写」全链串行化。并发 PUT 在 await 点
+# 交错会造成丢更新（后写者整档覆盖，抹掉前者刚写入的节）。
+_user_config_lock = asyncio.Lock()
 
 
 def user_yaml_path() -> Path:
@@ -50,6 +57,26 @@ def write_user_config(config: dict[str, Any]) -> None:
         os.replace(tmp, path)
     except OSError as e:
         raise SettingsStoreError(f"写入 {path.name} 失败：{e}") from e
+
+
+async def mutate_user_config(
+    mutate: Callable[[dict[str, Any]], Any | Awaitable[Any]],
+) -> None:
+    """
+    持锁完成 user.yaml 的「读→改→写」全链（方案 58 C-09）。
+
+    参数：
+        mutate: 接收 user 映射、就地修改的回调；返回 awaitable 则 await 之。
+
+    异常：
+        SettingsStoreError: 读/写失败（read/write_user_config 原样上抛）。
+    """
+    async with _user_config_lock:
+        user = read_user_config()
+        result = mutate(user)
+        if inspect.isawaitable(result):
+            await result
+        write_user_config(user)
 
 
 def merge_section(user: dict[str, Any], section: str, patch: dict[str, Any] | None) -> None:

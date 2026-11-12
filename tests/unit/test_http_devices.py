@@ -87,7 +87,7 @@ class FakeDeviceService:
         self.devices: list[DeviceInfo] = []
         self.device: DeviceInfo | None = None
         self.install_result = "Success"
-        self.batch_results: list[str] = []
+        self.batch_results: list[dict[str, Any]] = []
         self.png = b"\x89PNG\r\n\x1a\nfakepng"
         self.raw_gz = gzip.compress(b"RAW_FRAME_PAYLOAD")
         self.rotation = 0
@@ -121,7 +121,9 @@ class FakeDeviceService:
         self.calls.append(("install_apk", device_id, apk_path))
         return self.install_result
 
-    async def batch_install(self, device_ids: list[str], apk_path: str) -> list[str]:
+    async def batch_install(
+        self, device_ids: list[str], apk_path: str
+    ) -> list[dict[str, Any]]:
         self.calls.append(("batch_install", tuple(device_ids), apk_path))
         return self.batch_results
 
@@ -283,8 +285,14 @@ def test_install_apk(fake: FakeDeviceService) -> None:
 
 
 def test_batch_install(fake: FakeDeviceService) -> None:
-    """批量安装：device_ids 请求体 + apk_path 查询参数透传。"""
-    fake.batch_results = ["d1: success", "d2: failed - offline"]
+    """批量安装：device_ids 请求体 + apk_path 查询参数透传。
+
+    方案 58 C-13：results 形状为结构化 {device_id, ok, error?}（端点纯透传）。
+    """
+    fake.batch_results = [
+        {"device_id": "d1", "ok": True},
+        {"device_id": "d2", "ok": False, "error": "offline"},
+    ]
     client = make_client()
     with override(get_device_service, fake):
         response = client.post(

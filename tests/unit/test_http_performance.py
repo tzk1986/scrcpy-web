@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from app.core.config import settings as get_settings
 from app.deps import get_performance_service
 
 from .http_testkit import make_client, override
@@ -37,6 +38,11 @@ class FakePerformanceService:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.metrics: list[dict[str, Any]] = []
+        # 方案 58 C-08：端点改问服务的有效容量；默认取全局配置保持既有口径
+        self.capacity = get_settings().metrics.buffer_size
+
+    def effective_buffer_capacity(self, device_id: str) -> int:
+        return self.capacity
 
     async def get_metrics(self, device_id: str, limit: int = 100) -> list[dict[str, Any]]:
         self.calls.append(("get_metrics", device_id, limit))
@@ -104,6 +110,20 @@ def test_get_metrics_limit_boundaries_ok(fake: FakePerformanceService, limit: in
 
     assert response.status_code == 200
     assert fake.calls == [("get_metrics", DEV, limit)]
+
+
+def test_get_metrics_limit_validated_against_effective_capacity(fake: FakePerformanceService) -> None:
+    """方案 58 C-08：上界问服务的 effective_buffer_capacity(device_id)，
+    不再直读实时配置——热重载调大 buffer_size 后旧 deque 容量没变，
+    放行「数据在手却拿不全」的假上限；调小则出现 400 假拒绝。"""
+    fake.capacity = 50  # 模拟该设备实际缓冲容量（如构造时快照）
+    client = make_client()
+    with override(get_performance_service, fake):
+        response = client.get(f"/api/perf/{DEV}/metrics", params={"limit": 100})
+
+    assert response.status_code == 400
+    assert "1 and 50" in response.json()["error"]["message"]
+    assert fake.calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.application.performance_service import PerformanceService
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.deps import get_performance_service
 from app.interfaces.http.device_guard import require_valid_device_id
@@ -104,10 +103,14 @@ async def get_metrics(
             ]
         }
     """
-    if limit < 1 or limit > settings().metrics.buffer_size:
+    # 方案 58 C-08：上界问服务的有效容量（该设备 deque 实际 maxlen），
+    # 不直读实时配置——热重载改 buffer_size 后旧队列容量没变，
+    # 直读配置会放行假上限（数据在手拿不全）或 400 假拒绝。
+    capacity = service.effective_buffer_capacity(device_id)
+    if limit < 1 or limit > capacity:
         raise HTTPException(
             status_code=400,
-            detail=f"limit must be between 1 and {settings().metrics.buffer_size}",
+            detail=f"limit must be between 1 and {capacity}",
         )
 
     metrics = await service.get_metrics(device_id, limit)

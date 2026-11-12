@@ -311,9 +311,11 @@ class StreamService:
             cur_active = self.active_streams.get(device_id)
             if cur_active is token or cur_active is False:
                 self.active_streams.pop(device_id, None)
+                # 方案 58 B-11：pending_bitrate 同归流生命周期，纳入 identity
+                # 守卫——旧流 finally 晚到时不再弹掉新流刚设的码率待应用项。
+                self._pending_bitrate.pop(device_id, None)
             if advisor is not None and self._advisors.get(device_id) is advisor:
                 self._advisors.pop(device_id, None)
-            self._pending_bitrate.pop(device_id, None)
             if self._restart_events.get(device_id) is restart_event:
                 self._restart_events.pop(device_id, None)
             # 以下数据型 dict 无条件 pop：新会话写入自愈（epoch 极端下

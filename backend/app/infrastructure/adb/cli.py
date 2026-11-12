@@ -788,15 +788,18 @@ class AdbCliDriver:
             return
         raise PairError.classify(detail)
 
-    async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
+    async def disconnect_tcp(self, ip: str, port: int = 5555) -> bool:
         """
-        断开 TCP/IP 连接。
+        断开 TCP/IP 连接（方案 58 C-19 三态返回）。
 
         参数：
             ip: 设备的 IP 地址。
             port: ADB 端口（默认 5555）。
 
-        目标不可达时跳过 adb 调用直接返回（幂等语义，无实际清理收益）。
+        返回：
+            True=已执行断开（成功或 adb 报错吞掉，维持「尽力而为」口径，
+            调用方可删行）；False=预检不可达跳过（未执行 disconnect，
+            调用方应保留设备行，防假成功删行后 5s 重登记的列表闪烁）。
         """
         device_id = f"{ip}:{port}"
         logger.info("disconnecting_tcp", ip=ip, port=port)
@@ -806,7 +809,7 @@ class AdbCliDriver:
             await probe_tcp(ip, port, settings().adb.probe_timeout)
         except DeviceUnreachableError as e:
             logger.info("tcp_disconnect_skipped_unreachable", device=device_id, reason=e.message)
-            return
+            return False
 
         try:
             await self._run("disconnect", device_id)
@@ -814,6 +817,7 @@ class AdbCliDriver:
         except AdbError as e:
             logger.warning("tcp_disconnect_failed", device=device_id, error=str(e))
             # 断开失败不是严重错误，只记录警告
+        return True
 
     async def scan_hosts(
         self,

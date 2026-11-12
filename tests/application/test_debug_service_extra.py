@@ -355,6 +355,15 @@ async def test_restore_skips_sessions_already_in_memory():
     assert repo.next_seq_calls == 0  # 跳过在 next_seq 之前
 
 
+async def test_subscribe_unknown_session_raises():
+    """方案 58 B-10（C16 反向残边）：订阅不存在/已回收的会话直接抛
+    SessionNotFoundError，不再注册幽灵订阅收假确认。"""
+    svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
+    with pytest.raises(SessionNotFoundError):
+        await svc.subscribe("nope", FakeWS())
+    assert "nope" not in svc.subscribers
+
+
 async def test_grace_stop_noop_when_no_collect_task(monkeypatch):
     monkeypatch.setattr(DebugService, "LOGCOLLECT_STOP_GRACE", 0.01)
     svc = DebugService(adb=FakeAdb(), repo=FakeRepo(), metrics_repo=SqliteMetricsRepository())
@@ -731,6 +740,27 @@ async def test_exec_shell_stream_raw_yields_lines_and_records():
     assert lines == ["x", "y"]
     assert repo.shell_history == [(session.id, "ls", "xy")]
     assert session.shell_history == ["ls"]
+    await svc.stop_output_forwarding(session.id)
+
+
+async def test_exec_shell_stream_raw_history_tail_window():
+    """方案 58 B-12：流式 exec 的历史输出尾窗 64KB——超大输出只保留
+    末尾预算内整行，防无界累积撑内存与历史巨型行。"""
+    lines = [f"{i:03d}" + "y" * 997 for i in range(200)]  # 200 × 1000 字符 = 200KB
+    shell = FakeShell(lines=lines)
+    repo = FakeRepo()
+    svc = DebugService(adb=FakeAdb(shell=shell), repo=repo, metrics_repo=SqliteMetricsRepository())
+    session = make_session()
+    svc.sessions[session.id] = session
+
+    got = [line async for line in svc.exec_shell_stream_raw(session.id, "yes")]
+    assert got == lines  # 产流不截断（实时转发全量）
+
+    sid, cmd, saved = repo.shell_history[0]
+    assert (sid, cmd) == (session.id, "yes")
+    assert len(saved) <= 65_536
+    assert saved.endswith(lines[-1])
+    assert saved.startswith(lines[-65])  # 尾窗预算内 65 个整行
     await svc.stop_output_forwarding(session.id)
 
 

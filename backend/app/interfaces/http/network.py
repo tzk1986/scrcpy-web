@@ -22,6 +22,7 @@ NetworkService（应用层），本层无状态（原模块级采样器缓存的
 import csv
 import io
 import json
+import math
 import time
 from datetime import datetime
 from typing import Any
@@ -158,6 +159,14 @@ async def export_stats(
             status_code=400,
             detail=f"limit must be between 1 and {_EXPORT_LIMIT_MAX}",
         )
+    # 方案 58 C-14：from/to 经 float 解析可为 NaN/±Inf——透传 SQL 比较语义
+    # 未定（NULL/驱动差异）；倒序区间空查浪费。入站即拒。
+    if (from_ is not None and not math.isfinite(from_)) or (
+        to is not None and not math.isfinite(to)
+    ):
+        raise HTTPException(status_code=400, detail="from/to must be finite numbers")
+    if from_ is not None and to is not None and from_ > to:
+        raise HTTPException(status_code=400, detail="from must not be greater than to")
 
     if source == "buffer":
         rows = service.get_buffer_snapshot(device_id, limit)

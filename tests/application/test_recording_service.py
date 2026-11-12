@@ -176,6 +176,23 @@ async def test_stop_pull_none_converges_failed(service, mock_adb):
     mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
 
 
+async def test_stop_pull_partial_file_unlinked(service, mock_adb, tmp_path):
+    """方案 58 B-07：pull 中途失败（主机半截 MP4 残留）→ 失败路径 best-effort
+    清半截文件，不再占落盘目录配额；会话仍收敛 failed。"""
+    s = await service.start("d1")
+    partial = tmp_path / Path(s.remote_path).name
+
+    def _write_half_then_fail(*args: object, **kwargs: object) -> None:
+        partial.write_bytes(b"ftypmp4" + b"\x00" * 100)
+        raise AdbError("adb pull broken pipe")
+
+    mock_adb.pull_recording.side_effect = _write_half_then_fail
+    out = await service.stop("d1")
+    assert out is not None and out.state == RecordingState.FAILED.value
+    assert not partial.exists()
+    mock_adb.rm_remote.assert_called_once_with("d1", s.remote_path)
+
+
 async def test_stop_mkdir_failure_converges_failed_and_rm_remote(service, mock_adb, monkeypatch):
     """落盘目录不可写（mkdir OSError）→ 不冒泡，收敛 failed 且先 rm_remote 兜底。"""
     def _boom_mkdir(self: Path, *args: object, **kwargs: object) -> None:

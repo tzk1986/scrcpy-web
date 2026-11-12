@@ -8,6 +8,11 @@ A1 L4：回显用户输入的错误消息净化（截断 + 去控制字符）
 剔除不可打印字符；正常短输入不受影响（既有断言零破坏）。
 """
 
+import asyncio
+import json
+
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from app.core.exceptions import (
     DeviceNotFoundError,
     JobNotFoundError,
@@ -18,6 +23,7 @@ from app.core.exceptions import (
     SessionNotFoundError,
     TargetExistsError,
     _clip,
+    http_exception_handler,
 )
 
 LONG = "x" * 300
@@ -68,3 +74,35 @@ def test_normal_inputs_messages_unchanged() -> None:
     assert DeviceNotFoundError("dev-1").message == "Device not found: dev-1"
     assert JobNotFoundError("job-9").message == "Transfer job not found: job-9"
     assert SessionNotFoundError("abc").message == "Session not found: abc"
+
+
+# ---------------------------------------------------------------------------
+# C-18（方案 58）：http_exception_handler 的 detail 同样过 _clip
+# ---------------------------------------------------------------------------
+
+def _handler_body(detail: object) -> dict:
+    resp = asyncio.run(http_exception_handler(None, StarletteHTTPException(404, detail)))  # type: ignore[arg-type]
+    assert resp.status_code == 404
+    return json.loads(resp.body)
+
+
+def test_http_handler_clips_str_detail() -> None:
+    """方案 58 C-18：detail 字符串经 _clip——控制字符剔除、超限截断。"""
+    body = _handler_body("\x1b" + LONG)
+    message = body["error"]["message"]
+    assert "\x1b" not in message
+    assert len(message) <= 121  # 120 + 省略号
+    assert message.endswith("…")
+
+
+def test_http_handler_short_str_detail_unchanged() -> None:
+    """既有口径：短 detail（404/400 常用文本）逐字不变。"""
+    body = _handler_body("source must be buffer or cache")
+    assert body["error"] == {"code": "HTTP_ERROR", "message": "source must be buffer or cache"}
+
+
+def test_http_handler_non_str_detail_passthrough() -> None:
+    """detail 非字符串（dict/list，FastAPI 内部构造）原样透传，不被 _clip 字符串化。"""
+    detail = {"loc": ["query", "limit"], "msg": "value is not a valid integer"}
+    body = _handler_body(detail)
+    assert body["error"]["message"] == detail

@@ -53,7 +53,7 @@ def mock_adb():
     adb.screenshot_raw_gzip = AsyncMock(return_value=b"\x1f\x8bGZIP")
     adb.get_rotation = AsyncMock(return_value=0)
     adb.connect_tcp = AsyncMock(return_value="192.168.1.5:5555")
-    adb.disconnect_tcp = AsyncMock()
+    adb.disconnect_tcp = AsyncMock(return_value=True)
     adb.scan_hosts = AsyncMock(return_value=[])
     return adb
 
@@ -352,22 +352,24 @@ class TestBatchInstall:
 
     @pytest.mark.asyncio
     async def test_batch_install_all_success(self, service, mock_adb):
-        """测试所有设备安装成功"""
+        """方案 58 C-13：成功项返回结构化 {device_id, ok}，前端无需字符串匹配。"""
         result = await service.batch_install(
             ["device-1", "device-2", "device-3"],
             "/path/to/app.apk"
         )
 
         assert len(result) == 3
-        assert all("success" in r for r in result)
+        assert all(r["ok"] for r in result)
+        assert [r["device_id"] for r in result] == ["device-1", "device-2", "device-3"]
         assert mock_adb.install.call_count == 3
 
     @pytest.mark.asyncio
     async def test_batch_install_partial_failure(self, service, mock_adb):
-        """测试部分设备安装失败不影响其他"""
+        """方案 58 C-13：失败项 ok=False 且 error 独立字段（过 _clip 净化），
+        成功项不受牵连。"""
         async def install_side_effect(device_id, apk_path):
             if device_id == "device-2":
-                raise AdbError("INSTALL_FAILED")
+                raise AdbError("INSTALL_FAILED\x1b[31m")
 
         mock_adb.install.side_effect = install_side_effect
 
@@ -377,9 +379,12 @@ class TestBatchInstall:
         )
 
         assert len(result) == 3
-        assert "success" in result[0]
-        assert "failed" in result[1]
-        assert "success" in result[2]
+        assert result[0]["ok"] is True
+        assert result[1]["ok"] is False
+        assert result[1]["device_id"] == "device-2"
+        assert "INSTALL_FAILED" in result[1]["error"]
+        assert "\x1b" not in result[1]["error"]  # 控制字符已被 _clip 剔除
+        assert result[2]["ok"] is True
 
     @pytest.mark.asyncio
     async def test_batch_install_empty_list(self, service):
@@ -633,6 +638,20 @@ class TestDisconnectTcp:
         # 等待者存活且拿到 None：若被 cancel 误伤，wait_for 会抛 CancelledError
         result = await asyncio.wait_for(waiter, timeout=2.0)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_unreachable_keeps_row(self, service, mock_adb, mock_repo):
+        """方案 58 C-19：驱动返回 False（预检不可达 skip，未真断开）→ 保行不删、
+        缓存不清。修复「假成功删行 → 5s 后扫描重登记」的列表闪烁。"""
+        mock_adb.disconnect_tcp.return_value = False
+        service._info_cooldown["192.168.1.5:5555"] = 12345.0
+        service._rotation_cache["192.168.1.5:5555"] = (0, time.monotonic())
+
+        await service.disconnect_tcp("192.168.1.5", 5555)
+
+        mock_repo.delete.assert_not_called()
+        assert "192.168.1.5:5555" in service._info_cooldown
+        assert "192.168.1.5:5555" in service._rotation_cache
 
 
 # ---------------------------------------------------------------------------

@@ -55,3 +55,30 @@ async def test_get_logs_since_falls_back_to_db_for_closed_session():
     logs, missing = await svc.get_logs_since("closed", from_seq=0)
     assert missing == 0
     assert logs[0]["message"] == "db0"
+
+
+@pytest.mark.asyncio
+async def test_get_logs_since_clamps_zero_limit_like_get_logs():
+    """方案 58 B-09（C12 残边）：limit=0 复用 get_logs 同钳制 → 至少 1 条，
+    不再等价 0 条全吞。"""
+    svc = DebugService(adb=Adb(), repo=Repo(), metrics_repo=SqliteMetricsRepository())
+    s = DebugSession(id="s", device_id="d", user_id="u")
+    s.log_buffer = [{"seq": i, "message": f"m{i}"} for i in range(3)]
+    svc.sessions[s.id] = s
+    logs, missing = await svc.get_logs_since("s", from_seq=0, limit=0)
+    assert len(logs) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_logs_since_clamps_giant_limit_for_db_path():
+    """方案 58 B-09：超大 limit 钳到 MAX_LOG_QUERY_LIMIT 后才进 DB 查询。"""
+    recorded: list[int] = []
+
+    class RecordingRepo(Repo):
+        async def query_logs_since(self, session_id, from_seq, limit=1000):
+            recorded.append(limit)
+            return []
+
+    svc = DebugService(adb=Adb(), repo=RecordingRepo(), metrics_repo=SqliteMetricsRepository())
+    await svc.get_logs_since("closed", from_seq=0, limit=10**9)
+    assert recorded == [DebugService.MAX_LOG_QUERY_LIMIT]

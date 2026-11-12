@@ -92,6 +92,10 @@ class FakePerformanceService:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
+    def effective_buffer_capacity(self, device_id: str) -> int:
+        # 方案 58 C-08：端点校验改问服务有效容量（守卫用例给足容量）
+        return 3600
+
     async def get_metrics(self, device_id: str, limit: int) -> list[Any]:
         self.calls.append(("get_metrics", device_id))
         return []

@@ -11,6 +11,8 @@
 import inspect
 from typing import Any
 
+import pytest
+
 from app.deps import get_network_service
 from app.domain.runtime import NetworkConnection, NetworkStats
 
@@ -32,6 +34,20 @@ def make_stats(**overrides: Any) -> NetworkStats:
     }
     fields.update(overrides)
     return NetworkStats(**fields)
+
+
+def make_row(ts: float) -> dict[str, Any]:
+    """导出行最小形状（端点按 row["ts"] 取首尾元数据）。"""
+    return {
+        "ts": ts,
+        "rx_bytes": 1,
+        "tx_bytes": 2,
+        "rx_rate_kbps": 3.0,
+        "tx_rate_kbps": 4.0,
+        "active_connections": 1,
+        "wifi_connected": True,
+        "wifi_ssid": "net",
+    }
 
 
 def make_conn(protocol: str = "tcp", **overrides: Any) -> NetworkConnection:
@@ -56,13 +72,17 @@ class FakeNetworkService:
         stats: NetworkStats | None = None,
         connections: list[NetworkConnection] | None = None,
         alerts: list[dict[str, Any]] | None = None,
+        rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.stats = stats if stats is not None else make_stats()
         self.connections = connections if connections is not None else []
         self.alerts = alerts if alerts is not None else []
+        self.rows = rows if rows is not None else [make_row(1726000000.0)]
         self.stats_calls: list[str] = []
         self.conn_calls: list[str] = []
         self.alert_calls: list[tuple[str, float]] = []
+        self.buffer_calls: list[tuple[str, int]] = []
+        self.cache_calls: list[tuple[str, Any, Any, int]] = []
 
     async def get_stats(self, device_id: str) -> NetworkStats:
         self.stats_calls.append(device_id)
@@ -75,6 +95,20 @@ class FakeNetworkService:
     def get_alerts(self, device_id: str, sample_ts: float) -> list[dict[str, Any]]:
         self.alert_calls.append((device_id, sample_ts))
         return self.alerts
+
+    def get_buffer_snapshot(self, device_id: str, limit: int) -> list[dict[str, Any]]:
+        self.buffer_calls.append((device_id, limit))
+        return self.rows
+
+    async def export_cached(
+        self,
+        device_id: str,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        limit: int = 50000,
+    ) -> list[dict[str, Any]]:
+        self.cache_calls.append((device_id, from_ts, to_ts, limit))
+        return self.rows
 
 
 # ---------------------------------------------------------------------------
@@ -196,3 +230,55 @@ def test_fake_exposes_service_interface() -> None:
     fake = FakeNetworkService()
     assert inspect.iscoroutinefunction(fake.get_stats)
     assert inspect.iscoroutinefunction(fake.get_connections)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/network/{device_id}/export —— from/to 数值校验（方案 58 C-14）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf"])
+def test_export_nonfinite_from_to_400(bad: str) -> None:
+    """方案 58 C-14：from/to 通过 float 解析但为 NaN/±Inf——未校验即透传
+    SQL 比较（NULL 语义/驱动差异下整表命中或行为未定）。非有限数 → 400。"""
+    fake = FakeNetworkService()
+    with override(get_network_service, fake):
+        response = make_client().get(
+            f"/api/network/{DEV}/export",
+            params={"source": "cache", "from": bad},
+        )
+        response2 = make_client().get(
+            f"/api/network/{DEV}/export",
+            params={"source": "cache", "to": bad},
+        )
+
+    assert response.status_code == 400
+    assert "finite" in response.json()["error"]["message"]
+    assert response2.status_code == 400
+    assert fake.cache_calls == []
+
+
+def test_export_from_after_to_400() -> None:
+    """方案 58 C-14：from > to 空区间直查库浪费；倒序视为客户端错误 → 400。"""
+    fake = FakeNetworkService()
+    with override(get_network_service, fake):
+        response = make_client().get(
+            f"/api/network/{DEV}/export",
+            params={"source": "cache", "from": 2000, "to": 1000},
+        )
+
+    assert response.status_code == 400
+    assert "from must not be greater than to" in response.json()["error"]["message"]
+    assert fake.cache_calls == []
+
+
+def test_export_valid_range_passes_through() -> None:
+    """合法区间（from ≤ to、均有限）透传服务层，参数不受新校验牵连。"""
+    fake = FakeNetworkService()
+    with override(get_network_service, fake):
+        response = make_client().get(
+            f"/api/network/{DEV}/export",
+            params={"source": "cache", "from": 1000, "to": 1000, "format": "json"},
+        )
+
+    assert response.status_code == 200
+    assert fake.cache_calls == [(DEV, 1000.0, 1000.0, 50000)]

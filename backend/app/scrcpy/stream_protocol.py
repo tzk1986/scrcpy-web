@@ -45,6 +45,11 @@ SC_CODEC_ID_ERROR = 1                         # 设备端配置错误，必须�
 
 SC_DEVICE_META_SIZE = 64                      # 设备名元数据长度（字节）
 
+# 方案 58 B-15：单包载荷上限（16MB）。畸形/恶意 12B 头声明的超大
+# payload_size 若放行，readexactly 会按声明值累积垃圾直至耗尽内存；
+# 与文本侧 _TEXT_MAX_LENGTH 的入站防线对称，超限即终止起流。
+SC_MAX_PAYLOAD_SIZE = 16 * 1024 * 1024
+
 # 建连后先于 codec id 的握手数据长度（tunnel_forward + 默认 meta 开关）
 SC_HANDSHAKE_PREFIX_SIZE = 1 + SC_DEVICE_META_SIZE
 
@@ -67,6 +72,16 @@ class UnsupportedCodecError(Exception):
     def __init__(self, codec_id: int) -> None:
         super().__init__(f"unsupported codec id: 0x{codec_id:08X}")
         self.codec_id = codec_id
+
+
+class PayloadTooLargeError(Exception):
+    """方案 58 B-15：包头声明载荷超 SC_MAX_PAYLOAD_SIZE，畸形流终止起流。"""
+
+    def __init__(self, size: int) -> None:
+        super().__init__(
+            f"payload size {size} exceeds limit {SC_MAX_PAYLOAD_SIZE}"
+        )
+        self.size = size
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +197,9 @@ async def read_packets(reader: asyncio.StreamReader) -> AsyncIterator[SessionEve
             continue
 
         fh = parse_frame_header(header)
+        # 方案 58 B-15：声明载荷超上限即畸形流，终止起流不进入 readexactly
+        if fh.payload_size > SC_MAX_PAYLOAD_SIZE:
+            raise PayloadTooLargeError(fh.payload_size)
         try:
             payload = await reader.readexactly(fh.payload_size)
         except asyncio.IncompleteReadError:

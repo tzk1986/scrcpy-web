@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.exceptions import AdbError, InvalidIdentifierError
+from app.core.exceptions import AdbError, InvalidIdentifierError, _clip
 from app.core.logging import get_logger
 from app.domain.identifiers import is_valid_package_name
 from app.domain.ports import AdbDriver
@@ -552,14 +552,16 @@ class AppService:
             logger.warning(
                 "get_app_runtime_failed", device=device_id, package=package, error=str(e)
             )
-            message = f"ADB 查询失败: {e}"
+            # 方案 58 C-13：设备可控错误文本过 _clip——截断 200 字符并剔除
+            # 控制字符（裸切片只防长不防 ESC/换行注入）
+            message = _clip(f"ADB 查询失败: {e}", 200)
             return {
                 "pkg": package,
                 "top_activity": "",
                 "resumed": "",
                 "services": [],
                 "providers": [],
-                "parse_warning": message[:200],
+                "parse_warning": message,
             }
 
         warnings: list[str] = []

@@ -254,6 +254,20 @@ class TestReadPackets:
             async for _ in read_packets(make_reader(stream)):
                 pass
 
+    async def test_oversized_payload_rejected(self):
+        """方案 58 B-15：12B 头声明载荷超上限（16MB）→ 抛 PayloadTooLargeError
+        终止起流，不再让 readexactly 累积畸形长度垃圾（与文本侧
+        _TEXT_MAX_LENGTH 的防线对称）。"""
+        import app.scrcpy.stream_protocol as sp
+
+        assert sp.SC_MAX_PAYLOAD_SIZE == 16 * 1024 * 1024
+        stream = (
+            b"\x00" + b"P".ljust(64, b"\x00") + make_codec_id(SC_CODEC_ID_H264)
+            + make_session(10, 10) + make_header(0, sp.SC_MAX_PAYLOAD_SIZE + 1)
+        )
+        with pytest.raises(sp.PayloadTooLargeError):
+            await self._collect(stream)
+
     async def test_eof_mid_header_ends_quietly(self):
         """头部读到一半 EOF：正常结束（设备断开）"""
         stream = b"\x00" + b"t".ljust(64, b"\x00") + make_codec_id(SC_CODEC_ID_H264)

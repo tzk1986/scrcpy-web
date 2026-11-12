@@ -80,7 +80,9 @@ async def batch_install(
         apk_path: APK 文件路径（查询参数）。
 
     返回：
-        {"success": True, "results": ["device1: success", "device2: failed - ..."]}。
+        {"success": True, "results": [{"device_id": "d1", "ok": true},
+        {"device_id": "d2", "ok": false, "error": "..."}]}
+        （方案 58 C-13：结构化条目，error 已过截断净化）。
 
     异常：
         InvalidIdentifierError: 任一条 device_id 格式非法（400，不部分执行）。

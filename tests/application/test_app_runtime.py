@@ -123,10 +123,22 @@ async def test_runtime_empty_services_providers_no_warning():
 
 
 async def test_runtime_adberror_warning_truncated_to_200_chars():
-    """AdbError 摘要 parse_warning 截断 200 字符（防超长错误文本撑大响应体）。"""
+    """方案 58 C-13：parse_warning 过 _clip(text, 200)——超限截 200 字符加省略号
+    （共 201 字符，防超长错误文本撑大响应体）。"""
     adb = MagicMock()
     adb.get_runtime_info = AsyncMock(side_effect=AdbError("x" * 500))
     out = await AppService(adb).get_runtime_info(DEVICE, "com.x")
-    assert len(out["parse_warning"]) == 200
+    assert len(out["parse_warning"]) == 201
     assert out["parse_warning"].startswith("ADB 查询失败: ")
-    assert out["parse_warning"].endswith("xx")
+    assert out["parse_warning"].endswith("…")
+
+
+async def test_runtime_adberror_warning_strips_control_chars():
+    """方案 58 C-13：设备可控错误文本中的控制字符（如 ESC 序列）被 _clip 净化，
+    不原样进响应体。"""
+    adb = MagicMock()
+    adb.get_runtime_info = AsyncMock(side_effect=AdbError("a\x1b[2J\x00b"))
+    out = await AppService(adb).get_runtime_info(DEVICE, "com.x")
+    assert "\x1b" not in out["parse_warning"]
+    assert "\x00" not in out["parse_warning"]
+    assert out["parse_warning"].startswith("ADB 查询失败: ")

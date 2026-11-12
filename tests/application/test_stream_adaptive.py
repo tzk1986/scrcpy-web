@@ -637,6 +637,34 @@ async def test_old_stream_teardown_does_not_evict_new_stream(stream_settings):
 
 
 @pytest.mark.asyncio
+async def test_old_stream_teardown_preserves_new_stream_pending_bitrate(stream_settings):
+    """方案 58 B-11（R2 家族残边）：旧流延迟 teardown 期间新会话已写入的
+    pending 档位不得被无条件 pop 弹掉——身份守卫覆盖 _pending_bitrate。"""
+    BlockingStopEncoder.created.clear()
+    svc = StreamService(encoder_factory=BlockingStopEncoder)
+
+    old_token = await svc.acquire_stream("dev1")
+    assert old_token is not None
+    old_gen = svc.start_stream("dev1", old_token)
+    assert await old_gen.__anext__() == (0, b"f0")
+    old_enc = svc.get_encoder("dev1")
+    assert old_enc is not None
+
+    # 旧流 teardown 挂起在 encoder.stop()，收尾窗口内新流 claim 并注入档位切换
+    close_task = asyncio.create_task(old_gen.aclose())
+    assert await _wait_for(lambda: old_enc.stop_called)
+    new_token = object()
+    svc.active_streams["dev1"] = new_token
+    svc._pending_bitrate["dev1"] = 2_000_000
+
+    old_enc.stop_release.set()
+    await close_task
+
+    assert svc._pending_bitrate.get("dev1") == 2_000_000
+    assert svc.active_streams.get("dev1") is new_token
+
+
+@pytest.mark.asyncio
 async def test_teardown_cleans_own_registry_entries(stream_settings):
     """无交叠时 identity 守卫不破坏既有清理语义：teardown 后注册表清空。"""
     BlockingStopEncoder.created.clear()

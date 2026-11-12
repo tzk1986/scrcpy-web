@@ -61,6 +61,10 @@ _MAX_DEBUG_SESSIONS = 32
 # 与 _MAX_DEBUG_SESSIONS 联动——死满 32 槽的锁死由 idle reaper 解除（方案 51 C1）。
 _SESSION_IDLE_TTL_SECONDS = 3600.0
 
+# 方案 58 B-12：流式 shell 历史落盘的尾窗预算（字符，整行粒度）。
+# 长输出命令（yes、大量 find 结果）不再让 collected_output 无界增长耗尽内存。
+_SHELL_OUTPUT_TAIL_CHARS = 65_536
+
 
 class DebugService:
     """无限调试用例。"""
@@ -377,7 +381,13 @@ class DebugService:
         参数：
             session_id: 要订阅的调试会话 ID。
             websocket: 客户端 WebSocket 连接。
+
+        异常：
+            SessionNotFoundError: 会话不存在（方案 58 B-10，先查后订，
+            不再建出永不产日志的孤儿订阅表）。
         """
+        if session_id not in self.sessions:
+            raise SessionNotFoundError(session_id)
         if session_id not in self.subscribers:
             self.subscribers[session_id] = {}
         # 新订阅者默认无过滤、暂停状态（不接收日志，等待用户手动开启）
@@ -569,6 +579,10 @@ class DebugService:
         missing = 请求范围内已无法恢复的最旧条目数（旧日志超出缓冲窗口）。
         """
         await self.writer.flush()
+        # 方案 58 B-09：与 get_logs 同款钳制（get_logs 走 LogFilter 校验，
+        # 本方法两路都裸用 limit）——limit=0 内存路不再返回全缓冲，
+        # 超大值进 DB 路不再触发无界查询。
+        limit = max(1, min(limit, self.MAX_LOG_QUERY_LIMIT))
         session = self.sessions.get(session_id)
         if session:
             buf = session.log_buffer
@@ -804,13 +818,22 @@ class DebugService:
         if not session:
             raise SessionNotFoundError(session_id)
 
-        collected_output = []
+        # 方案 58 B-12：历史按尾窗预算保存（超出即丢最旧整行）；
+        # 产流不受影响——yield 仍是全量。
+        collected_output: list[str] = []
+        collected_chars = 0
         async with self._get_session_lock(session_id):
             shell = await self.get_or_create_shell(session_id)
             try:
                 async with aclosing(shell.execute(cmd)) as lines:
                     async for line in lines:
                         collected_output.append(line)
+                        collected_chars += len(line)
+                        while (
+                            collected_chars > _SHELL_OUTPUT_TAIL_CHARS
+                            and collected_output
+                        ):
+                            collected_chars -= len(collected_output.pop(0))
                         yield line
             finally:
                 # 命令完成后（含消费者中断），记录到历史

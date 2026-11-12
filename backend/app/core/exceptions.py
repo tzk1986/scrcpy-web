@@ -498,10 +498,17 @@ async def openscrcpy_exception_handler(request: Request, exc: OpenScrcpyExceptio
 
 
 async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-    """将 HTTP 异常（404、422 等）转换为 JSON 格式。"""
+    """
+    将 HTTP 异常（404、422 等）转换为 JSON 格式。
+
+    方案 58 C-18：detail 为字符串时过 _clip（截断+剔控制字符）——404 路径等
+    detail 可能内嵌用户可控 URL 片段，原样回显有刷屏/注入面；非字符串
+    （dict/list，FastAPI 内部构造）原样透传。
+    """
+    message = _clip(exc.detail) if isinstance(exc.detail, str) else exc.detail
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": {"code": "HTTP_ERROR", "message": exc.detail}},
+        content={"error": {"code": "HTTP_ERROR", "message": message}},
     )
 
 

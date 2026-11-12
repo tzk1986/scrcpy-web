@@ -227,6 +227,19 @@ class PerformanceService(RecordingSupportMixin):
             return []
         return engine.snapshot(sample_ts)
 
+    def effective_buffer_capacity(self, device_id: str) -> int:
+        """
+        该设备当前缓冲的实际容量（方案 58 C-08）。
+
+        deque 在创建时快照 buffer_capacity；热重载调大配置后旧设备队列容量
+        不变——入站校验必须问实际值，否则放行「数据在手却拿不全」的假上限，
+        调小时又出现 400 假拒绝。无缓冲（未起采）时以当前配置为容量口径。
+        """
+        buf = self._buffers.get(device_id)
+        if buf is not None and buf.maxlen is not None:
+            return buf.maxlen
+        return self.buffer_capacity
+
     async def get_metrics(self, device_id: str, limit: int = 100) -> list[dict[str, Any]]:
         """
         获取历史性能指标。

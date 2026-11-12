@@ -137,23 +137,25 @@ async def put_settings_payload(patch: SettingsPatch) -> dict[str, bool]:
     清除全部设备覆盖须逐设备键删除。方案 45 T8 未定义全局清除语义，按最小惊讶
     维持现状不动行为。
     """
-    user = settings_store.read_user_config()
-    if "stream" in patch.model_fields_set:
-        stream_patch = (
-            None if patch.stream is None
-            else patch.stream.model_dump(exclude_unset=True, exclude_none=True)
-        )
-        settings_store.merge_section(user, "stream", stream_patch)
-    if "recording" in patch.model_fields_set:
-        recording_patch = (
-            None if patch.recording is None
-            else patch.recording.model_dump(exclude_unset=True, exclude_none=True)
-        )
-        settings_store.merge_section(user, "recording", recording_patch)
-    if "devices" in patch.model_fields_set and patch.devices is not None:
-        _merge_devices(user, patch.devices)
+    def _apply(user: dict[str, Any]) -> None:
+        if "stream" in patch.model_fields_set:
+            stream_patch = (
+                None if patch.stream is None
+                else patch.stream.model_dump(exclude_unset=True, exclude_none=True)
+            )
+            settings_store.merge_section(user, "stream", stream_patch)
+        if "recording" in patch.model_fields_set:
+            recording_patch = (
+                None if patch.recording is None
+                else patch.recording.model_dump(exclude_unset=True, exclude_none=True)
+            )
+            settings_store.merge_section(user, "recording", recording_patch)
+        if "devices" in patch.model_fields_set and patch.devices is not None:
+            _merge_devices(user, patch.devices)
+
     try:
-        settings_store.write_user_config(user)
+        # 方案 58 C-09：读改写整体持锁，并发 PUT 不再交错丢更新
+        await settings_store.mutate_user_config(_apply)
     except OSError as e:
         # 存储层内部已把 OSError 转 SettingsStoreError；此处兜底保证任何写盘
         # OSError 都响亮映射为 500 SETTINGS_STORE_ERROR（不泄 INTERNAL_ERROR）

@@ -36,10 +36,15 @@
 import asyncio
 import time
 from dataclasses import dataclass, replace
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from app.application.image_ops import rotate_png_payload
-from app.core.exceptions import AdbError, DeviceUnreachableError, ScanBusyError
+from app.core.exceptions import (
+    AdbError,
+    DeviceUnreachableError,
+    ScanBusyError,
+    _clip,
+)
 from app.core.logging import get_logger
 from app.domain.device import DeviceInfo
 from app.domain.ports import AdbDriver, DeviceRepository
@@ -260,7 +265,9 @@ class DeviceService:
         await self.adb.install(device_id, apk_path)
         return f"APK installed on {device_id}"
 
-    async def batch_install(self, device_ids: list[str], apk_path: str) -> list[str]:
+    async def batch_install(
+        self, device_ids: list[str], apk_path: str
+    ) -> list[dict[str, Any]]:
         """
         在多个设备上安装同一个 APK（并发执行）。
 
@@ -272,21 +279,23 @@ class DeviceService:
             apk_path: APK 文件的主机路径。
 
         返回：
-            每个设备的结果字符串列表（如 "emulator-5554: success"）。
+            每设备结构化结果列表（方案 58 C-13）：成功
+            {"device_id", "ok": True}；失败追加 "error" 字段（过 _clip
+            净化截断），前端无需解析字符串前缀判定成败。
         """
         logger.info("batch_install", devices=device_ids, apk=apk_path)
 
         semaphore = asyncio.Semaphore(5)  # 限制并发数为 5
 
-        async def install_one(device_id: str) -> str:
+        async def install_one(device_id: str) -> dict[str, Any]:
             """在单个设备上安装 APK"""
             async with semaphore:
                 try:
                     await self.adb.install(device_id, apk_path)
-                    return f"{device_id}: success"
+                    return {"device_id": device_id, "ok": True}
                 except Exception as e:
                     logger.error("batch_install_failed", device=device_id, error=str(e))
-                    return f"{device_id}: failed - {e}"
+                    return {"device_id": device_id, "ok": False, "error": _clip(str(e))}
 
         # 并发执行所有安装任务
         results = await asyncio.gather(*[install_one(d) for d in device_ids])
@@ -502,7 +511,12 @@ class DeviceService:
             port: ADB 端口（默认 5555）。
         """
         device_id = f"{ip}:{port}"
-        await self.adb.disconnect_tcp(ip, port)
+        disconnected = await self.adb.disconnect_tcp(ip, port)
+        if not disconnected:
+            # 方案 58 C-19：预检不可达=未真断开，保留设备行（假成功删行会被
+            # 5s 刷新重登记，列表闪烁；设备真断开时扫描路径自有 offline 判定）
+            logger.info("disconnect_tcp_row_kept", device=device_id)
+            return
         # 从仓库中删除设备
         await self.repo.delete(device_id)
         self._cleanup_device_caches(device_id)

@@ -230,6 +230,18 @@ class RecordingService:
                 device=device_id,
                 error=str(exc),
             )
+            # 方案 58 B-07：adb pull 半途失败会在本地目录留下截断文件，
+            # best-effort 删除预期落点（命名同 cli：local_dir/basename(remote)）
+            stale = local_dir / Path(session.remote_path).name
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                logger.warning(
+                    "recording_partial_cleanup_failed",
+                    session=session.id,
+                    device=device_id,
+                    error=str(cleanup_exc),
+                )
             local_path = None
         except OSError as exc:
             # 落盘目录不可写：收敛 failed 不冒泡（会话不得卡死 PULLING）

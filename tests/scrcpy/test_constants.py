@@ -44,7 +44,6 @@ from app.scrcpy.constants import (
     SCRCPY_SERVER_CLASS,
 
     # ADB 配置
-    ADB_READ_BLOCK_SIZE,
     ADB_TIMEOUT_SECONDS,
 
     # 输入事件类型
@@ -214,10 +213,13 @@ class TestScrcpyServerConfig:
 class TestAdbConfig:
     """ADB 配置测试"""
 
-    def test_read_block_size(self):
-        """测试读取块大小"""
-        assert ADB_READ_BLOCK_SIZE == 65536
-        assert ADB_READ_BLOCK_SIZE == 64 * 1024  # 64KB
+    def test_dead_constants_removed(self):
+        """方案 58 B-14：零消费死常量删除（ADB_READ_BLOCK_SIZE 读取块大小、
+        VIDEO_STREAM_QUEUE_SIZE 订阅队列大小——raw 链用 VIDEO_STREAM_FRAME_SIZE）。"""
+        from app.scrcpy import constants as c
+
+        assert not hasattr(c, "ADB_READ_BLOCK_SIZE")
+        assert not hasattr(c, "VIDEO_STREAM_QUEUE_SIZE")
 
     def test_timeout_seconds(self):
         """测试 ADB 命令超时时间"""

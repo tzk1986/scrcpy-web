@@ -206,3 +206,59 @@ def test_put_fails_loudly_when_config_dir_not_writable(settings_env, monkeypatch
     res = make_client().put("/api/settings", json={"stream": {"fps": 24}})
     assert res.status_code == 500
     assert res.json()["error"]["code"] == "SETTINGS_STORE_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# C-09（方案 58）：user.yaml 读改写的并发串行化
+# ---------------------------------------------------------------------------
+
+def test_mutate_user_config_serializes_concurrent_writers(settings_env):
+    """方案 58 C-09：mutate_user_config 持锁完成「读→改→写」全链——两个并发
+    mutate 交错时后写者覆盖前者（丢更新）；串行化后两节都落盘。"""
+    import asyncio as aio
+
+    from app.core import settings_store
+
+    events: list[str] = []
+
+    async def mut_a(user: dict) -> None:
+        events.append("a-in")
+        await aio.sleep(0)  # 锁内让出：若无锁保护另一写者将插进来
+        user["stream"] = {"fps": 24}
+        events.append("a-out")
+
+    async def mut_b(user: dict) -> None:
+        events.append("b-in")
+        await aio.sleep(0)
+        user["recording"] = {"time_limit": 120}
+        events.append("b-out")
+
+    async def run() -> None:
+        await aio.gather(
+            settings_store.mutate_user_config(mut_a),
+            settings_store.mutate_user_config(mut_b),
+        )
+
+    aio.run(run())
+
+    # 第二个 mutate 必须等第一个「改+写」彻底完成后才开始读
+    assert events == ["a-in", "a-out", "b-in", "b-out"]
+    final = yaml.safe_load(settings_env.read_text(encoding="utf-8"))
+    assert final["stream"]["fps"] == 24
+    assert final["recording"]["time_limit"] == 120
+
+
+def test_mutate_user_config_supports_sync_mutator(settings_env):
+    """同步 mutator 也支持（awaitable 判定），写盘生效。"""
+    import asyncio as aio
+
+    from app.core import settings_store
+
+    async def run() -> None:
+        await settings_store.mutate_user_config(
+            lambda user: user.__setitem__("stream", {"fps": 15})
+        )
+
+    aio.run(run())
+    final = yaml.safe_load(settings_env.read_text(encoding="utf-8"))
+    assert final["stream"]["fps"] == 15

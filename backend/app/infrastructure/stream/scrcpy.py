@@ -66,6 +66,7 @@ from app.scrcpy.constants import (
     ADB_TIMEOUT_SECONDS,
 )
 from app.scrcpy.stream_protocol import (
+    PayloadTooLargeError,
     SessionEvent,
     StreamConfigError,
     StreamDisabled,
@@ -580,6 +581,10 @@ class ScrcpyEncoder:
                 logger.error("video_stream_config_error_on_device", device=device_id)
             except UnsupportedCodecError as e:
                 logger.error("video_stream_unsupported_codec",
+                             device=device_id, error=str(e))
+            except PayloadTooLargeError as e:
+                # 方案 58 B-15：包头声明载荷超限属畸形流，终止起流（消息仅含数字）
+                logger.error("video_stream_payload_too_large",
                              device=device_id, error=str(e))
             except asyncio.CancelledError:
                 pass

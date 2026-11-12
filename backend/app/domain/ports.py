@@ -19,7 +19,7 @@
 
 此处定义的数据类（跨层使用）：
     LogEntry:    解析后的 logcat 行（时间戳、级别、PID、TID、标签、消息）
-    LogFilter:   日志检索的查询条件（级别、标签、PID、搜索）
+    LogFilter:   日志检索的查询条件（级别、标签、PID、限制）
     EncoderOpts: 视频编码器配置（max_size、bit_rate、codec、fps）
 """
 
@@ -458,8 +458,14 @@ class AdbDriver(Protocol):
         """
         ...
 
-    async def disconnect_tcp(self, ip: str, port: int = 5555) -> None:
-        """断开 TCP/IP 连接（失败仅记警告，不抛出）。"""
+    async def disconnect_tcp(self, ip: str, port: int = 5555) -> bool:
+        """
+        断开 TCP/IP 连接（失败仅记警告，不抛出）。
+
+        方案 58 C-19 三态返回：True=断开成功或 adb 报错（警告吞掉，维持
+        「尽力而为」删行口径）；False=预检不可达跳过（未执行 disconnect，
+        调用方应保留设备行，避免假成功删行后 5s 重登记的列表闪烁）。
+        """
         ...
 
     async def scan_hosts(
@@ -791,7 +797,7 @@ class DebugRepository(Protocol):
 
         参数：
             session_id: 要查询的会话。
-            filter: 过滤条件（级别、标签、PID、搜索、限制）。
+            filter: 过滤条件（级别、标签、PID、限制）。
 
         返回：
             匹配的 LogEntry 对象列表，按时间戳排序（最旧在前）。
@@ -908,9 +914,11 @@ class MetricsRepository(Protocol):
 
     async def save_perf_samples_bulk(self, rows: list[tuple[Any, ...]]) -> None:
         """
-        批量插入性能采样行（单事务）。rows 元素为 9 元组
+        批量插入性能采样行（单事务）。rows 元素为 13 元组（方案 37 D4 扩列，
+        方案 58 C-10 同步本口径）：
         (device_id, ts, cpu_percent, total_memory_mb, used_memory_mb,
-         fps, jank_count, current_activity, top_package)。
+         fps, jank_count, current_activity, top_package,
+         cpu_processes, battery_temp, battery_voltage, battery_health)。
         """
         ...
 
