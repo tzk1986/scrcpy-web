@@ -100,6 +100,10 @@ export const useDebugStore = defineStore('debug', () => {
   /** Shell 输出处理器：PTY 模式下接收设备输出并写入终端。 */
   let shellOutputHandler: ((output: string) => void) | null = null
 
+  /** 58E-16：error 未被终端消费时写 Logcat 可见通道的节流时间戳与窗口（防刷屏）。 */
+  let lastErrorNoticeAt = 0
+  const ERROR_NOTICE_THROTTLE_MS = 5000
+
   /**
    * 创建调试会话。
    * 设置 sessionId 和 connected 状态。
@@ -119,12 +123,14 @@ export const useDebugStore = defineStore('debug', () => {
    */
   async function fetchLogs(limit = 1000) {
     if (!sessionId.value) return
+    const sid = sessionId.value // 58E-09：发起时捕获会话身份，跨会话迟到响应丢弃
     const res = await api.getLogs(
-      sessionId.value,
+      sid,
       filter.value.level,
       filter.value.tag,
       limit
     )
+    if (sessionId.value !== sid) return // 会话已关/已切，seq 空间不同源不得并入
     logs.value = mergeLogs(logs.value, res.logs)
   }
 
@@ -376,9 +382,26 @@ export const useDebugStore = defineStore('debug', () => {
         }
         break
       case 'error':
-        // 错误消息：写入终端
-        if (shellOutputHandler && msg.message) {
-          shellOutputHandler(`\r\n[Error] ${msg.message}\r\n`)
+        // 错误消息：优先写入终端；58E-16：无终端消费（Shell 未挂载/已摘除）时
+        // 转投 Logcat 可见通道，否则后端采集类错误在纯 Logcat 场景静默失联。
+        // 节流防刷屏：连续错误共享一个提示条，更新其文本而非逐条追加。
+        if (msg.message) {
+          if (shellOutputHandler) {
+            shellOutputHandler(`\r\n[Error] ${msg.message}\r\n`)
+          } else {
+            const now = Date.now()
+            if (now - lastErrorNoticeAt >= ERROR_NOTICE_THROTTLE_MS) {
+              lastErrorNoticeAt = now
+              appendLog({
+                ts: Math.floor(now / 1000),
+                level: 'E',
+                pid: 0,
+                tid: 0,
+                tag: 'system',
+                message: msg.message,
+              })
+            }
+          }
         }
         console.error('[DebugStore] Error:', msg.message)
         break

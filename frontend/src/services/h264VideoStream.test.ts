@@ -537,6 +537,40 @@ describe('控制消息（restarting / error / 异常数据）', () => {
     expect(dec.decode).toHaveBeenCalledTimes(1)
     stream.stop()
   })
+
+  it('58D-20 Blob 兜底分支串行化：arrayBuffer 完成乱序仍按到达序进解码器', async () => {
+    const ws = new FakeWs()
+    const stream = makeStream(ws)
+    stream.start()
+
+    const order: number[] = []
+    vi.spyOn(
+      stream as unknown as { handleBinaryFrame: (d: Uint8Array) => void },
+      'handleBinaryFrame',
+    ).mockImplementation((u8: Uint8Array) => {
+      order.push(Number(new DataView(u8.buffer, u8.byteOffset, u8.byteLength).getBigUint64(0)))
+    })
+
+    const blobA = new Blob(['a']) // 先到、转换慢
+    const blobB = new Blob(['b']) // 后到、转换快
+    let resolveA: ((b: ArrayBuffer) => void) | null = null
+    vi.spyOn(blobA, 'arrayBuffer').mockImplementation(
+      () => new Promise<ArrayBuffer>((r) => { resolveA = r }),
+    )
+    vi.spyOn(blobB, 'arrayBuffer').mockImplementation(
+      () => Promise.resolve(frameMessage(99_999, KEY_PAYLOAD)),
+    )
+
+    ws.handler!(blobA)
+    ws.handler!(blobB)
+    await flush()
+    resolveA!(frameMessage(33_333, KEY_PAYLOAD))
+    await flush()
+
+    // 原实现：B 的转换先完成 → 后到的帧先进解码器（乱序损坏）
+    expect(order).toEqual([33333, 99999])
+    stream.stop()
+  })
 })
 
 describe('二进制帧处理', () => {

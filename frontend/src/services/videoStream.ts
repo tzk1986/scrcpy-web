@@ -45,6 +45,9 @@ export class VideoStream {
   private _fpsCounter = 0
   private _fpsTimer: number | null = null
   private _error: string | null = null
+  /** 58D-05：连续拉帧失败计数——宽限期（单次超时/瞬断不进终态），达阈值才转 error 遮罩 */
+  private static readonly ERROR_STREAK = 3
+  private _failStreak = 0
   private refreshInterval: number
   private onStateChange?: (state: VideoStreamState) => void
   private onStatsUpdate?: (stats: VideoStreamStats) => void
@@ -106,6 +109,7 @@ export class VideoStream {
 
     this._state = 'streaming'
     this._error = null
+    this._failStreak = 0
     this._frameCount = 0
     this._fpsCounter = 0
     this.onStateChange?.(this._state)
@@ -120,12 +124,12 @@ export class VideoStream {
     // 立即获取第一帧（单飞入口）
     await this.doCapture()
 
-    // 启动周期性截屏
+    // 启动周期性截屏（58D-05：首帧失败后按退避节奏起跑）
     this.timer = window.setInterval(() => {
       if (this._state === 'streaming') {
         this.captureNow()
       }
-    }, this.refreshInterval)
+    }, this.currentPollDelay())
   }
 
   /**
@@ -177,7 +181,12 @@ export class VideoStream {
       if (this._state === 'streaming') {
         this.captureNow()
       }
-    }, this.refreshInterval)
+    }, this.currentPollDelay())
+  }
+
+  /** 58D-05：失败退避——1 次连败 2×、2 次连败 4×；成功后计数清零恢复常规节奏。 */
+  private currentPollDelay(): number {
+    return this.refreshInterval * 2 ** Math.min(this._failStreak, 2)
   }
 
   /** 停止视频流 */
@@ -233,6 +242,10 @@ export class VideoStream {
       this._rawUnsupported = true
       this._countFrame()
     } catch (e) {
+      // 58D-05：宽限期——单次超时/瞬断不进终态，由退避轮询重试；
+      // 连续达阈值才转 error 遮罩（重连链路见方案 58 D-01）
+      this._failStreak++
+      if (this._failStreak < VideoStream.ERROR_STREAK) return
       this._error = (e as Error).message
       this._state = 'error'
       this.onStateChange?.(this._state)
@@ -245,6 +258,7 @@ export class VideoStream {
     this._fpsCounter++
     this._lastFrameTime = Date.now()
     this._error = null
+    this._failStreak = 0
   }
 
   /**

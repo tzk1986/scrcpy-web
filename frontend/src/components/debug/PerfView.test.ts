@@ -362,6 +362,30 @@ describe('PerfView', () => {
     wrapper.unmount()
   })
 
+  it('58E-27 录制状态轮询并发去重：在飞期间 tick 复用同一请求', async () => {
+    vi.useFakeTimers()
+    let resolveStatus: ((v: unknown) => void) | null = null
+    mockApi.getPerfRecordStatus.mockImplementationOnce(
+      () => new Promise((r) => { resolveStatus = r }),
+    )
+    const wrapper = mountView()
+
+    // 挂载首拉在飞：两次 3s tick 均复用同一请求（原实现各发一次）
+    await vi.advanceTimersByTimeAsync(3000)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(mockApi.getPerfRecordStatus).toHaveBeenCalledTimes(1)
+
+    resolveStatus!({
+      recording: false, reason: '', rows: 0, oldest_ts: null, newest_ts: null,
+    })
+    await flushPromises()
+    // 在飞结束后下一 tick 正常再拉
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(mockApi.getPerfRecordStatus).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
   it('录制徽标：录制中显示 REC 与行数', async () => {
     mockApi.getPerfRecordStatus.mockResolvedValue({
       recording: true, reason: '', rows: 7, oldest_ts: null, newest_ts: null,

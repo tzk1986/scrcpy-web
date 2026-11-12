@@ -617,6 +617,72 @@ describe('Settings.vue', () => {
     wrapper.unmount()
   })
 
+  // ==================== 方案 58 E-06：保存与回填两段 try 拆分 ====================
+
+  it('58E-06 串流保存回填失败：PUT 已生效降级「已保存，参数面板刷新失败」不误报保存失败', async () => {
+    const wrapper = await mountSettings()
+    mockApi.getSettings.mockRejectedValueOnce(new Error('GET down'))
+
+    await wrapper.find('[data-test="save-stream"]').trigger('click')
+    await flushPromises()
+
+    expect(elMock.ElMessage.error).not.toHaveBeenCalled()
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith('已保存，参数面板刷新失败')
+    expect(elMock.ElMessage.success).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('58E-06 录屏保存回填失败：同降级文案不误报', async () => {
+    const wrapper = await mountSettings()
+    mockApi.getSettings.mockRejectedValueOnce(new Error('GET down'))
+
+    await wrapper.find('[data-test="save-recording"]').trigger('click')
+    await flushPromises()
+
+    expect(elMock.ElMessage.error).not.toHaveBeenCalled()
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith('已保存，参数面板刷新失败')
+    wrapper.unmount()
+  })
+
+  it('58E-06 重置回填失败：「已重置，参数面板刷新失败」不再误报重置失败', async () => {
+    const wrapper = await mountSettings()
+    mockApi.getSettings.mockRejectedValueOnce(new Error('GET down'))
+
+    await wrapper.find('[data-test="reset-stream"]').trigger('click')
+    await flushPromises()
+
+    expect(elMock.ElMessage.error).not.toHaveBeenCalled()
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith('已重置，参数面板刷新失败')
+    expect(elMock.ElMessage.success).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('58E-06 覆盖保存回填失败：「已保存，参数面板刷新失败」', async () => {
+    routeMock.current = { query: { device: 'd1' } }
+    const wrapper = await mountSettings()
+    mockApi.getSettings.mockRejectedValueOnce(new Error('GET down'))
+
+    await wrapper.find('[data-test="save-override"]').trigger('click')
+    await flushPromises()
+
+    expect(elMock.ElMessage.error).not.toHaveBeenCalled()
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith('已保存，参数面板刷新失败')
+    wrapper.unmount()
+  })
+
+  it('58E-06 覆盖清除回填失败：「已清除，参数面板刷新失败」不再误报清除失败', async () => {
+    routeMock.current = { query: { device: 'd1' } }
+    const wrapper = await mountSettings()
+    mockApi.getSettings.mockRejectedValueOnce(new Error('GET down'))
+
+    await wrapper.find('[data-test="clear-override"]').trigger('click')
+    await flushPromises()
+
+    expect(elMock.ElMessage.error).not.toHaveBeenCalled()
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith('已清除，参数面板刷新失败')
+    wrapper.unmount()
+  })
+
   // ==================== 设备级参数覆盖卡（方案 45 T8） ====================
 
   it('?device=d1 进入即聚焦选中该设备（覆盖卡联动渲染）', async () => {

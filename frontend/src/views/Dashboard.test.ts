@@ -354,6 +354,29 @@ describe('Dashboard', () => {
     expect(h.MockEventSource.instances[0].close).toHaveBeenCalled()
   })
 
+  // ==================== 方案 58 E-04：列表加载错误态与真空态分离 ====================
+
+  it('58E-04 列表加载失败：显示错误态+重试而非伪装「暂无设备」；重试成功回到真空态', async () => {
+    mockApi.listDevices.mockRejectedValueOnce(new Error('后端未启动'))
+    const wrapper = await mountDashboard()
+
+    const alert = wrapper.find('.stub-alert')
+    expect(alert.find('.stub-alert-title').text()).toBe('设备列表加载失败')
+    expect(alert.text()).toContain('后端未启动')
+    // 原实现失败走空态：伪装成「请连 USB」误导排查
+    expect(wrapper.text()).not.toContain('暂无设备')
+
+    // 重试成功后回到真空态提示
+    mockApi.listDevices.mockResolvedValue([])
+    const retryBtn = wrapper.findAll('button').find((b) => b.text() === '重试')
+    expect(retryBtn).toBeDefined()
+    await retryBtn!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.stub-alert-title').text()).toBe('暂无设备')
+
+    wrapper.unmount()
+  })
+
   it('添加设备：填写 IP 后连接成功并关闭对话框', async () => {
     mockApi.listDevices.mockResolvedValue([])
     mockApi.connectDevice.mockResolvedValue({ success: true, device_id: '192.168.1.50:5555' })
@@ -1104,6 +1127,69 @@ describe('Dashboard', () => {
       .findAll('.scan-record-row')
       .find((r) => r.text().includes('192.168.8.31'))!
     expect(rowB.find('button').attributes('disabled')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  // ==================== 方案 58 E-03：落盘异常与业务 try 隔离（F1-18 残留收口） ====================
+
+  it('58E-03 扫描落盘异常：saveScanRecord 抛错不得把已成功扫描误报「扫描失败」，独立补告警', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({
+        open_hosts: ['192.168.8.30'],
+        connect_results: [
+          { ip: '192.168.8.30', ok: false, device_id: null, reason: 'connect_failed', message: BigInt(1) as never },
+        ],
+      })
+    )
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    // 扫描本身成功：结果 alert 照常渲染（原实现 saveScanRecord 的 stringify
+    // 抛错被业务 catch 吞掉，误报「扫描失败」且结果不显示）
+    expect(wrapper.find('.scan-result').exists()).toBe(true)
+    expect(h.ElMessage.error).not.toHaveBeenCalledWith(expect.stringContaining('扫描失败'))
+    expect(h.ElMessage.warning).toHaveBeenCalledWith('扫描记录保存失败（不影响扫描结果）')
+
+    wrapper.unmount()
+  })
+
+  it('58E-03 单台连接落盘异常：persistScanRecord 抛错不得把已连接设备误报「连接失败」', async () => {
+    mockApi.listDevices.mockResolvedValue([])
+    mockApi.scanSubnet.mockResolvedValue(
+      scanFixture({ open_hosts: ['192.168.8.30', '192.168.8.31'], connect_results: [] })
+    )
+    mockApi.connectDevice.mockResolvedValue({ success: true, device_id: '192.168.8.30:5555' })
+    const wrapper = await mountDashboard()
+
+    await wrapper.find('input.scan-cidr').setValue('192.168.8.0/24')
+    await wrapper.findAll('button').find((b) => b.text() === '扫描并连接')!.trigger('click')
+    await flushPromises()
+
+    // 毒 31 的 failed 字段：30 连接成功后修剪移除，剩余清单 stringify 抛 BigInt 错
+    const vm = wrapper.vm as unknown as {
+      scanRecord: { hosts: Array<{ ip: string; failed?: number }> }
+    }
+    vm.scanRecord.hosts[1].failed = BigInt(1) as never
+
+    const row30 = wrapper
+      .findAll('.scan-record-row')
+      .find((r) => r.text().includes('192.168.8.30'))!
+    await row30.findAll('button').find((b) => b.text() === '连接')!.trigger('click')
+    await flushPromises()
+
+    expect(h.ElMessage.success).toHaveBeenCalledWith('已连接 192.168.8.30:5555')
+    // 原实现：persistScanRecord 抛错落入连接 catch → 误报「连接失败」并登记 hostFailedIps
+    expect(h.ElMessage.error).not.toHaveBeenCalled()
+    expect(h.ElMessage.warning).toHaveBeenCalledWith('扫描记录保存失败（不影响已连接设备）')
+    // 成功台移出待连接清单
+    expect(
+      wrapper.findAll('.scan-record-row').some((r) => r.text().includes('192.168.8.30')),
+    ).toBe(false)
 
     wrapper.unmount()
   })

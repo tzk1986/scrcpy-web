@@ -295,8 +295,13 @@ async function saveStream() {
   saving.value = true
   try {
     await api.putSettings({ stream: { ...streamForm.value } })
-    await loadSettings() // 刷新生效参数面板（保存后来源变为 用户设置）
-    ElMessage.success('已保存，下次连接生效')
+    // 58E-06（两段 try）：PUT 已生效，GET 回填失败不得误报「保存失败」诱导重复重试
+    try {
+      await loadSettings() // 刷新生效参数面板（保存后来源变为 用户设置）
+      ElMessage.success('已保存，下次连接生效')
+    } catch {
+      ElMessage.warning('已保存，参数面板刷新失败')
+    }
   } catch (e) {
     ElMessage.error(errorText(e, '保存失败，请重试'))
   } finally {
@@ -308,8 +313,13 @@ async function saveRecording() {
   saving.value = true
   try {
     await api.putSettings({ recording: { ...recordingForm.value } })
-    await loadSettings() // 刷新生效参数面板
-    ElMessage.success('已保存')
+    // 58E-06（两段 try）：同上——回填失败降级告警，保存事实不被否认
+    try {
+      await loadSettings() // 刷新生效参数面板
+      ElMessage.success('已保存')
+    } catch {
+      ElMessage.warning('已保存，参数面板刷新失败')
+    }
   } catch (e) {
     ElMessage.error(errorText(e, '保存失败，请重试'))
   } finally {
@@ -331,8 +341,13 @@ async function resetSection(section: 'stream' | 'recording') {
   saving.value = true
   try {
     await api.putSettings({ [section]: null })
-    await loadSettings()
-    ElMessage.success('已恢复出厂默认')
+    // 58E-06（两段 try）：重置 PUT 已生效，回填 GET 失败降级告警
+    try {
+      await loadSettings()
+      ElMessage.success('已恢复出厂默认')
+    } catch {
+      ElMessage.warning('已重置，参数面板刷新失败')
+    }
   } catch (e) {
     ElMessage.error(errorText(e, '重置失败，请重试'))
   } finally {
@@ -357,8 +372,13 @@ async function saveOverride() {
     await api.putSettings({
       devices: { [id]: { stream: { ...overrideStreamForm.value } as Record<string, unknown> } },
     })
-    await loadSettings() // 刷新视图与覆盖卡回填（保存后覆盖值即合并视图值）
-    ElMessage.success('已保存，该设备下次连接生效')
+    // 58E-06（两段 try）：覆盖 PUT 已生效，回填 GET 失败降级告警
+    try {
+      await loadSettings() // 刷新视图与覆盖卡回填（保存后覆盖值即合并视图值）
+      ElMessage.success('已保存，该设备下次连接生效')
+    } catch {
+      ElMessage.warning('已保存，参数面板刷新失败')
+    }
   } catch (e) {
     ElMessage.error(errorText(e, '保存失败，请重试'))
   } finally {
@@ -382,8 +402,13 @@ async function clearOverride() {
   saving.value = true
   try {
     await api.putSettings({ devices: { [id]: null } })
-    await loadSettings()
-    ElMessage.success('已清除该设备覆盖')
+    // 58E-06（两段 try）：清除 PUT 已生效，回填 GET 失败降级告警
+    try {
+      await loadSettings()
+      ElMessage.success('已清除该设备覆盖')
+    } catch {
+      ElMessage.warning('已清除，参数面板刷新失败')
+    }
   } catch (e) {
     ElMessage.error(errorText(e, '清除失败，请重试'))
   } finally {

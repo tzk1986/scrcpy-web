@@ -195,6 +195,9 @@ export class H264VideoStream {
   private _sizeMismatchCount = 0
   private _probeFrameCount = 0
   private _probeLastFrameTime = 0
+  // 58D-20：Blob 兜底分支（binaryType 未生效环境）arrayBuffer 是异步的，
+  // 帧到达序不保证转换完成序——用尾链串行化，确保 handleBinaryFrame 按到达序入解码器
+  private _blobTail: Promise<void> = Promise.resolve()
   // 最近一次 config 的解析结果（suspend 期间新到的 config 暂存于此，resume 时复用）
   private _lastCodec: string | null = null
   private _lastAvccDesc: BufferSource | null = null
@@ -319,9 +322,14 @@ export class H264VideoStream {
           console.warn('[H264] Failed to parse text message:', data)
         }
       } else if (data instanceof Blob) {
-        data.arrayBuffer().then(buf => {
-          this.handleBinaryFrame(new Uint8Array(buf))
-        })
+        // 58D-20：尾链串行——本帧转换排在前一帧处理完成之后，
+        // 迟到转换的帧不再插队乱序进解码器；单帧异常不阻断后续链
+        this._blobTail = this._blobTail
+          .then(async () => {
+            const buf = await data.arrayBuffer()
+            this.handleBinaryFrame(new Uint8Array(buf))
+          })
+          .catch(() => { /* 单帧失败不级联 */ })
       } else {
         console.warn('[H264] Unknown message type:', typeof data, data)
       }

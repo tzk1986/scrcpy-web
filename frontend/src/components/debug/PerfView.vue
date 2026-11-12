@@ -216,6 +216,9 @@ const recordRows = ref(0)
 const recordBusy = ref(false)
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
+/** 58E-27：并发去重标志（对齐 NetworkView 范式），轮询在飞期间不叠加拉取。 */
+let pendingStatusRefresh: Promise<void> | null = null
+
 // 缓存导出可用性：录制中（导出会先 flush 未落盘批）或已有落盘缓存行。
 // recordRows 为跨批次聚合的缓存总行数，停止录制后仍可用于导出历史数据。
 const cacheExportable = computed(() => isRecording.value || recordRows.value > 0)
@@ -395,16 +398,23 @@ onUnmounted(() => {
   }
 })
 
-/** 拉取录制状态（失败静默保持现状，下一轮再试）。 */
+/** 拉取录制状态（失败静默保持现状，下一轮再试；58E-27 在飞去重）。 */
 async function refreshRecordStatus() {
-  try {
-    const status = await api.getPerfRecordStatus(props.deviceId)
-    isRecording.value = status.recording
-    recordReason.value = status.reason
-    recordRows.value = status.rows
-  } catch (e) {
-    console.error('[PerfView] Failed to load record status:', e)
-  }
+  if (pendingStatusRefresh) return pendingStatusRefresh
+  pendingStatusRefresh = api
+    .getPerfRecordStatus(props.deviceId)
+    .then((status) => {
+      isRecording.value = status.recording
+      recordReason.value = status.reason
+      recordRows.value = status.rows
+    })
+    .catch((e) => {
+      console.error('[PerfView] Failed to load record status:', e)
+    })
+    .finally(() => {
+      pendingStatusRefresh = null
+    })
+  return pendingStatusRefresh
 }
 
 /** 录制开关：成功后刷新状态徽标。 */

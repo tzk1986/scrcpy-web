@@ -10,7 +10,7 @@
  *   - 播放弹层：video src 指向文件端点；webm 导出按钮随支持面启用/禁用；
  *     关窗（closed）停声 pause+清 src（方案 51 F2-08）
  *   - 删除：二次确认 → api → 重拉；失败 → error toast 且列表不消失
- *   - 列表加载失败：error toast + 空态；空态含回 Dashboard 引导
+ *   - 列表加载失败：error toast + 独立错误态（58E-05，保留旧列表不伪装空态）；空态含回 Dashboard 引导
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
@@ -224,12 +224,25 @@ describe('Recordings 页', () => {
     expect(api.deleteRecordingFile).not.toHaveBeenCalled()
   })
 
-  it('列表加载失败：error toast + 空态', async () => {
+  it('58E-05 首载失败：错误态提示独立，不伪装空态「暂无录屏」', async () => {
     api.listRecordingFiles.mockRejectedValue(new Error('boom'))
     const w = mountPage()
     await flushPromises()
     expect(h.ElMessage.error).toHaveBeenCalledWith('录屏列表加载失败')
     expect(w.findAll('.file-row')).toHaveLength(0)
-    expect(w.find('.empty-hint').text()).toContain('暂无录屏')
+    expect(w.find('.load-error').text()).toContain('boom')
+    expect(w.find('.empty-hint').exists()).toBe(false)
+  })
+
+  it('58E-05 刷新失败保留已载列表：资产不「消失」', async () => {
+    const w = mountPage()
+    await flushPromises()
+    expect(w.findAll('.file-row')).toHaveLength(2)
+    api.listRecordingFiles.mockRejectedValueOnce(new Error('boom'))
+    await w.find('.btn-refresh').trigger('click')
+    await flushPromises()
+    expect(w.findAll('.file-row')).toHaveLength(2)
+    expect(w.find('.load-error').exists()).toBe(true)
+    expect(w.find('.load-error').text()).toContain('下方为上次成功加载的结果')
   })
 })

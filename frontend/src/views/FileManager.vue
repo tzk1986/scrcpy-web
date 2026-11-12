@@ -117,6 +117,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type FileEntry } from '@/services/api'
+import { createEpochGuard } from '@/utils/fetchGuard'
 
 // 设备间直跳（A→B）时组件复用，全部设备引用必须走 props.id 动态读取，
 // 不能启动期捕获（方案 51 F2-15）
@@ -149,12 +150,16 @@ const entries = ref<FileEntry[]>([])
 const selected = ref<FileEntry[]>([])
 const errorText = ref('')
 const errorRetryable = ref(false)
-// 目录列表请求代次（方案 58 E-01，8.3 范式）：慢响应迟到不得覆盖新目录列表
-let listEpoch = 0
+// 目录列表请求代次（方案 58 E-01，8.3 范式统一工具）：慢响应迟到不得覆盖新目录列表
+const listGuard = createEpochGuard()
 const transfers = reactive<TransferRow[]>([])
 const tableRef = ref<{ clearSelection: () => void } | null>(null)
 const uploadInputRef = ref<HTMLInputElement | null>(null)
 const transferring = computed(() => transfers.some((t) => t.phase === 'http' || t.phase === 'adb'))
+// 58E-02：上传队列在飞标志（仅 upload 段——下载发起时已整批快照路径，切目录无害）
+const uploadQueueActive = computed(() =>
+  transfers.some((t) => t.kind === 'upload' && (t.phase === 'http' || t.phase === 'adb')),
+)
 
 const renameVisible = ref(false)
 const renameValue = ref('')
@@ -196,13 +201,13 @@ const crumbs = computed<{ label: string; path: string }[]>(() => {
 
 async function loadList(): Promise<void> {
   errorText.value = ''
-  const epoch = ++listEpoch
+  const epoch = listGuard.begin()
   try {
     const res = await api.listFiles(props.id, currentPath.value)
-    if (epoch !== listEpoch) return  // 过期响应丢弃（快速连点/切设备防覆盖）
+    if (!listGuard.isCurrent(epoch)) return  // 过期响应丢弃（快速连点/切设备防覆盖）
     entries.value = res
   } catch (e) {
-    if (epoch !== listEpoch) return
+    if (!listGuard.isCurrent(epoch)) return
     const { code, message } = errOf(e)
     entries.value = []
     if (code === 'PERMISSION_DENIED') {
@@ -219,6 +224,12 @@ async function loadList(): Promise<void> {
 }
 
 async function cd(path: string): Promise<void> {
+  // 58E-02：上传队列在飞期间禁切目录——原实现每轮实时读 currentPath，
+  // 上传中切目录后续文件全落错目录且无感知
+  if (uploadQueueActive.value) {
+    ElMessage.warning('上传进行中，请等待队列完成后再切换目录')
+    return
+  }
   currentPath.value = path
   await loadList()
 }
@@ -289,11 +300,13 @@ async function onUploadChange(e: Event): Promise<void> {
   const files = Array.from(input.files ?? [])
   input.value = '' // 允许重复选择同名文件再传
   if (!files.length) return
+  // 58E-02：整队快照目标目录（与 cd 守卫互为纵深——任何后续路径变更都不影响在飞队列）
+  const targetDir = currentPath.value
   for (const f of files) {
     const t = newTransfer('upload', f.name)
     t.text = '上传中 0%'
     try {
-      const job = await api.uploadFile(props.id, currentPath.value, f, (pct) => {
+      const job = await api.uploadFile(props.id, targetDir, f, (pct) => {
         t.percent = pct
         if (pct >= 100) {
           t.phase = 'adb'

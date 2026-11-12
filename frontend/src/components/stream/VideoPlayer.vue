@@ -235,6 +235,11 @@ const mirrorHint = ref('')
 /** 失焦期缓存（覆盖式只留最新），回焦补写 */
 let mirrorPending: string | null = null
 let mirrorHintTimer: number | null = null
+/** 58D-11 竞态守卫：push 到达单调序号 + 缓存归属序号 + 写链（串行化剪贴板写，
+ *  杜绝旧写在飞时新写并发/旧补写成功后清掉新到的缓存） */
+let mirrorSeq = 0
+let mirrorPendingSeq = -1
+let mirrorWriteChain: Promise<void> = Promise.resolve()
 
 // ===== 方案56：手动横竖屏旋转（判定链正确时的观感兜底） =====
 /** 按设备持久化旋转角（0/90/180/270），默认 0=信任自动判定 */
@@ -861,6 +866,7 @@ function applyMirror() {
     showMirrorHint('镜像已开启：设备复制将覆盖 PC 剪贴板', 3000)
   } else {
     mirrorPending = null
+    mirrorPendingSeq = -1
     mirrorHint.value = ''
   }
 }
@@ -874,38 +880,56 @@ async function writeMirrorText(text: string): Promise<boolean> {
   }
 }
 
+/** 58D-11：剪贴板写串行化——写任务排队到镜像写链尾，杜绝并发写与「旧盖新」 */
+function queueMirrorWork(task: () => Promise<void>): void {
+  mirrorWriteChain = mirrorWriteChain.then(task).catch(() => {})
+}
+
 /** WS 截流入口：clipboard_push 焦点写/缓存；clipboard_mirror 后端自停复位开关 */
 function handleMirrorFrame(msg: { type?: string; text?: string; enabled?: boolean }) {
   if (msg.type === 'clipboard_mirror') {
     mirrorOn.value = false
     mirrorPending = null
+    mirrorPendingSeq = -1
     showMirrorHint('设备剪贴板长时间不可用，镜像已自动停止', 4000)
     return
   }
   if (!mirrorOn.value) return
   const text = msg.text ?? ''
+  const seq = ++mirrorSeq
   if (document.hasFocus() && !document.hidden) {
-    writeMirrorText(text).then((ok) => {
+    queueMirrorWork(async () => {
+      const ok = await writeMirrorText(text)
+      // 58D-11：在飞期间又 push 了新内容（seq 非最新）则本次结果作废，
+      // 不得回填过时提示/缓存（旧写在飞被新内容取代）
+      if (seq !== mirrorSeq) return
       if (ok) showMirrorHint(`已同步设备 ${text.length} 字符`)
       else {
         mirrorPending = text
+        mirrorPendingSeq = seq
         showMirrorHint('系统剪贴板写入被拒，聚焦页面后重试', 4000)
       }
     })
   } else {
     mirrorPending = text
+    mirrorPendingSeq = seq
     showMirrorHint(`设备已复制 ${text.length} 字符，回焦自动同步`)
   }
 }
 
-/** 回焦/回可见：补写失焦期缓存（一次性，成功即清） */
+/** 回焦/回可见：补写失焦期缓存（一次性，成功且缓存未更新才清） */
 function flushMirrorPending() {
   if (!mirrorOn.value || mirrorPending === null) return
   if (!document.hasFocus() || document.hidden) return
   const text = mirrorPending
-  writeMirrorText(text).then((ok) => {
-    if (ok) {
+  const seq = mirrorPendingSeq
+  queueMirrorWork(async () => {
+    const ok = await writeMirrorText(text)
+    // 58D-11：写成功时若失焦期又补进更新内容（缓存或归属 seq 变了），
+    // 本次补写作废，绝不清掉比它新的缓存
+    if (ok && seq === mirrorPendingSeq && mirrorPending === text) {
       mirrorPending = null
+      mirrorPendingSeq = -1
       showMirrorHint(`已同步设备 ${text.length} 字符`)
     }
   })
@@ -914,6 +938,9 @@ function flushMirrorPending() {
 function resetMirror() {
   mirrorOn.value = false
   mirrorPending = null
+  mirrorPendingSeq = -1
+  mirrorSeq = 0
+  mirrorWriteChain = Promise.resolve()
   mirrorHint.value = ''
   if (mirrorHintTimer !== null) {
     clearTimeout(mirrorHintTimer)

@@ -459,6 +459,41 @@ describe('FileManager', () => {
     wrapper.unmount()
   })
 
+  // ==================== 方案 58 E-02：上传队列目录快照与 cd 守卫 ====================
+
+  it('58E-02 上传中切目录：队列在飞禁 cd 并提示，整队按快照目录落盘，完成后导航恢复', async () => {
+    const uploadCalls: { name: string; dir: string }[] = []
+    const resolvers: ((job: unknown) => void)[] = []
+    mockApi.uploadFile.mockImplementation((_id: string, dir: string, file: File) => {
+      uploadCalls.push({ name: file.name, dir })
+      return new Promise((res) => resolvers.push(res))
+    })
+    const wrapper = await mountView()
+    await setUploadFiles(wrapper, [new File(['aa'], 'one.txt'), new File(['bb'], 'two.txt')])
+    expect(uploadCalls).toHaveLength(1)
+
+    // 首文件在飞时点进子目录：应被禁用，不拉目录列表（原实现实时读 currentPath，第二文件落散）
+    const listCallsBefore = mockApi.listFiles.mock.calls.length
+    await wrapper.find(`.stub-row[data-name="Download"] .file-name`).trigger('click')
+    await flushPromises()
+    expect(mockApi.listFiles).toHaveBeenCalledTimes(listCallsBefore)
+    expect(elMock.ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('上传进行中'))
+    expect(wrapper.findAll('.crumb').map((c) => c.text())).not.toContain('Download')
+
+    // 首个完成 → 第二个仍落快照目录 /sdcard
+    resolvers[0](uploadJob())
+    await flushPromises()
+    expect(uploadCalls[1].dir).toBe('/sdcard')
+    resolvers[1](uploadJob())
+    await flushPromises()
+
+    // 队列完成后导航恢复
+    await wrapper.find(`.stub-row[data-name="Download"] .file-name`).trigger('click')
+    await flushPromises()
+    expect(mockApi.listFiles).toHaveBeenLastCalledWith('dev1', '/sdcard/Download')
+    wrapper.unmount()
+  })
+
   it('重命名：新名含 / 前端校验拒绝，api 未被调并显示错误文案', async () => {
     const wrapper = await mountView()
     wrapper.findComponent({ name: 'ElTable' }).vm.$emit('selection-change', [fileA])

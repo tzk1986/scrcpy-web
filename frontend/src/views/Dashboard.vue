@@ -137,9 +137,21 @@
       </div>
     </div>
 
+    <!-- 58E-04：加载错误态与真空态分离——后端未启动不得伪装「暂无设备请连 USB」误导排查 -->
+    <el-alert
+      v-if="store.error && store.devices.length === 0 && !store.loading"
+      title="设备列表加载失败"
+      type="error"
+      :closable="false"
+      class="load-error-tip"
+    >
+      <p>{{ store.error }}</p>
+      <el-button size="small" class="btn-retry" @click="refresh">重试</el-button>
+    </el-alert>
+
     <!-- 连接提示 -->
     <el-alert
-      v-if="store.devices.length === 0 && !store.loading"
+      v-if="store.devices.length === 0 && !store.loading && !store.error"
       title="暂无设备"
       type="info"
       :closable="false"
@@ -651,11 +663,18 @@ async function handleScan() {
   try {
     const result = await store.scanSubnet(cidr, !scanForm.scanOnly, scanForm.port)
     scanResult.value = result
-    saveScanRecord()
   } catch (e) {
     ElMessage.error(`扫描失败: ${extractApiError(e, '未知错误')}`)
+    return
   } finally {
     scanning.value = false
+  }
+  // 58E-03（F1-18 残留收口）：落盘移出业务 try——localStorage 异常（QuotaExceeded/
+  // 禁用/不可序列化）不得把已成功扫描误报「扫描失败」，独立兜底补告警
+  try {
+    saveScanRecord()
+  } catch {
+    ElMessage.warning('扫描记录保存失败（不影响扫描结果）')
   }
 }
 
@@ -682,6 +701,7 @@ function hostFailureMessage(ip: string): string {
 /** D9：结果条目点击连接（端口用扫描时快照；成功后即时转已连接） */
 async function connectHost(ip: string) {
   hostConnectingIp.value = ip
+  let connected = false
   try {
     await store.connectDevice(ip, scanPort.value)
     hostConnectedIps.value = new Set([...hostConnectedIps.value, ip])
@@ -689,7 +709,7 @@ async function connectHost(ip: string) {
     nextFailed.delete(ip)
     hostFailedIps.value = nextFailed
     ElMessage.success(`已连接 ${ip}:${scanPort.value}`)
-    persistScanRecord()
+    connected = true
   } catch (e) {
     const msg = extractApiError(e, '未知错误')
     ElMessage.error(`连接失败: ${msg}`)
@@ -698,6 +718,15 @@ async function connectHost(ip: string) {
     hostFailedIps.value = nextFailed
   } finally {
     hostConnectingIp.value = null
+  }
+  // 58E-03（F1-18 残留收口）：落盘移出业务 try——QuotaExceeded 等异常不得
+  // 把已成功连接的设备误报「连接失败」并登记 hostFailedIps
+  if (connected) {
+    try {
+      persistScanRecord()
+    } catch {
+      ElMessage.warning('扫描记录保存失败（不影响已连接设备）')
+    }
   }
 }
 
@@ -1169,6 +1198,15 @@ async function handleBatchDisconnect() {
 
 .empty-tip {
   margin-bottom: 1rem;
+}
+
+/* 58E-04：列表加载失败错误态（与空态同布局，type=error） */
+.load-error-tip {
+  margin-bottom: 1rem;
+}
+
+.load-error-tip p {
+  margin: 0.25rem 0;
 }
 
 .slow-tag {

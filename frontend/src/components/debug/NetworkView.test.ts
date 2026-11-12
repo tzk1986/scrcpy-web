@@ -49,6 +49,9 @@ const stats = {
   wifi_ssid: 'HomeWiFi',
 }
 
+/** 58E-13 切设备场景用：与 stats 仅 ssid 可辨 */
+const stats2 = { ...stats, wifi_ssid: 'OfficeWiFi' }
+
 const connections = [
   {
     protocol: 'tcp',
@@ -239,6 +242,53 @@ describe('NetworkView', () => {
     wrapper.unmount()
     await vi.advanceTimersByTimeAsync(4000)
     expect(mockApi.getNetworkStats).toHaveBeenCalledTimes(2)
+  })
+
+  it('58E-13 轮询在飞去重：慢响应期间 tick 不叠加拉取，完成后下轮恢复', async () => {
+    vi.useFakeTimers()
+    let resolveStats: ((v: unknown) => void) | null = null
+    mockApi.getNetworkStats.mockImplementationOnce(
+      () => new Promise((r) => { resolveStats = r }),
+    )
+    mockApi.getNetworkStats.mockResolvedValue(stats)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    const wrapper = mountView()
+
+    // 挂载首拉在飞：两次 2s tick 均复用同一请求（原实现各发一次，慢设备叠请求）
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mockApi.getNetworkStats).toHaveBeenCalledTimes(1)
+
+    resolveStats!(stats)
+    await flushPromises()
+    // 在飞结束后下一 tick 正常再拉
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mockApi.getNetworkStats).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('58E-13 切设备不被旧设备在飞请求阻塞；旧响应迟到不覆盖新状态', async () => {
+    vi.useFakeTimers()
+    let resolveOld: ((v: unknown) => void) | null = null
+    mockApi.getNetworkStats.mockImplementationOnce(
+      () => new Promise((r) => { resolveOld = r }),
+    )
+    mockApi.getNetworkStats.mockResolvedValue(stats2)
+    mockApi.getNetworkConnections.mockResolvedValue({ connections })
+    const wrapper = mountView()
+
+    // dev1 首拉在飞时切到 dev2：新设备立即发起自己的拉取并写入
+    await wrapper.setProps({ deviceId: 'dev2' })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mockApi.getNetworkStats).toHaveBeenCalledTimes(2)
+    expect(mockApi.getNetworkStats).toHaveBeenLastCalledWith('dev2')
+    expect(wrapper.find('.wifi-ssid').text()).toBe('OfficeWiFi')
+
+    // 旧设备迟到响应：代次已过期，不得覆盖新设备状态
+    resolveOld!(stats)
+    await flushPromises()
+    expect(wrapper.find('.wifi-ssid').text()).toBe('OfficeWiFi')
+    wrapper.unmount()
   })
 
   it('切换连接筛选只显示对应协议', async () => {

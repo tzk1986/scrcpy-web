@@ -430,32 +430,40 @@ function showAppDetail(row: AppInfo) {
 }
 
 // 运行时查询（方案 37 C5）：按需拉取，失败走区块内联提示（不打 ElMessage）
+// 58E-15（8.3 身份比对守卫）：发起时捕获包名，响应/失败到达时选中包名
+// 未变才写入——加载中改选应用，A 的迟到响应不得污染 B 弹窗与列表行。
 async function refreshRuntime() {
   if (!selectedApp.value) return
+  const pkg = selectedApp.value.package_name
 
   runtimeLoading.value = true
   try {
-    runtimeInfo.value = await api.getAppRuntime(props.deviceId, selectedApp.value.package_name)
+    const info = await api.getAppRuntime(props.deviceId, pkg)
+    if (selectedApp.value?.package_name !== pkg) return
+    runtimeInfo.value = info
     runtimeFailed.value = false
   } catch (e) {
     console.error('[AppsView] Failed to load app runtime:', e)
+    if (selectedApp.value?.package_name !== pkg) return
     runtimeInfo.value = null
     runtimeFailed.value = true
   } finally {
-    runtimeLoading.value = false
+    if (selectedApp.value?.package_name === pkg) runtimeLoading.value = false
   }
 }
 
 async function refreshDetail() {
   if (!selectedApp.value) return
+  const pkg = selectedApp.value.package_name // 58E-15：同上，包名身份守卫
 
   detailLoading.value = true
   try {
-    const detail = await api.getAppInfo(props.deviceId, selectedApp.value.package_name)
+    const detail = await api.getAppInfo(props.deviceId, pkg)
+    if (selectedApp.value?.package_name !== pkg) return
     // detailInfo 用于详情对话框显示，包含后端返回的最新信息
     detailInfo.value = detail
     // 更新列表中的应用信息，但保留原有的 is_running 状态
-    const index = apps.value.findIndex(app => app.package_name === selectedApp.value?.package_name)
+    const index = apps.value.findIndex(app => app.package_name === pkg)
     if (index !== -1) {
       // 保留列表中的 is_running 状态，只更新其他字段
       const { is_running: _is_running, ...detailWithoutStatus } = detail
@@ -466,7 +474,7 @@ async function refreshDetail() {
   } catch (e) {
     console.error('[AppsView] Failed to load app detail:', e)
   } finally {
-    detailLoading.value = false
+    if (selectedApp.value?.package_name === pkg) detailLoading.value = false
   }
 }
 </script>

@@ -415,6 +415,35 @@ describe('debug store - 消息处理', () => {
     expect(terminal).toEqual(['\r\n[Error] boom\r\n'])
   })
 
+  it('58E-16 无终端消费时 error 写 Logcat 可见通道：窗口内节流防刷屏，超时窗可再写，终端消费时不重复', async () => {
+    const store = await connectStore(true)
+    vi.useFakeTimers()
+    try {
+      emit(JSON.stringify({ type: 'error', message: 'logcat died' }))
+      expect(store.logs).toHaveLength(1)
+      expect(store.logs[0]).toMatchObject({ level: 'E', tag: 'system', message: 'logcat died' })
+
+      // 节流窗（5s）内的后续错误不再追加，防刷屏
+      vi.advanceTimersByTime(4000)
+      emit(JSON.stringify({ type: 'error', message: 'again in window' }))
+      expect(store.logs).toHaveLength(1)
+
+      // 过窗后可再写
+      vi.advanceTimersByTime(1000)
+      emit(JSON.stringify({ type: 'error', message: 'after window' }))
+      expect(store.logs).toHaveLength(2)
+      expect(store.logs[1].message).toBe('after window')
+
+      // 终端在消费时不写 Logcat 通道（同一错误不双写）
+      store.setShellOutputHandler(() => {})
+      vi.advanceTimersByTime(6000)
+      emit(JSON.stringify({ type: 'error', message: 'to terminal only' }))
+      expect(store.logs).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('session_closed 重置连接状态', async () => {
     const store = await connectStore(true)
     emit(JSON.stringify({ type: 'session_closed' }))
@@ -514,5 +543,24 @@ describe('debug store - fetchLogs 合并（方案 51 F2-04）', () => {
     await store.fetchLogs()
 
     expect(store.logs.map((l) => l.seq)).toEqual([1, 2, 3])
+  })
+
+  it('58E-09 跨会话迟到响应丢弃：切会话后旧会话 getLogs 返回不得并入新缓冲', async () => {
+    const store = useDebugStore()
+    store.sessionId = 'sess-old'
+
+    let resolveOld: ((v: { logs: LogEntry[] }) => void) | null = null
+    mockApi.getLogs.mockImplementationOnce(
+      () => new Promise((r) => { resolveOld = r })
+    )
+    const inflight = store.fetchLogs()
+
+    // 会话在请求在途期间快速关闭重开：seq 空间不同源
+    store.sessionId = 'sess-new'
+    store.logs = []
+    resolveOld!({ logs: [entry(1), entry(2)] })
+    await inflight
+
+    expect(store.logs).toEqual([])
   })
 })

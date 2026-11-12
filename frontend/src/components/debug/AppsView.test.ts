@@ -180,6 +180,70 @@ describe('AppsView', () => {
     expect(wrapper.find('.status-bar').text()).toContain('显示 1 / 2 个应用')
   })
 
+  // ==================== 方案 58 E-15：弹窗迟到响应守卫 ====================
+
+  it('58E-15 详情迟到响应守卫：加载中改选应用，A 响应不得污染 B 弹窗', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp, systemApp] })
+    let resolveDetail: ((v: unknown) => void) | null = null
+    mockApi.getAppInfo.mockImplementationOnce(() => new Promise((r) => { resolveDetail = r }))
+    mockApi.getAppInfo.mockResolvedValue({ ...systemApp })
+    mockApi.getAppRuntime.mockResolvedValue(cleanRuntime)
+    const wrapper = mountView()
+    await flushPromises()
+
+    // 点 A：详情在飞未回
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('row-click', userApp)
+    await flushPromises()
+    // 改选 B：B 的详情即时返回并写入
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('row-click', systemApp)
+    await flushPromises()
+
+    // A 迟到响应到达：当前选中已是 B，整体丢弃（原实现会并入 B 弹窗与列表行）
+    resolveDetail!({ ...userApp, version_name: '9.9.9' })
+    await flushPromises()
+
+    const dialog = wrapper.find('.stub-dialog')
+    expect(dialog.text()).toContain('com.android.settings')
+    expect(dialog.text()).not.toContain('9.9.9')
+  })
+
+  it('58E-15 运行态迟到响应守卫：改选后 A 运行时不得写入 B 弹窗', async () => {
+    mockApi.listApps.mockResolvedValue({ apps: [userApp, systemApp] })
+    // 详情按请求包名真实返回（否则 B 的详情会合成污染选中项，干扰运行态守卫断言）
+    mockApi.getAppInfo.mockImplementation((id: string, pkg: string) =>
+      Promise.resolve(pkg === 'com.android.settings' ? { ...systemApp } : { ...userApp }),
+    )
+    let resolveRuntime: ((v: unknown) => void) | null = null
+    mockApi.getAppRuntime.mockImplementationOnce(() => new Promise((r) => { resolveRuntime = r }))
+    mockApi.getAppRuntime.mockResolvedValue({
+      ...cleanRuntime,
+      top_activity: 'B/.Settings',
+      resumed: 'B/.Settings',
+      services: [{ name: 'B/.Svc', state: 'running' }],
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('row-click', userApp)
+    await flushPromises()
+    wrapper.findComponent({ name: 'ElTable' }).vm.$emit('row-click', systemApp)
+    await flushPromises()
+    expect(wrapper.find('.stub-dialog').text()).toContain('B/.Settings')
+
+    // A 的运行态迟到响应：不得覆盖 B 弹窗运行时区块
+    resolveRuntime!({
+      ...cleanRuntime,
+      top_activity: 'A/.LateActivity',
+      resumed: 'A/.LateActivity',
+      services: [{ name: 'A/.LateSvc', state: 'running' }],
+    })
+    await flushPromises()
+
+    const dialog = wrapper.find('.stub-dialog')
+    expect(dialog.text()).toContain('B/.Settings')
+    expect(dialog.text()).not.toContain('A/.LateActivity')
+  })
+
   it('点击表格行打开应用详情对话框并请求应用详情', async () => {
     mockApi.listApps.mockResolvedValue({ apps: [userApp, systemApp] })
     mockApi.getAppInfo.mockResolvedValue({ ...userApp, pid: 999, memory_kb: 1024, apk_size_mb: 20 })

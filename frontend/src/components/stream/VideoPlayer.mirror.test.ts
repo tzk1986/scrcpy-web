@@ -281,6 +281,70 @@ describe('方案55 clipboard_push 焦点策略', () => {
   })
 })
 
+describe('方案58 D-11 直写与补写交错守卫', () => {
+  it('直写交错：写链按到达序串行，慢 A 完成不得把提示盖回旧值', async () => {
+    const wrapper = await mountPlayer()
+    await enableMirror(wrapper)
+    let resolveA: (() => void) | null = null
+    h.writeText.mockImplementationOnce(
+      () => new Promise<void>((r) => { resolveA = r }),
+    )
+
+    feedWs({ type: 'clipboard_push', text: '甲乙丙' }) // 3 字符，转换慢
+    feedWs({ type: 'clipboard_push', text: '丁' }) // 1 字符，即时
+    await flushPromises()
+    // 58D-11：写链串行——A 在飞时 B 不得并发发起（完成序=到达序，剪贴板最终值必为 B）
+    expect(h.writeText).toHaveBeenCalledTimes(1)
+    resolveA!()
+    await flushPromises()
+
+    expect(h.writeText).toHaveBeenCalledTimes(2)
+    expect(h.writeText).toHaveBeenNthCalledWith(1, '甲乙丙')
+    expect(h.writeText).toHaveBeenNthCalledWith(2, '丁')
+    const badge = wrapper.find('.mirror-badge').text()
+    expect(badge).toContain('1 字符')
+    expect(badge).not.toContain('3 字符')
+    wrapper.unmount()
+  })
+
+  it('补写在飞期间失焦缓存新帧：A 补写完成不得清 B 缓存，回焦仍补 B', async () => {
+    const wrapper = await mountPlayer()
+    await enableMirror(wrapper)
+
+    // 失焦缓存 A → 回焦补写（在飞）
+    focusFlag = false
+    feedWs({ type: 'clipboard_push', text: '旧甲' })
+    await flushPromises()
+    expect(h.writeText).not.toHaveBeenCalled()
+
+    focusFlag = true
+    let resolveFlush: (() => void) | null = null
+    h.writeText.mockImplementationOnce(
+      () => new Promise<void>((r) => { resolveFlush = r }),
+    )
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(h.writeText).toHaveBeenCalledWith('旧甲')
+
+    // A 补写在飞时设备又复制 B（此时失焦）：缓存替换为 B
+    focusFlag = false
+    feedWs({ type: 'clipboard_push', text: '新乙' })
+    await flushPromises()
+
+    // A 补写成功返回：缓存已非 A，不得误清（原实现清缓存 → B 永久丢失）
+    resolveFlush!()
+    await flushPromises()
+
+    // 再次回焦：B 必须被补写
+    focusFlag = true
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(h.writeText).toHaveBeenLastCalledWith('新乙')
+    expect(wrapper.find('.mirror-badge').text()).toContain('2 字符')
+    wrapper.unmount()
+  })
+})
+
 describe('方案55 后端自停复位', () => {
   it('clipboard_mirror enabled=false → 开关复位，其后 push 忽略', async () => {
     const wrapper = await mountPlayer()

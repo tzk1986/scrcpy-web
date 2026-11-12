@@ -218,31 +218,64 @@ describe('start / stop 生命周期', () => {
 })
 
 describe('错误处理', () => {
-  it('截屏失败进入 error 状态并携带错误信息', async () => {
-    screenshotRawMock.mockRejectedValueOnce(new Error('capture failed'))
-    const stream = new VideoStream('dev1', document.createElement('canvas'))
+  // 58D-05：拉帧失败宽限——连续 3 次才进 error 终态；单次超时/瞬断按退避重试
+  it('58D-05 连续三次拉帧失败才进 error 终态并携带错误信息，宽限期内保持 streaming', async () => {
+    vi.useFakeTimers()
+    screenshotRawMock.mockRejectedValue(new Error('capture failed'))
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 100)
     const states: VideoStreamState[] = []
-    stream.setStateChangeHandler(s => states.push(s))
+    stream.setStateChangeHandler((s) => states.push(s))
 
-    await stream.start()
+    await stream.start() // 第 1 次失败：宽限不进 error
+    expect(stream.state).toBe('streaming')
 
+    await vi.advanceTimersByTimeAsync(200) // 2× 退避：第 2 次失败，仍宽限
+    expect(stream.state).toBe('streaming')
+
+    await vi.advanceTimersByTimeAsync(400) // 4× 退避：第 3 次失败 → error 终态
     expect(stream.state).toBe('error')
     expect(stream.stats.error).toBe('capture failed')
     expect(states).toEqual(['streaming', 'error'])
-
     stream.stop()
+    vi.useRealTimers()
   })
 
-  it('error 后周期回调不再抓帧', async () => {
+  it('58D-05 error 终态后周期回调不再抓帧', async () => {
     vi.useFakeTimers()
-    screenshotRawMock.mockRejectedValueOnce(new Error('boom'))
+    screenshotRawMock.mockRejectedValue(new Error('boom'))
     const stream = new VideoStream('dev1', document.createElement('canvas'), 100)
 
     await stream.start()
-    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(700) // 200+400 三次失败 → error
+    const calls = totalCaptures()
 
-    expect(totalCaptures()).toBe(1)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(totalCaptures()).toBe(calls)
     stream.stop()
+    vi.useRealTimers()
+  })
+
+  it('58D-05 退避重试成功：计数清零恢复常规节奏，错误态不浮现', async () => {
+    vi.useFakeTimers()
+    screenshotRawMock.mockRejectedValueOnce(new Error('boom')) // 首帧超时
+    const stream = new VideoStream('dev1', document.createElement('canvas'), 100)
+
+    await stream.start()
+    expect(stream.state).toBe('streaming')
+    expect(stream.stats.error).toBeNull()
+
+    // 2× 退避：100ms 处不发起，200ms 处重试成功
+    await vi.advanceTimersByTimeAsync(100)
+    expect(totalCaptures()).toBe(1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(totalCaptures()).toBe(2)
+    expect(stream.state).toBe('streaming')
+
+    // 成功后恢复 1×：下一拍 100ms 即发起
+    await vi.advanceTimersByTimeAsync(100)
+    expect(totalCaptures()).toBe(3)
+    stream.stop()
+    vi.useRealTimers()
   })
 
   it('canvas 2d context 不可用时跳过渲染但帧计数继续', async () => {

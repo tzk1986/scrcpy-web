@@ -36,6 +36,12 @@
       <el-button class="filter-clear" size="small" text @click="deviceFilter = ''">清除</el-button>
     </div>
 
+    <!-- 58E-05：加载失败独立错误态，保留旧列表而非清空伪装「暂无录屏」 -->
+    <div v-if="loadError" class="load-error">
+      录屏列表加载失败：{{ loadError }}
+      <template v-if="files.length">（下方为上次成功加载的结果）</template>
+    </div>
+
     <div v-if="visibleFiles.length" class="file-list">
       <div v-for="f in visibleFiles" :key="f.filename" class="file-row">
         <span class="col-device">{{ f.device ?? '未知设备（旧版产物）' }}</span>
@@ -46,7 +52,7 @@
         <el-button class="btn-delete" size="small" type="danger" text @click="remove(f)">删除</el-button>
       </div>
     </div>
-    <div v-else class="empty-hint">
+    <div v-else-if="!loadError" class="empty-hint">
       暂无录屏。在设备页开始录制后，产物会出现在这里。
       <router-link to="/">回设备列表</router-link>
     </div>
@@ -85,6 +91,8 @@ import { exportWebmClip, isWebmRecorderSupported } from '@/utils/webmExporter'
 const route = useRoute()
 
 const files = ref<RecordingFileItem[]>([])
+// 58E-05：加载失败态（与空态分离；失败不清空已载列表）
+const loadError = ref('')
 const deviceFilter = ref<string>(typeof route.query.device === 'string' ? route.query.device : '')
 const playerVisible = ref(false)
 const playing = ref<RecordingFileItem | null>(null)
@@ -143,8 +151,11 @@ async function load() {
   try {
     const res = await api.listRecordingFiles()
     files.value = res.files
-  } catch {
-    files.value = []
+    loadError.value = ''
+  } catch (e) {
+    // 58E-05：失败保留已载列表，错误态独立——清空伪装「暂无录屏」会让用户
+    // 误以为录屏资产消失
+    loadError.value = e instanceof Error ? e.message : String(e)
     ElMessage.error('录屏列表加载失败')
   }
 }

@@ -142,6 +142,7 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 import { api } from '@/services/api'
 import { alertLabel, createAlertNotifier, extractAlerts, type AlertItem } from '@/services/alerts'
 import { runExport, errText, type ExportCommand } from '@/services/exportKit'
+import { createEpochGuard } from '@/utils/fetchGuard'
 
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -285,6 +286,11 @@ const chartOption = computed(() => ({
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+// 58E-13（8.3 范式）：请求代次守卫 + 同设备在飞去重标志
+const fetchGuard = createEpochGuard()
+let pendingFetch: Promise<void> | null = null
+let pendingFetchDevice = ''
+
 onMounted(() => {
   startPolling()
 })
@@ -306,34 +312,48 @@ function stopPolling() {
 }
 
 async function fetchData() {
-  try {
-    // 获取网络统计
-    const stats = await api.getNetworkStats(props.deviceId)
-    currentStats.value = stats
-    activeAlerts.value = extractAlerts(stats.alerts)
-    alertNotifier.update(activeAlerts.value)
+  // 58E-13（8.3 范式）：同设备在飞去重——慢响应期间轮询不叠加拉取；
+  // 切设备则代次递增立即另起一轮，旧设备迟到响应作废不得写入新设备状态
+  if (pendingFetch && pendingFetchDevice === props.deviceId) return pendingFetch
+  const device = props.deviceId
+  const gen = fetchGuard.begin()
+  pendingFetchDevice = device
+  const run = (async () => {
+    try {
+      // 获取网络统计
+      const stats = await api.getNetworkStats(device)
+      if (!fetchGuard.isCurrent(gen)) return
+      currentStats.value = stats
+      activeAlerts.value = extractAlerts(stats.alerts)
+      alertNotifier.update(activeAlerts.value)
 
-    // 更新历史数据
-    const now = new Date()
-    const label = `${now.getMinutes()}:${now.getSeconds().toString().padStart(2, '0')}`
-    timeLabels.value.push(label)
-    rxHistory.value.push(stats.rx_rate_kbps)
-    txHistory.value.push(stats.tx_rate_kbps)
+      // 更新历史数据
+      const now = new Date()
+      const label = `${now.getMinutes()}:${now.getSeconds().toString().padStart(2, '0')}`
+      timeLabels.value.push(label)
+      rxHistory.value.push(stats.rx_rate_kbps)
+      txHistory.value.push(stats.tx_rate_kbps)
 
-    // 保留最近 60 个数据点
-    if (timeLabels.value.length > 60) {
-      timeLabels.value.shift()
-      rxHistory.value.shift()
-      txHistory.value.shift()
+      // 保留最近 60 个数据点
+      if (timeLabels.value.length > 60) {
+        timeLabels.value.shift()
+        rxHistory.value.shift()
+        txHistory.value.shift()
+      }
+
+      // 获取连接列表
+      const connData = await api.getNetworkConnections(device)
+      if (!fetchGuard.isCurrent(gen)) return
+      connections.value = connData.connections
+    } catch (e) {
+      console.error('[NetworkView] Failed to fetch data:', e)
     }
-
-    // 获取连接列表
-    const connData = await api.getNetworkConnections(props.deviceId)
-    connections.value = connData.connections
-  } catch (e) {
-    console.error('[NetworkView] Failed to fetch data:', e)
-  }
-  void refreshRecordStatus()
+    void refreshRecordStatus()
+  })()
+  pendingFetch = run.finally(() => {
+    if (fetchGuard.isCurrent(gen)) pendingFetch = null
+  })
+  return pendingFetch
 }
 
 /** 拉取录制状态（失败静默保持现状，下一轮再试）。 */
