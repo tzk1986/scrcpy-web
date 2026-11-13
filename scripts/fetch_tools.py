@@ -7,8 +7,9 @@
 gitignore，无本脚本则换机/CI 无法构建）：
 
     - adb 三件套（adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll）
-      来源：Google Android SDK Platform-Tools（r36.0.0，与本机真机验证
-      环境 adb 1.0.41 / 36.0.0 一致），从 zip 内 platform-tools/ 提取
+      来源：Google Android SDK Platform-Tools（r37.0.1，2026-11-13 自 r36.0.0
+      升级：与升级后的本机 SDK 验证环境 37.0.1 对齐，消除 adb server 版本
+      互踢；37.0.2/37.0.3 为 canary 不取），从 zip 内 platform-tools/ 提取
     - scrcpy-server.jar
       来源：Genymobile/scrcpy GitHub Release（版本对齐
       backend/app/scrcpy/scrcpy_version.py 唯一分发点）
@@ -47,7 +48,7 @@ def _server_version() -> str:
 SCRCPY_SERVER_VERSION = _server_version()
 TOOLS_DIR = REPO_ROOT / "tools"
 JAR_DIR = REPO_ROOT / "backend" / "app" / "scrcpy"
-PLATFORM_TOOLS_URL = "https://dl.google.com/android/repository/platform-tools_r36.0.0-win.zip"
+PLATFORM_TOOLS_URL = "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip"
 JAR_URL = (
     f"https://github.com/Genymobile/scrcpy/releases/download/"
     f"v{SCRCPY_SERVER_VERSION}/scrcpy-server-v{SCRCPY_SERVER_VERSION}"
@@ -80,21 +81,21 @@ TOOLS: list[ZipEntry | FileEntry] = [
         "adb.exe",
         PLATFORM_TOOLS_URL,
         "platform-tools/adb.exe",
-        "1e1c2280b90b3f01ad84cd8df4858b1b1995012814f3ca8893bcc3ba3848edec",
+        "b4a6b455702684652cccf7b46258b29e653538904359a58fd4931cf3ef286b3f",
         TOOLS_DIR,
     ),
     ZipEntry(
         "AdbWinApi.dll",
         PLATFORM_TOOLS_URL,
         "platform-tools/AdbWinApi.dll",
-        "9a56e72fe1372cb722a80c00b79dcecf2b37165884e470ed05f00c668c0043b0",
+        "c1d653030b4bde65d3e07e4d0b0979e17be56df1436cdd15528630f27808050d",
         TOOLS_DIR,
     ),
     ZipEntry(
         "AdbWinUsbApi.dll",
         PLATFORM_TOOLS_URL,
         "platform-tools/AdbWinUsbApi.dll",
-        "5e77ccb2f25cd3a97553745adf1cd28a5fe8137cf64613b7fef9c6f92ff91f37",
+        "0710e894d9b40f71a670c13c694079d564c92c1279da382cfe4850983aaebe1b",
         TOOLS_DIR,
     ),
     FileEntry(
