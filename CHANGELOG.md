@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.18] - 2026-11-13
+
+### Changed
+
+- 随包 adb 由钉死 r36.0.0 升至 r37.0.1（`scripts/fetch_tools.py` 清单 URL+三文件 SHA256 实测回填）：消除包内 adb 与新版 SDK adb 的 server 版本互踢——两端共存时任一侧 `adb` 调用会 kill-server/restart-server 对方服务，网络 adb 设备（ip:5555）连接在重启中丢失且不自动重连，表现为设备无故离线（2026-11-13 v0.7.18 验证包冒烟实测钉死；37.0.2/37.0.3 为 canary 不取）
 
 ### Fixed
 
