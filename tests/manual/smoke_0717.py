@@ -40,6 +40,9 @@ _LOG = _ROOT / "dist" / "OpenScrcpy" / "logs" / "openscrcpy.log"
 _DEVICE = os.environ.get("SMOKE_DEVICE", "192.168.8.20:5555")
 _PORT = 8766
 _ENV = {"ANDROID_ADB_SERVER_PORT": "5039", "BACKEND_PORT": str(_PORT)}
+# 冒烟 client 必须与 exe 内置 adb 同版本，否则 server 版本互踢重启会丢网络连接设备
+# （2026-11-13 冒烟实录：本机 SDK 升至 37.0.1 与钉死 36.0.0 包内 adb 冲突，.20 失联）
+_ADB = str(_ROOT / "dist" / "OpenScrcpy" / "_internal" / "tools" / "adb.exe")
 
 
 def http(method: str, path: str, timeout: float = 15.0) -> tuple[int, bytes]:
@@ -52,7 +55,7 @@ def http(method: str, path: str, timeout: float = 15.0) -> tuple[int, bytes]:
 
 
 def adb(*args: str) -> None:
-    sp.run(["adb", "-P", "5039", *args], capture_output=True, text=True,
+    sp.run([_ADB, "-P", "5039", *args], capture_output=True, text=True,
            timeout=30, env={**os.environ, "MSYS_NO_PATHCONV": "1"}, check=False)
 
 
@@ -97,6 +100,9 @@ async def main() -> int:
         return 1
     if _PORT_FILE.exists():
         _PORT_FILE.unlink()
+    # ⑧ 判据按实例计数：exe 日志跨运行追加，须先清掉旧实例内容（2026-11-13 冒烟实录）
+    if _LOG.exists():
+        _LOG.unlink()
 
     env = {k: v for k, v in os.environ.items() if k != "PYTHONHOME"}
     env.update(_ENV)
