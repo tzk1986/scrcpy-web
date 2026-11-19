@@ -50,6 +50,29 @@ def test_find_available_port_exhausted_raises():
         probe.close()
 
 
+def test_find_available_port_default_window_jumps_reserved_block(monkeypatch):
+    """WinNAT 动态保留区可整段划走旧 5 格回退窗（无监听者、试绑被系统拒）——
+    默认窗口须 ≥20 格才跳得出常见保留区长度（2026-11-13 事发 8730-8829 吞 8765-8769）。"""
+    ref = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ref.bind(("127.0.0.1", 0))
+    start = ref.getsockname()[1]
+    ref.close()
+    occupied = {start + i for i in range(19)}
+    monkeypatch.setattr(
+        launcher, "_port_has_listener", lambda port, timeout=0.5: port in occupied
+    )
+    assert launcher.find_available_port("127.0.0.1", start) == start + 19
+
+
+def test_find_available_port_error_message_hints_backend_port(monkeypatch):
+    monkeypatch.setattr(launcher, "_port_has_listener", lambda port, timeout=0.5: True)
+    with pytest.raises(RuntimeError) as exc:
+        launcher.find_available_port("127.0.0.1", 8765, attempts=3)
+    msg = str(exc.value)
+    assert "BACKEND_PORT" in msg
+    assert "8765" in msg and "8767" in msg
+
+
 def test_find_available_port_detects_wildcard_listener():
     """D1 回归（方案 23 §1.2/§3.3）：0.0.0.0 通配绑定占用时，试绑 127.0.0.1
     会成功误判可用；必须连接预检感知通配监听者并回退。"""

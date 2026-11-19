@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- exe 启动「no available port from 8765 to 8769」：端口回退窗由 5 格扩至 20 格，跳出 Windows 动态保留区（WinNAT/Hyper-V 开机可整段划走约 100 连续端口，旧 5 格窗可能全落区内——无监听者但试绑被系统拒）；报错文案附「可设置 BACKEND_PORT 环境变量指定其他端口」提示（经验记录 E034）
+
 ## [0.7.18] - 2026-11-13
 
 ### Changed

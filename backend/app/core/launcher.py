@@ -63,12 +63,17 @@ def _port_has_listener(port: int, timeout: float = 0.5) -> bool:
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
+def find_available_port(host: str, start_port: int, attempts: int = 20) -> int:
     """从 start_port 起逐个探测，返回第一个可用端口。
 
     探测 = 连接预检（感知任何监听者，含通配绑定，§23-D1）+ 试绑复核。
     Windows 下 SO_REUSEADDR 不阻止重复绑定，改用 SO_EXCLUSIVEADDRUSE
     （8.4-6 端口冲突回退的探测正确性依赖此语义）。
+
+    窗口默认 20 格：WinNAT/Hyper-V 开机可把连续 100 端口划进动态保留区
+    （netsh int ipv4 show excludedportrange），旧 5 格窗可能整段落在区内
+    ——无监听者、试绑被系统拒（WSAEACCES），启动即报 no available port
+    （2026-11-13 实录 8730-8829 吞掉 8765-8769）。
     """
     for offset in range(attempts):
         port = start_port + offset
@@ -84,7 +89,11 @@ def find_available_port(host: str, start_port: int, attempts: int = 5) -> int:
                 return port
             except OSError:
                 continue
-    raise RuntimeError(f"no available port from {start_port} to {start_port + attempts - 1}")
+    raise RuntimeError(
+        f"no available port from {start_port} to {start_port + attempts - 1}"
+        "：端口可能被 Windows 动态保留区（WinNAT/Hyper-V）整段划走或被其他程序占用，"
+        "可设置 BACKEND_PORT 环境变量指定其他端口后重新启动"
+    )
 
 
 _shutdown_handler: Callable[[], None] | None = None
