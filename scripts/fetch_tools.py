@@ -7,9 +7,10 @@
 gitignore，无本脚本则换机/CI 无法构建）：
 
     - adb 三件套（adb.exe + AdbWinApi.dll + AdbWinUsbApi.dll）
-      来源：Google Android SDK Platform-Tools（r37.0.1，2026-11-13 自 r36.0.0
-      升级：与升级后的本机 SDK 验证环境 37.0.1 对齐，消除 adb server 版本
-      互踢；37.0.2/37.0.3 为 canary 不取），从 zip 内 platform-tools/ 提取
+      来源：Google Android SDK Platform-Tools（r37.0.3，2026-11-27 自 r37.0.1
+      升级：37.0.3 已进 stable 通道（此前 11-13 判 canary 已过时），随包与
+      未来 SDK Manager 推送版本对齐，消除 adb server 版本互踢复发窗口），
+      从 zip 内 platform-tools/ 提取
     - scrcpy-server.jar
       来源：Genymobile/scrcpy GitHub Release（版本对齐
       backend/app/scrcpy/scrcpy_version.py 唯一分发点）
@@ -48,7 +49,7 @@ def _server_version() -> str:
 SCRCPY_SERVER_VERSION = _server_version()
 TOOLS_DIR = REPO_ROOT / "tools"
 JAR_DIR = REPO_ROOT / "backend" / "app" / "scrcpy"
-PLATFORM_TOOLS_URL = "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip"
+PLATFORM_TOOLS_URL = "https://dl.google.com/android/repository/platform-tools_r37.0.3-win.zip"
 JAR_URL = (
     f"https://github.com/Genymobile/scrcpy/releases/download/"
     f"v{SCRCPY_SERVER_VERSION}/scrcpy-server-v{SCRCPY_SERVER_VERSION}"
@@ -81,21 +82,21 @@ TOOLS: list[ZipEntry | FileEntry] = [
         "adb.exe",
         PLATFORM_TOOLS_URL,
         "platform-tools/adb.exe",
-        "b4a6b455702684652cccf7b46258b29e653538904359a58fd4931cf3ef286b3f",
+        "bae5ce98846b19caa74a34900850caa8b21d01976932b2ad83baeb5de5651aee",
         TOOLS_DIR,
     ),
     ZipEntry(
         "AdbWinApi.dll",
         PLATFORM_TOOLS_URL,
         "platform-tools/AdbWinApi.dll",
-        "c1d653030b4bde65d3e07e4d0b0979e17be56df1436cdd15528630f27808050d",
+        "ed20abfb8b423029a2278d3947c1a1235774afd1b0e0e08405591e6f1d237a49",
         TOOLS_DIR,
     ),
     ZipEntry(
         "AdbWinUsbApi.dll",
         PLATFORM_TOOLS_URL,
         "platform-tools/AdbWinUsbApi.dll",
-        "0710e894d9b40f71a670c13c694079d564c92c1279da382cfe4850983aaebe1b",
+        "ac658211ac7991ce581f4f2efff86358abdca8eb1bc0f38d7686cbf4215f7c1f",
         TOOLS_DIR,
     ),
     FileEntry(
