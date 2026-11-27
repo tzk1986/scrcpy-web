@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- 随包 adb 由钉死 r37.0.1 升至 **r37.0.3**（`scripts/fetch_tools.py` 清单 URL+三文件 SHA256 实测回填，下载清单 size 与 Google stable 通道 metadata 相符）：37.0.3 已进 stable 通道（2026-11-13 升钉时判其「canary 不取」已过时），随包与 SDK Manager 当前分发版本对齐，消除互踢复发窗口（E033 教训：包内钉版必须与主流 SDK 同版）；本机验证环境 platform-tools 已同步升 37.0.3。scrcpy-server 核查无需动作：现钉 **v5.0.1** 即上游最新（方案 44 `3e43d2f` 已升，0.7.18/0.7.19 随包均为 5.0.1），v4.1→v5.0.1 server 侧仅音频播放捕获 usage 扩充与相机 stop 防御两处，与本仓无关，协议零改动
+
 ### Fixed
 
 - exe 启动「no available port from 8765 to 8769」：端口回退窗由 5 格扩至 20 格，跳出 Windows 动态保留区（WinNAT/Hyper-V 开机可整段划走约 100 连续端口，旧 5 格窗可能全落区内——无监听者但试绑被系统拒）；报错文案附「可设置 BACKEND_PORT 环境变量指定其他端口」提示（经验记录 E034）
